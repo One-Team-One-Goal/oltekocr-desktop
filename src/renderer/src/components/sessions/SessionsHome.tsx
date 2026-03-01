@@ -87,7 +87,20 @@ export function SessionsHome() {
                 key={session.id}
                 session={session}
                 onOpen={() => navigate(`/sessions/${session.id}`)}
-                onDeleted={fetchSessions}
+                onDelete={async () => {
+                  // Optimistic: remove immediately
+                  setSessions((prev) => prev.filter((s) => s.id !== session.id));
+                  try {
+                    await sessionsApi.remove(session.id);
+                  } catch (err) {
+                    // Rollback: restore the card if the API call failed
+                    setSessions((prev) => {
+                      if (prev.find((s) => s.id === session.id)) return prev;
+                      return [session, ...prev];
+                    });
+                    throw err;
+                  }
+                }}
               />
             ))}
           </div>

@@ -132,7 +132,10 @@ def run(image_path: str, lang: str = "en") -> dict:
     is_pdf = suffix == ".pdf"
 
     try:
-        from rapidocr import RapidOCR  # type: ignore
+        try:
+            from rapidocr_onnxruntime import RapidOCR  # type: ignore  # v1.4+
+        except ImportError:
+            from rapidocr import RapidOCR  # type: ignore  # legacy
     except ImportError as exc:
         return {"error": f"rapidocr is not installed: {exc}"}
 

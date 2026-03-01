@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { sessionsApi } from "@/api/client";
 import {
   FileText,
   Table2,
@@ -14,7 +13,7 @@ import { formatDate, statusColor, statusDotColor } from "@/lib/utils";
 interface SessionCardProps {
   session: SessionListItem;
   onOpen: () => void;
-  onDeleted: () => void;
+  onDelete: () => Promise<void>;
 }
 
 const modeConfig: Record<
@@ -50,8 +49,9 @@ const sessionStatusDot: Record<string, string> = {
   ERROR: "bg-red-500",
 };
 
-export function SessionCard({ session, onOpen, onDeleted }: SessionCardProps) {
+export function SessionCard({ session, onOpen, onDelete }: SessionCardProps) {
   const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const mode = modeConfig[session.mode] ?? modeConfig.OCR_EXTRACT;
   const Icon = mode.icon;
 
@@ -60,11 +60,11 @@ export function SessionCard({ session, onOpen, onDeleted }: SessionCardProps) {
     if (!confirm(`Delete session "${session.name}" and all its documents?`))
       return;
     setDeleting(true);
+    setError(null);
     try {
-      await sessionsApi.remove(session.id);
-      onDeleted();
-    } catch (err) {
-      console.error("Failed to delete session:", err);
+      await onDelete();
+    } catch (err: any) {
+      setError(err?.message ?? "Failed to delete");
       setDeleting(false);
     }
   };
@@ -136,6 +136,11 @@ export function SessionCard({ session, onOpen, onDeleted }: SessionCardProps) {
         >
           <Trash2 className="h-3.5 w-3.5" />
         </Button>
+        {error && (
+          <span className="text-xs text-red-500 truncate max-w-[140px]" title={error}>
+            {error}
+          </span>
+        )}
         <Button
           size="sm"
           variant="outline"
