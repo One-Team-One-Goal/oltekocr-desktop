@@ -1,0 +1,151 @@
+const BASE_URL = "http://localhost:3847/api";
+
+async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const url = `${BASE_URL}${path}`;
+  const res = await fetch(url, {
+    headers: {
+      "Content-Type": "application/json",
+      ...options.headers,
+    },
+    ...options,
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.message || `HTTP ${res.status}: ${res.statusText}`);
+  }
+
+  return res.json();
+}
+
+// ─── Documents ───────────────────────────────────────────
+export const documentsApi = {
+  list: (params?: Record<string, string>) => {
+    const qs = params ? "?" + new URLSearchParams(params).toString() : "";
+    return request<any[]>(`/documents${qs}`);
+  },
+  get: (id: string) => request<any>(`/documents/${id}`),
+  stats: () => request<any>("/documents/stats"),
+  loadFiles: (filePaths: string[]) =>
+    request<any[]>("/documents/load", {
+      method: "POST",
+      body: JSON.stringify({ filePaths }),
+    }),
+  loadFolder: (folderPath: string) =>
+    request<any[]>("/documents/load-folder", {
+      method: "POST",
+      body: JSON.stringify({ folderPath }),
+    }),
+  update: (id: string, data: any) =>
+    request<any>(`/documents/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+  approve: (id: string) =>
+    request<any>(`/documents/${id}/approve`, { method: "PATCH" }),
+  reject: (id: string, reason?: string) =>
+    request<any>(`/documents/${id}/reject`, {
+      method: "PATCH",
+      body: JSON.stringify({ reason }),
+    }),
+  reprocess: (id: string) =>
+    request<any>(`/documents/${id}/reprocess`, { method: "PATCH" }),
+  delete: (id: string) =>
+    request<any>(`/documents/${id}`, { method: "DELETE" }),
+  imageUrl: (id: string) => `${BASE_URL}/documents/${id}/image`,
+  thumbnailUrl: (id: string) => `${BASE_URL}/documents/${id}/thumbnail`,
+};
+
+// ─── Export ──────────────────────────────────────────────
+export const exportApi = {
+  exportDocuments: (documentIds: string[], format: string) =>
+    request<{ exportPath: string }>("/export", {
+      method: "POST",
+      body: JSON.stringify({ documentIds, format }),
+    }),
+  exportAllApproved: (format: string) =>
+    request<{ exportPath: string }>("/export/all-approved", {
+      method: "POST",
+      body: JSON.stringify({ format }),
+    }),
+  history: () => request<any[]>("/export/history"),
+};
+
+// ─── Settings ────────────────────────────────────────────
+export const settingsApi = {
+  get: () => request<any>("/settings"),
+  getDefaults: () => request<any>("/settings/defaults"),
+  update: (data: any) =>
+    request<any>("/settings", {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+};
+
+// ─── Scanner ─────────────────────────────────────────────
+export const scannerApi = {
+  list: () => request<any[]>("/scanner/list"),
+  scan: () => request<any>("/scanner/scan", { method: "POST" }),
+  startWatch: () => request<any>("/scanner/watch/start", { method: "POST" }),
+  stopWatch: () => request<any>("/scanner/watch/stop", { method: "POST" }),
+  watchStatus: () => request<any>("/scanner/watch/status"),
+};
+
+// ─── OCR ─────────────────────────────────────────────────
+export const ocrApi = {
+  status: () => request<any>("/ocr/status"),
+  process: (id: string) =>
+    request<any>(`/ocr/process/${id}`, { method: "POST" }),
+};
+
+// ─── Queue ───────────────────────────────────────────────
+export const queueApi = {
+  status: () => request<any>("/queue/status"),
+  add: (documentIds: string[]) =>
+    request<any>("/queue/add", {
+      method: "POST",
+      body: JSON.stringify({ documentIds }),
+    }),
+  pause: () => request<any>("/queue/pause", { method: "POST" }),
+  resume: () => request<any>("/queue/resume", { method: "POST" }),
+  clear: () => request<any>("/queue", { method: "DELETE" }),
+};
+
+// ─── Sessions ────────────────────────────────────────────
+export const sessionsApi = {
+  list: () => request<any[]>("/sessions"),
+  get: (id: string) => request<any>(`/sessions/${id}`),
+  create: (data: {
+    name: string;
+    mode: "OCR_EXTRACT" | "TABLE_EXTRACT";
+    columns?: { key: string; label: string; question: string }[];
+    sourceType: "FILES" | "FOLDER";
+    sourcePath?: string;
+  }) =>
+    request<any>("/sessions", { method: "POST", body: JSON.stringify(data) }),
+  remove: (id: string) =>
+    request<void>(`/sessions/${id}`, { method: "DELETE" }),
+  updateColumns: (
+    id: string,
+    columns: { key: string; label: string; question: string }[],
+  ) =>
+    request<any>(`/sessions/${id}/columns`, {
+      method: "PATCH",
+      body: JSON.stringify({ columns }),
+    }),
+  ingestFiles: (id: string, filePaths: string[]) =>
+    request<any[]>(`/sessions/${id}/ingest/files`, {
+      method: "POST",
+      body: JSON.stringify({ filePaths }),
+    }),
+  ingestFolder: (id: string, folderPath: string) =>
+    request<any[]>(`/sessions/${id}/ingest/folder`, {
+      method: "POST",
+      body: JSON.stringify({ folderPath }),
+    }),
+  getDocuments: (id: string) => request<any[]>(`/sessions/${id}/documents`),
+  getStats: (id: string) => request<any>(`/sessions/${id}/stats`),
+};
+
+// ─── Swagger ─────────────────────────────────────────────
+export const SWAGGER_URL = `${BASE_URL}/docs`;

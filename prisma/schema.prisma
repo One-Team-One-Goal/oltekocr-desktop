@@ -1,0 +1,133 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:../data/oltekocr.db"
+}
+
+// ─── Session ─────────────────────────────────────────────
+model Session {
+  id         String     @id @default(uuid())
+  name       String
+  mode       String     @default("OCR_EXTRACT")  // "OCR_EXTRACT" | "TABLE_EXTRACT"
+  columns    String     @default("[]")            // JSON: SessionColumn[]
+  sourceType String     @default("FILES") @map("source_type")
+  sourcePath String     @default("") @map("source_path")
+  status     String     @default("PENDING")       // "PENDING" | "PROCESSING" | "DONE" | "ERROR"
+  createdAt  DateTime   @default(now()) @map("created_at")
+  updatedAt  DateTime   @updatedAt @map("updated_at")
+  documents  Document[]
+
+  @@index([status])
+  @@index([createdAt])
+  @@map("sessions")
+}
+
+model Document {
+  id             String   @id @default(uuid())
+  filename       String   @default("")
+  imagePath      String   @default("") @map("image_path")
+  thumbnailPath  String   @default("") @map("thumbnail_path")
+  status         String   @default("QUEUED")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+  processedAt    DateTime? @map("processed_at")
+  verifiedAt     DateTime? @map("verified_at")
+  verifiedBy     String   @default("") @map("verified_by")
+  notes          String   @default("")
+  tags           String   @default("[]")
+  exported       Boolean  @default(false)
+  exportPath     String   @default("") @map("export_path")
+
+  // Quality assessment
+  qualityValid      Boolean @default(true) @map("quality_valid")
+  qualityDpi        Int     @default(0) @map("quality_dpi")
+  qualityWidth      Int     @default(0) @map("quality_width")
+  qualityHeight     Int     @default(0) @map("quality_height")
+  qualityBlurScore  Float   @default(0) @map("quality_blur_score")
+  qualityIsBlurry   Boolean @default(false) @map("quality_is_blurry")
+  qualityIsSkewed   Boolean @default(false) @map("quality_is_skewed")
+  qualitySkewAngle  Float   @default(0) @map("quality_skew_angle")
+  qualityIssues     String  @default("[]") @map("quality_issues")
+
+  // OCR result
+  ocrFullText       String @default("") @map("ocr_full_text")
+  ocrMarkdown       String @default("") @map("ocr_markdown")
+  ocrTextBlocks     String @default("[]") @map("ocr_text_blocks")
+  ocrTables         String @default("[]") @map("ocr_tables")
+  ocrAvgConfidence  Float  @default(0) @map("ocr_avg_confidence")
+  ocrProcessingTime Float  @default(0) @map("ocr_processing_time")
+  ocrPageCount      Int    @default(0) @map("ocr_page_count")
+  ocrWarnings       String @default("[]") @map("ocr_warnings")
+
+  // Session link
+  sessionId    String?  @map("session_id")
+  session      Session? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  // Extraction
+  userEdits     String @default("{}") @map("user_edits")
+  extractedJson String @default("{}") @map("extracted_json")
+  extractedRow  String @default("{}") @map("extracted_row")
+
+  // Relations
+  exports   ExportHistory[]
+  summaries DocumentSummary[]
+
+  @@index([sessionId])
+
+  @@index([status])
+  @@index([createdAt])
+  @@index([filename])
+  @@map("documents")
+}
+
+model ExportHistory {
+  id           Int      @id @default(autoincrement())
+  documentId   String   @map("document_id")
+  exportFormat String   @map("export_format")
+  exportPath   String   @map("export_path")
+  exportedAt   DateTime @default(now()) @map("exported_at")
+  document     Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+  @@map("export_history")
+}
+
+model DailyStats {
+  id                 Int    @id @default(autoincrement())
+  date               String @unique
+  documentsProcessed Int    @default(0) @map("documents_processed")
+  documentsApproved  Int    @default(0) @map("documents_approved")
+  documentsRejected  Int    @default(0) @map("documents_rejected")
+  avgProcessingTime  Float  @default(0) @map("avg_processing_time")
+  avgConfidence      Float  @default(0) @map("avg_confidence")
+
+  @@map("daily_stats")
+}
+
+model SummaryPrompt {
+  name      String   @id
+  prompt    String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("summary_prompts")
+}
+
+model DocumentSummary {
+  id         Int      @id @default(autoincrement())
+  documentId String   @map("document_id")
+  name       String
+  summary    String
+  provider   String
+  model      String
+  prompt     String
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+  @@map("document_summaries")
+}

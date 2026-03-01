@@ -1,0 +1,29 @@
+# Normalize all text files to LF in the repo, check out with CRLF on Windows
+* text=auto eol=lf
+
+# Explicitly LF — source files
+*.ts   text eol=lf
+*.tsx  text eol=lf
+*.js   text eol=lf
+*.jsx  text eol=lf
+*.json text eol=lf
+*.css  text eol=lf
+*.html text eol=lf
+*.md   text eol=lf
+*.py   text eol=lf
+*.prisma text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.env  text eol=lf
+
+# Binary — do not touch line endings
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.svg  binary
+*.pdf  binary
+*.exe  binary
+*.db   binary
+*.node binary
