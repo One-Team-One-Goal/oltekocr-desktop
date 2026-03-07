@@ -24,6 +24,9 @@ import {
   Table2,
   FileText,
   Columns,
+  Play,
+  Square,
+  Loader2,
 } from "lucide-react";
 import type {
   SessionRecord,
@@ -89,6 +92,20 @@ export function SessionDetail() {
   const [loading, setLoading] = useState(true);
   const [reviewDocId, setReviewDocId] = useState<string | null>(null);
   const [editColumnsOpen, setEditColumnsOpen] = useState(false);
+  const [isStopPending, setIsStopPending] = useState(false);
+  // Derived — true while any doc is actively running (not counting CANCELLING, so
+  // pressing Stop flips the button to Play immediately even if Python is still finishing up)
+  const isRunning = documents.some(
+    (d) => d.status === "SCANNING" || d.status === "PROCESSING",
+  );
+  const isCancelling = documents.some((d) => d.status === "CANCELLING");
+
+  useEffect(() => {
+    // Clear pending state once active docs have transitioned out of running/cancelling.
+    if (!isRunning && !isCancelling) {
+      setIsStopPending(false);
+    }
+  }, [isRunning, isCancelling]);
 
   // Filter state
   const [statusFilter, setStatusFilter] = useState("all");
@@ -146,8 +163,7 @@ export function SessionDetail() {
   const handleAddFiles = async () => {
     const result = await window.api.openFileDialog();
     if (!result.canceled && result.filePaths.length > 0) {
-      const docs = await sessionsApi.ingestFiles(id!, result.filePaths);
-      await queueApi.add(docs.map((d: any) => d.id));
+      await sessionsApi.ingestFiles(id!, result.filePaths);
       refresh();
     }
   };
@@ -155,10 +171,35 @@ export function SessionDetail() {
   const handleAddFolder = async () => {
     const result = await window.api.openFolderDialog();
     if (!result.canceled && result.filePaths.length > 0) {
-      const docs = await sessionsApi.ingestFolder(id!, result.filePaths[0]);
-      await queueApi.add(docs.map((d: any) => d.id));
+      await sessionsApi.ingestFolder(id!, result.filePaths[0]);
       refresh();
     }
+  };
+
+  // ── Play / Stop ──────────────────────────────────────────
+  const handlePlayStop = async () => {
+    if (isRunning) {
+      setIsStopPending(true);
+      await queueApi.pause();
+      // Cancel any in-flight docs so they immediately flip to CANCELLING
+      const activeIds = documents
+        .filter((d) => d.status === "SCANNING" || d.status === "PROCESSING")
+        .map((d) => d.id);
+      if (activeIds.length > 0) {
+        await queueApi.cancel(activeIds).catch(() => {});
+      } else {
+        setIsStopPending(false);
+      }
+    } else {
+      const queuedIds = documents
+        .filter((d) => d.status === "QUEUED")
+        .map((d) => d.id);
+      if (queuedIds.length > 0) {
+        await queueApi.add(queuedIds);
+      }
+      await queueApi.resume();
+    }
+    refresh();
   };
 
   // ── Export session ─────────────────────────────────────
@@ -205,33 +246,63 @@ export function SessionDetail() {
           </div>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
-          <Button
-            variant="outline"
-            size="sm"
-            className="gap-1.5 text-xs"
-            onClick={handleAddFiles}
-          >
-            <FilePlus className="h-3.5 w-3.5" />
-            Add Files
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="gap-1.5 text-xs"
-            onClick={handleAddFolder}
-          >
-            <FolderOpen className="h-3.5 w-3.5" />
-            Add Folder
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="gap-1.5 text-xs"
-            onClick={handleExport}
-          >
-            <FileOutput className="h-3.5 w-3.5" />
-            Export
-          </Button>
+          {/* Play / Stop */}
+          {(() => {
+            const canStart =
+              !isRunning &&
+              !isStopPending &&
+              !isCancelling &&
+              documents.some((d) => d.status === "QUEUED");
+            return (
+              <Button
+                variant={isRunning || isStopPending ? "destructive" : "ghost"}
+                size="sm"
+                className="gap-1.5 text-xs"
+                onClick={handlePlayStop}
+                disabled={isStopPending || (!isRunning && !canStart)}
+              >
+                {isStopPending ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : isRunning ? (
+                  <Square className="h-3.5 w-3.5" />
+                ) : (
+                  <Play className="h-3.5 w-3.5" />
+                )}
+              </Button>
+            );
+          })()}
+
+          {/* Add / Export button group */}
+          <div className="flex">
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5 text-xs rounded-r-none border-r-0"
+              onClick={handleAddFiles}
+            >
+              <FilePlus className="h-3.5 w-3.5" />
+              Add Files
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5 text-xs rounded-none border-r-0"
+              onClick={handleAddFolder}
+            >
+              <FolderOpen className="h-3.5 w-3.5" />
+              Add Folder
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5 text-xs rounded-l-none"
+              onClick={handleExport}
+            >
+              <FileOutput className="h-3.5 w-3.5" />
+              Export
+            </Button>
+          </div>
+
           <Button variant="ghost" size="icon" onClick={refresh}>
             <RefreshCw className="h-4 w-4" />
           </Button>

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -8,7 +8,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { sessionsApi } from "@/api/client";
+import { sessionPresetsApi, sessionsApi } from "@/api/client";
 import {
   FileText,
   Table2,
@@ -20,8 +20,20 @@ import {
   ChevronLeft,
   Loader2,
   X,
+  FileJson,
+  FileScan,
+  Construction,
+  Settings2,
 } from "lucide-react";
-import type { SessionColumn } from "@shared/types";
+import type { SessionColumn, SessionPresetRecord } from "@shared/types";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { PresetManagerDialog } from "./PresetManagerDialog";
 
 interface NewSessionDialogProps {
   open: boolean;
@@ -29,7 +41,11 @@ interface NewSessionDialogProps {
   onCreated: (sessionId: string, docIds: string[]) => void;
 }
 
-type SessionMode = "OCR_EXTRACT" | "TABLE_EXTRACT";
+type SessionMode =
+  | "OCR_EXTRACT"
+  | "TABLE_EXTRACT"
+  | "PDF_EXTRACT"
+  | "JSON_EXTRACT";
 type SourceType = "FILES" | "FOLDER";
 
 const STEPS = ["Details", "Columns", "Source"] as const;
@@ -58,18 +74,40 @@ export function NewSessionDialog({
   const [columns, setColumns] = useState<SessionColumn[]>([
     { key: "", label: "", question: "" },
   ]);
+  const [columnInputMode, setColumnInputMode] = useState<"MANUAL" | "PRESET">(
+    "MANUAL",
+  );
 
   // ── Step 3 (source) ───────────────────────────────────
   const [sourceType, setSourceType] = useState<SourceType>("FILES");
   const [filePaths, setFilePaths] = useState<string[]>([]);
   const [folderPath, setFolderPath] = useState("");
 
+  // ── Presets ────────────────────────────────────────────
+  const [presets, setPresets] = useState<SessionPresetRecord[]>([]);
+  const [selectedPresetId, setSelectedPresetId] = useState<string>("none");
+  const [presetDialogOpen, setPresetDialogOpen] = useState(false);
+
   // ── Loading ────────────────────────────────────────────
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
+  const loadPresets = async () => {
+    try {
+      const data = await sessionPresetsApi.list();
+      setPresets(data);
+    } catch (err) {
+      console.error("Failed to load session presets:", err);
+    }
+  };
+
+  useEffect(() => {
+    if (open) loadPresets();
+  }, [open]);
+
   // ── Total steps depends on mode ────────────────────────
   const totalSteps = mode === "TABLE_EXTRACT" ? 3 : 2;
+  const isMockMode = mode === "PDF_EXTRACT" || mode === "JSON_EXTRACT";
 
   // ── Reset on close ────────────────────────────────────
   const handleClose = () => {
@@ -77,17 +115,42 @@ export function NewSessionDialog({
     setName("");
     setMode("OCR_EXTRACT");
     setColumns([{ key: "", label: "", question: "" }]);
+    setColumnInputMode("MANUAL");
     setSourceType("FILES");
     setFilePaths([]);
     setFolderPath("");
+    setSelectedPresetId("none");
     setError("");
     onClose();
+  };
+
+  const applyPresetById = (presetId: string) => {
+    setSelectedPresetId(presetId);
+    if (presetId === "none") return;
+
+    const preset = presets.find((p) => p.id === presetId);
+    if (!preset) return;
+
+    setColumns(
+      preset.columns.length > 0
+        ? preset.columns
+        : [{ key: "", label: "", question: "" }],
+    );
   };
 
   // ── Step helpers ──────────────────────────────────────
   const canAdvance = (): boolean => {
     if (step === 1) return name.trim().length > 0;
+    if (isMockMode) return false; // mock modes can't proceed past step 1
     if (step === 2 && mode === "TABLE_EXTRACT") {
+      if (columnInputMode === "PRESET") {
+        return (
+          selectedPresetId !== "none" &&
+          columns.every(
+            (c) => c.label.trim() && c.key.trim() && c.question.trim(),
+          )
+        );
+      }
       return columns.every(
         (c) => c.label.trim() && c.key.trim() && c.question.trim(),
       );
@@ -163,7 +226,7 @@ export function NewSessionDialog({
       // 1. Create session
       const session = await sessionsApi.create({
         name: name.trim(),
-        mode,
+        mode: mode as "OCR_EXTRACT" | "TABLE_EXTRACT",
         columns: mode === "TABLE_EXTRACT" ? columns : [],
         sourceType,
       });
@@ -259,25 +322,47 @@ export function NewSessionDialog({
                         icon: FileText,
                         title: "OCR Extract",
                         desc: "Full OCR — extract text, tables, and confidence scores from each document.",
+                        mock: false,
                       },
                       {
                         value: "TABLE_EXTRACT" as const,
                         icon: Table2,
                         title: "Table Extract",
                         desc: "Define columns (e.g. Case No, Date, Respondent) and AI fills them from each document.",
+                        mock: false,
+                      },
+                      {
+                        value: "PDF_EXTRACT" as const,
+                        icon: FileScan,
+                        title: "PDF Extract",
+                        desc: "Directly extract structured text from digital PDF files — no OCR needed.",
+                        mock: true,
+                      },
+                      {
+                        value: "JSON_EXTRACT" as const,
+                        icon: FileJson,
+                        title: "JSON Extract",
+                        desc: "Use an LLM to extract fields and output structured JSON from logistics documents.",
+                        mock: true,
                       },
                     ] as const
-                  ).map(({ value, icon: Icon, title, desc }) => (
+                  ).map(({ value, icon: Icon, title, desc, mock }) => (
                     <button
                       key={value}
                       type="button"
                       onClick={() => setMode(value)}
-                      className={`text-left p-4 rounded-xl border-2 transition-all ${
+                      className={`relative text-left p-4 rounded-xl border-2 transition-all ${
                         mode === value
                           ? "border-primary bg-primary/5"
                           : "border-border hover:border-muted-foreground/50"
                       }`}
                     >
+                      {mock && (
+                        <span className="absolute top-2 right-2 inline-flex items-center gap-0.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-semibold text-amber-700">
+                          <Construction className="h-2.5 w-2.5" />
+                          Soon
+                        </span>
+                      )}
                       <Icon
                         className={`h-5 w-5 mb-2 ${mode === value ? "text-primary" : "text-muted-foreground"}`}
                       />
@@ -289,6 +374,7 @@ export function NewSessionDialog({
                   ))}
                 </div>
               </div>
+
             </>
           )}
 
@@ -298,78 +384,175 @@ export function NewSessionDialog({
               <div>
                 <p className="text-sm font-medium">Define columns to extract</p>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  For each column, provide a label and a natural-language
-                  question that the AI will answer from each document.
+                  Choose manual setup or use a saved preset before starting the
+                  session.
                 </p>
               </div>
 
-              <div className="space-y-2 max-h-64 overflow-y-auto pr-0.5">
-                {columns.map((col, i) => (
-                  <div
-                    key={i}
-                    className="grid grid-cols-[1fr_1fr_auto] gap-2 items-start p-3 bg-gray-50 rounded-lg border border-border"
-                  >
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
-                        Column Label
-                      </label>
-                      <Input
-                        className="h-7 text-xs"
-                        placeholder="e.g. Case Number"
-                        value={col.label}
-                        onChange={(e) =>
-                          updateColumn(i, "label", e.target.value)
-                        }
-                      />
-                      <div className="flex items-center gap-1">
-                        <span className="text-[9px] text-muted-foreground">
-                          key:
-                        </span>
-                        <Input
-                          className="h-5 text-[10px] font-mono"
-                          placeholder="case_number"
-                          value={col.key}
-                          onChange={(e) =>
-                            updateColumn(i, "key", e.target.value)
-                          }
-                        />
-                      </div>
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
-                        Question for AI
-                      </label>
-                      <Input
-                        className="h-7 text-xs"
-                        placeholder="What is the case number?"
-                        value={col.question}
-                        onChange={(e) =>
-                          updateColumn(i, "question", e.target.value)
-                        }
-                      />
-                    </div>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 mt-5 text-muted-foreground hover:text-red-500"
-                      disabled={columns.length === 1}
-                      onClick={() => removeColumn(i)}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                ))}
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setColumnInputMode("MANUAL")}
+                  className={`rounded-lg border p-3 text-left ${
+                    columnInputMode === "MANUAL"
+                      ? "border-primary bg-primary/5"
+                      : "border-border hover:bg-muted/30"
+                  }`}
+                >
+                  <p className="text-sm font-medium">Define Manually</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Add or edit each extraction column for this session.
+                  </p>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setColumnInputMode("PRESET")}
+                  className={`rounded-lg border p-3 text-left ${
+                    columnInputMode === "PRESET"
+                      ? "border-primary bg-primary/5"
+                      : "border-border hover:bg-muted/30"
+                  }`}
+                >
+                  <p className="text-sm font-medium">Use Preset</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Load previously saved document extraction columns.
+                  </p>
+                </button>
               </div>
 
-              <Button
-                variant="outline"
-                size="sm"
-                className="gap-1.5 text-xs"
-                onClick={addColumn}
-              >
-                <Plus className="h-3.5 w-3.5" />
-                Add Column
-              </Button>
+              {columnInputMode === "PRESET" ? (
+                <div className="space-y-3">
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-medium">Select Preset</label>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        onClick={() => setPresetDialogOpen(true)}
+                      >
+                        <Settings2 className="h-3.5 w-3.5" />
+                        Manage Presets
+                      </Button>
+                    </div>
+
+                    <Select
+                      value={selectedPresetId}
+                      onValueChange={(value) => applyPresetById(value)}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Choose a table extraction preset" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">Choose preset...</SelectItem>
+                        {presets
+                          .filter((preset) => preset.mode === "TABLE_EXTRACT")
+                          .map((preset) => (
+                            <SelectItem key={preset.id} value={preset.id}>
+                              {preset.name}
+                            </SelectItem>
+                          ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="space-y-2 max-h-56 overflow-y-auto pr-0.5">
+                    {columns.map((col, i) => (
+                      <div
+                        key={i}
+                        className="grid grid-cols-[1fr_1fr] gap-2 items-start p-3 rounded-lg border border-border"
+                      >
+                        <div className="space-y-1">
+                          <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+                            Column Label
+                          </p>
+                          <p className="text-xs font-medium">{col.label || "-"}</p>
+                          <p className="text-[10px] font-mono text-muted-foreground">
+                            key: {col.key || "-"}
+                          </p>
+                        </div>
+                        <div className="space-y-1">
+                          <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+                            Question for AI
+                          </p>
+                          <p className="text-xs">{col.question || "-"}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="space-y-2 max-h-64 overflow-y-auto pr-0.5">
+                    {columns.map((col, i) => (
+                      <div
+                        key={i}
+                        className="grid grid-cols-[1fr_1fr_auto] gap-2 items-start p-3 rounded-lg border border-border"
+                      >
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+                            Column Label
+                          </label>
+                          <Input
+                            className="h-7 text-xs bg-secondary"
+                            placeholder="e.g. Case Number"
+                            value={col.label}
+                            onChange={(e) =>
+                              updateColumn(i, "label", e.target.value)
+                            }
+                          />
+                          <div className="flex items-center gap-1">
+                            <span className="text-[9px] text-muted-foreground">
+                              key:
+                            </span>
+                            <Input
+                              className="h-5 text-[10px] font-mono bg-secondary"
+                              placeholder="case_number"
+                              value={col.key}
+                              onChange={(e) =>
+                                updateColumn(i, "key", e.target.value)
+                              }
+                            />
+                          </div>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+                            Question for AI
+                          </label>
+                          <Input
+                            className="h-7 text-xs bg-secondary"
+                            placeholder="What is the case number?"
+                            value={col.question}
+                            onChange={(e) =>
+                              updateColumn(i, "question", e.target.value)
+                            }
+                          />
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 mt-5 text-muted-foreground hover:text-red-500"
+                          disabled={columns.length === 1}
+                          onClick={() => removeColumn(i)}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5 text-xs"
+                    onClick={addColumn}
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    Add Column
+                  </Button>
+                </>
+              )}
             </div>
           )}
 
@@ -432,7 +615,7 @@ export function NewSessionDialog({
                       : "Browse files…"}
                   </Button>
                   {filePaths.length > 0 && (
-                    <div className="max-h-32 overflow-y-auto space-y-0.5 bg-gray-50 rounded-lg p-2 border border-border">
+                    <div className="max-h-32 overflow-y-auto space-y-0.5 bg-secondary rounded-lg p-2 border border-border">
                       {filePaths.map((f) => (
                         <div
                           key={f}
@@ -507,7 +690,12 @@ export function NewSessionDialog({
             )}
           </Button>
 
-          {isLastStep ? (
+          {isMockMode && step === 1 ? (
+            <div className="flex items-center gap-2 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              <Construction className="h-3.5 w-3.5 shrink-0" />
+              This mode is coming soon and not yet available.
+            </div>
+          ) : isLastStep ? (
             <Button
               onClick={handleSubmit}
               disabled={!canAdvance() || submitting}
@@ -532,6 +720,23 @@ export function NewSessionDialog({
           )}
         </DialogFooter>
       </DialogContent>
+
+      <PresetManagerDialog
+        open={presetDialogOpen}
+        onClose={() => setPresetDialogOpen(false)}
+        onChanged={(nextPresets) => {
+          setPresets(nextPresets);
+          if (
+            selectedPresetId !== "none" &&
+            !nextPresets.some((preset) => preset.id === selectedPresetId)
+          ) {
+            setSelectedPresetId("none");
+            if (columnInputMode === "PRESET") {
+              setColumns([{ key: "", label: "", question: "" }]);
+            }
+          }
+        }}
+      />
     </Dialog>
   );
 }

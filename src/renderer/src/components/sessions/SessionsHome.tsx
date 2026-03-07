@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { sessionsApi, queueApi } from "@/api/client";
 import { SessionCard } from "./SessionCard";
 import { NewSessionDialog } from "./NewSessionDialog";
+import { DuplicateSessionDialog } from "./DuplicateSessionDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -12,7 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { CirclePlus, Plus, RefreshCw, Trash2, Search } from "lucide-react";
+import { CirclePlus, Copy, Plus, RefreshCw, Trash2, Search } from "lucide-react";
 import type { SessionListItem } from "@shared/types";
 
 export function SessionsHome() {
@@ -20,14 +21,15 @@ export function SessionsHome() {
   const [sessions, setSessions] = useState<SessionListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [deleteMode, setDeleteMode] = useState(false);
+  const [duplicateOpen, setDuplicateOpen] = useState(false);
+  const [actionMode, setActionMode] = useState<"none" | "delete" | "duplicate">("none");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
   const [modeFilter, setModeFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
 
-  const toggleDeleteMode = () => {
-    setDeleteMode((prev) => !prev);
+  const toggleActionMode = (nextMode: "delete" | "duplicate") => {
+    setActionMode((prev) => (prev === nextMode ? "none" : nextMode));
     setSelectedIds(new Set());
   };
 
@@ -50,8 +52,13 @@ export function SessionsHome() {
       return;
     setSessions((prev) => prev.filter((s) => !selectedIds.has(s.id)));
     setSelectedIds(new Set());
-    setDeleteMode(false);
+    setActionMode("none");
     await Promise.all(ids.map((id) => sessionsApi.remove(id)));
+  };
+
+  const handleDuplicateSelected = () => {
+    if (selectedIds.size === 0) return;
+    setDuplicateOpen(true);
   };
 
   const fetchSessions = async () => {
@@ -109,13 +116,25 @@ export function SessionsHome() {
     navigate(`/sessions/${sessionId}`);
   };
 
+  const selectedSessions = sessions.filter((session) => selectedIds.has(session.id));
+
+  const handleDuplicatesCompleted = async (createdSessionIds: string[]) => {
+    setDuplicateOpen(false);
+    setSelectedIds(new Set());
+    setActionMode("none");
+    await fetchSessions();
+    if (createdSessionIds.length === 1) {
+      navigate(`/sessions/${createdSessionIds[0]}`);
+    }
+  };
+
   return (
     <div className="flex flex-col h-full bg-background">
       {/* Header */}
       <header className="flex items-center justify-between h-14 px-6 border-b shrink-0">
         <h1 className="text-lg font-semibold">Sessions</h1>
         <div className="flex items-center gap-2">
-          {deleteMode ? (
+          {actionMode === "delete" ? (
             <>
               {selectedIds.size > 0 && (
                 <Button
@@ -127,7 +146,27 @@ export function SessionsHome() {
                   Delete ({selectedIds.size})
                 </Button>
               )}
-              <Button variant="secondary" size="xs" onClick={toggleDeleteMode}>
+              <Button
+                variant="secondary"
+                size="xs"
+                onClick={() => toggleActionMode("delete")}
+              >
+                Cancel
+              </Button>
+            </>
+          ) : actionMode === "duplicate" ? (
+            <>
+              {selectedIds.size > 0 && (
+                <Button variant="default" size="xs" onClick={handleDuplicateSelected}>
+                  <Copy className="h-3.5 w-3.5" />
+                  Duplicate ({selectedIds.size})
+                </Button>
+              )}
+              <Button
+                variant="secondary"
+                size="xs"
+                onClick={() => toggleActionMode("duplicate")}
+              >
                 Cancel
               </Button>
             </>
@@ -139,7 +178,15 @@ export function SessionsHome() {
               <Button
                 variant="ghost"
                 size="icon"
-                onClick={toggleDeleteMode}
+                onClick={() => toggleActionMode("duplicate")}
+                title="Select sessions to duplicate"
+              >
+                <Copy className="h-4 w-4" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => toggleActionMode("delete")}
                 title="Select sessions to delete"
               >
                 <Trash2 className="h-4 w-4" />
@@ -222,7 +269,8 @@ export function SessionsHome() {
               <SessionCard
                 key={session.id}
                 session={session}
-                selectMode={deleteMode}
+                selectMode={actionMode !== "none"}
+                selectionIntent={actionMode === "duplicate" ? "duplicate" : "delete"}
                 selected={selectedIds.has(session.id)}
                 onSelect={() => toggleSelect(session.id)}
                 onOpen={() => navigate(`/sessions/${session.id}`)}
@@ -242,6 +290,15 @@ export function SessionsHome() {
         open={dialogOpen}
         onClose={() => setDialogOpen(false)}
         onCreated={handleSessionCreated}
+      />
+
+      <DuplicateSessionDialog
+        open={duplicateOpen}
+        sessions={selectedSessions}
+        onClose={() => {
+          setDuplicateOpen(false);
+        }}
+        onCompleted={handleDuplicatesCompleted}
       />
     </div>
   );

@@ -2,6 +2,8 @@
 export const SessionMode = {
   OCR_EXTRACT: "OCR_EXTRACT",
   TABLE_EXTRACT: "TABLE_EXTRACT",
+  PDF_EXTRACT: "PDF_EXTRACT",
+  JSON_EXTRACT: "JSON_EXTRACT",
 } as const;
 export type SessionMode = (typeof SessionMode)[keyof typeof SessionMode];
 
@@ -42,11 +44,28 @@ export interface SessionListItem {
   createdAt: string;
 }
 
+export interface SessionPresetRecord {
+  id: string;
+  name: string;
+  mode: SessionMode;
+  columns: SessionColumn[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type DuplicateSessionStrategy = "FULL" | "COLUMNS_ONLY";
+
+export interface DuplicateSessionResult {
+  session: SessionRecord;
+  documents: DocumentListItem[];
+}
+
 // ─── Document Status ─────────────────────────────────────
 export const DocumentStatus = {
   QUEUED: "QUEUED",
   SCANNING: "SCANNING",
   PROCESSING: "PROCESSING",
+  CANCELLING: "CANCELLING",
   REVIEW: "REVIEW",
   APPROVED: "APPROVED",
   REJECTED: "REJECTED",
@@ -247,4 +266,7 @@ export const IpcChannel = {
   SAVE_FILE_DIALOG: "dialog:save-file",
   GET_APP_PATH: "app:get-path",
   SHOW_ITEM_IN_FOLDER: "shell:show-item",
+  WINDOW_CLOSE: "window:close",
+  WINDOW_MINIMIZE: "window:minimize",
+  WINDOW_MAXIMIZE: "window:maximize",
 } as const;

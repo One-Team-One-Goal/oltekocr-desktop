@@ -4,15 +4,21 @@ import {
   Logger,
   BadRequestException,
 } from "@nestjs/common";
+import { copyFileSync, existsSync } from "fs";
+import { basename, extname } from "path";
+import { v4 as uuid } from "uuid";
 import { PrismaService } from "../prisma/prisma.service";
 import { DocumentsService } from "../documents/documents.service";
+import { getDataPath } from "../../data-dirs";
 import {
   CreateSessionDto,
+  DuplicateSessionDto,
   IngestFilesDto,
   IngestFolderDto,
   UpdateColumnsDto,
 } from "./sessions.dto";
 import type {
+  DuplicateSessionResult,
   SessionRecord,
   SessionListItem,
   DocumentListItem,
@@ -97,6 +103,108 @@ export class SessionsService {
     return this.toRecord(session);
   }
 
+  // ─── Duplicate ───────────────────────────────────────
+  async duplicate(
+    sourceId: string,
+    dto: DuplicateSessionDto,
+  ): Promise<DuplicateSessionResult> {
+    const source = await this.prisma.session.findUnique({ where: { id: sourceId } });
+    if (!source) throw new NotFoundException(`Session ${sourceId} not found`);
+
+    const sourceDocuments =
+      dto.strategy === "FULL"
+        ? await this.prisma.document.findMany({
+            where: { sessionId: sourceId },
+            orderBy: { createdAt: "asc" },
+          })
+        : [];
+
+    const duplicated = await this.prisma.session.create({
+      data: {
+        name: dto.name?.trim() || `${source.name} (Copy)`,
+        mode: source.mode,
+        columns: source.columns,
+        sourceType: source.sourceType,
+        sourcePath: source.sourcePath,
+        status: dto.strategy === "FULL" ? source.status : "PENDING",
+      },
+    });
+
+    let documents: DocumentListItem[] = [];
+
+    if (dto.strategy === "FULL") {
+      for (const sourceDoc of sourceDocuments) {
+        const newDocId = uuid();
+
+        const newImagePath = this.cloneSessionAsset(
+          sourceDoc.imagePath,
+          getDataPath(
+            "scans",
+            `${newDocId}_${basename(sourceDoc.imagePath || sourceDoc.filename || "document")}`,
+          ),
+        );
+
+        const thumbnailExt = extname(sourceDoc.thumbnailPath || "") || ".jpg";
+        const newThumbnailPath = this.cloneSessionAsset(
+          sourceDoc.thumbnailPath,
+          getDataPath("scans", "thumbnails", `${newDocId}${thumbnailExt}`),
+        );
+
+        await this.prisma.document.create({
+          data: {
+            id: newDocId,
+            filename: sourceDoc.filename,
+            imagePath: newImagePath,
+            thumbnailPath: newThumbnailPath,
+            status: sourceDoc.status,
+            createdAt: sourceDoc.createdAt,
+            processedAt: sourceDoc.processedAt,
+            verifiedAt: sourceDoc.verifiedAt,
+            verifiedBy: sourceDoc.verifiedBy,
+            notes: sourceDoc.notes,
+            tags: sourceDoc.tags,
+            exported: sourceDoc.exported,
+            exportPath: sourceDoc.exportPath,
+            qualityValid: sourceDoc.qualityValid,
+            qualityDpi: sourceDoc.qualityDpi,
+            qualityWidth: sourceDoc.qualityWidth,
+            qualityHeight: sourceDoc.qualityHeight,
+            qualityBlurScore: sourceDoc.qualityBlurScore,
+            qualityIsBlurry: sourceDoc.qualityIsBlurry,
+            qualityIsSkewed: sourceDoc.qualityIsSkewed,
+            qualitySkewAngle: sourceDoc.qualitySkewAngle,
+            qualityIssues: sourceDoc.qualityIssues,
+            ocrFullText: sourceDoc.ocrFullText,
+            ocrMarkdown: sourceDoc.ocrMarkdown,
+            ocrTextBlocks: sourceDoc.ocrTextBlocks,
+            ocrTables: sourceDoc.ocrTables,
+            ocrAvgConfidence: sourceDoc.ocrAvgConfidence,
+            ocrProcessingTime: sourceDoc.ocrProcessingTime,
+            ocrPageCount: sourceDoc.ocrPageCount,
+            ocrWarnings: sourceDoc.ocrWarnings,
+            sessionId: duplicated.id,
+            userEdits: sourceDoc.userEdits,
+            extractedJson: sourceDoc.extractedJson,
+            extractedRow: sourceDoc.extractedRow,
+          },
+        });
+      }
+
+      documents = await this.documentsService.findAll({
+        sessionId: duplicated.id,
+      } as any);
+    }
+
+    this.logger.log(
+      `Duplicated session ${sourceId} -> ${duplicated.id} using strategy=${dto.strategy}`,
+    );
+
+    return {
+      session: this.toRecord(duplicated),
+      documents,
+    };
+  }
+
   // ─── Rename ────────────────────────────────────────────
   async rename(id: string, name: string): Promise<SessionRecord> {
     const session = await this.prisma.session.findUnique({ where: { id } });
@@ -121,7 +229,7 @@ export class SessionsService {
     // Clear extracted data for all documents so stale values don't persist
     await this.prisma.document.updateMany({
       where: { sessionId: id },
-      data: { extractedRow: null },
+      data: { extractedRow: "{}" },
     });
 
     this.logger.log(
@@ -262,5 +370,21 @@ export class SessionsService {
       createdAt: s.createdAt?.toISOString?.() ?? s.createdAt,
       updatedAt: s.updatedAt?.toISOString?.() ?? s.updatedAt,
     };
+  }
+
+  private cloneSessionAsset(sourcePath: string, targetPath: string): string {
+    if (!sourcePath || !existsSync(sourcePath)) {
+      return sourcePath || targetPath;
+    }
+
+    try {
+      copyFileSync(sourcePath, targetPath);
+      return targetPath;
+    } catch (err) {
+      this.logger.warn(
+        `Failed to copy session asset ${sourcePath} -> ${targetPath}. Reusing source path.`,
+      );
+      return sourcePath;
+    }
   }
 }

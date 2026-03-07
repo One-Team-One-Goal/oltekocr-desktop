@@ -114,6 +114,11 @@ export const queueApi = {
   pause: () => request<any>("/queue/pause", { method: "POST" }),
   resume: () => request<any>("/queue/resume", { method: "POST" }),
   clear: () => request<any>("/queue", { method: "DELETE" }),
+  cancel: (documentIds: string[]) =>
+    request<any>("/queue/cancel", {
+      method: "POST",
+      body: JSON.stringify({ documentIds }),
+    }),
 };
 
 // ─── Sessions ────────────────────────────────────────────
@@ -155,6 +160,42 @@ export const sessionsApi = {
     }),
   getDocuments: (id: string) => request<any[]>(`/sessions/${id}/documents`),
   getStats: (id: string) => request<any>(`/sessions/${id}/stats`),
+  duplicate: (
+    id: string,
+    data: { strategy: "FULL" | "COLUMNS_ONLY"; name?: string },
+  ) =>
+    request<any>(`/sessions/${id}/duplicate`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+};
+
+// ─── Session Presets ────────────────────────────────────
+export const sessionPresetsApi = {
+  list: () => request<any[]>("/session-presets"),
+  get: (id: string) => request<any>(`/session-presets/${id}`),
+  create: (data: {
+    name: string;
+    mode: "OCR_EXTRACT" | "TABLE_EXTRACT";
+    columns?: { key: string; label: string; question: string }[];
+  }) =>
+    request<any>("/session-presets", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  update: (
+    id: string,
+    data: {
+      name?: string;
+      mode?: "OCR_EXTRACT" | "TABLE_EXTRACT";
+      columns?: { key: string; label: string; question: string }[];
+    },
+  ) =>
+    request<any>(`/session-presets/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+  remove: (id: string) => request<void>(`/session-presets/${id}`, { method: "DELETE" }),
 };
 
 // ─── Swagger ─────────────────────────────────────────────

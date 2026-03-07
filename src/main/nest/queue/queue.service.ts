@@ -1,6 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { OcrService } from "../ocr/ocr.service";
 import { DocumentsGateway } from "../documents/documents.gateway";
+import { PrismaService } from "../prisma/prisma.service";
 
 /**
  * Processing queue — FIFO, sequential document processing.
@@ -11,10 +12,12 @@ export class QueueService {
   private queue: string[] = [];
   private processing: string | null = null;
   private paused = false;
+  private readonly cancelledDocs = new Set<string>();
 
   constructor(
     private readonly ocrService: OcrService,
     private readonly gateway: DocumentsGateway,
+    private readonly prisma: PrismaService,
   ) {}
 
   /** Add a document ID to the queue */
@@ -67,6 +70,34 @@ export class QueueService {
     this.gateway.sendQueueUpdate(0, this.processing);
   }
 
+  /** Cancel specific documents — removes waiting ones and flags active docs to reset to QUEUED on finish */
+  async cancel(documentIds: string[]): Promise<void> {
+    // Remove any docs still waiting in the queue
+    this.queue = this.queue.filter((id) => !documentIds.includes(id));
+
+    // Track active cancellation for anything currently running
+    if (this.processing && documentIds.includes(this.processing)) {
+      this.cancelledDocs.add(this.processing);
+    }
+
+    // Immediately update visible status for active docs so UI does not look stuck
+    await this.prisma.document.updateMany({
+      where: {
+        id: { in: documentIds },
+        status: { in: ["SCANNING", "PROCESSING"] },
+      },
+      data: { status: "CANCELLING" },
+    });
+
+    const now = new Date().toISOString();
+    for (const id of documentIds) {
+      this.gateway.sendDocumentStatus(id, "CANCELLING", now);
+    }
+
+    this.gateway.sendQueueUpdate(this.queue.length, this.processing);
+    this.logger.log(`Cancelled documents: ${documentIds.join(", ")}`);
+  }
+
   // ─── Internal ──────────────────────────────────────────
   private async processNext(): Promise<void> {
     if (this.paused || this.processing || this.queue.length === 0) return;
@@ -82,22 +113,59 @@ export class QueueService {
       const result = await this.ocrService.process(documentId);
 
       this.gateway.sendProcessingProgress(documentId, 100, "Complete");
-      this.gateway.sendDocumentStatus(
-        documentId,
-        "REVIEW",
-        new Date().toISOString(),
-      );
 
-      this.logger.log(
-        `Completed: ${documentId} (conf: ${result.avgConfidence}%, time: ${result.processingTime}s)`,
-      );
+      if (this.cancelledDocs.has(documentId)) {
+        // User cancelled mid-flight — reset status back to QUEUED
+        this.cancelledDocs.delete(documentId);
+        await this.prisma.document.updateMany({
+          where: { id: documentId },
+          data: { status: "QUEUED" },
+        });
+        this.gateway.sendDocumentStatus(
+          documentId,
+          "QUEUED",
+          new Date().toISOString(),
+        );
+        this.logger.log(
+          `Document ${documentId} was cancelled — reset to QUEUED`,
+        );
+      } else {
+        this.gateway.sendDocumentStatus(
+          documentId,
+          "REVIEW",
+          new Date().toISOString(),
+        );
+        this.logger.log(
+          `Completed: ${documentId} (conf: ${result.avgConfidence}%, time: ${result.processingTime}s)`,
+        );
+      }
     } catch (err: any) {
+      // Cancelled docs should never stay in PROCESSING/ERROR; force back to QUEUED
+      if (this.cancelledDocs.has(documentId)) {
+        this.cancelledDocs.delete(documentId);
+        await this.prisma.document.updateMany({
+          where: { id: documentId },
+          data: { status: "QUEUED" },
+        });
+        this.gateway.sendDocumentStatus(
+          documentId,
+          "QUEUED",
+          new Date().toISOString(),
+        );
+        this.logger.warn(
+          `Cancelled document ${documentId} failed during OCR but was reset to QUEUED`,
+        );
+        return;
+      }
+
       // P2025 = record not found — document was deleted while queued, not a real error
       const isGone =
         err?.code === "P2025" ||
         (typeof err?.message === "string" && err.message.includes("not found"));
       if (isGone) {
-        this.logger.warn(`Document ${documentId} was deleted before processing finished — skipping`);
+        this.logger.warn(
+          `Document ${documentId} was deleted before processing finished — skipping`,
+        );
       } else {
         this.logger.error(`Failed to process document: ${documentId}`, err);
         this.gateway.sendDocumentStatus(
