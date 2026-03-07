@@ -34,6 +34,13 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -79,6 +86,9 @@ import {
   XCircle,
   AlertCircle,
   ChevronsUpDown,
+  Play,
+  Square,
+  Undo2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type {
@@ -108,6 +118,7 @@ function StatusBadge({ status }: { status: string }) {
     QUEUED: <Clock className="h-3 w-3" />,
     SCANNING: <ScanLine className="h-3 w-3" />,
     PROCESSING: <Loader2 className="h-3 w-3 animate-spin" />,
+    CANCELLING: <Loader2 className="h-3 w-3 animate-spin" />,
     REVIEW: <Eye className="h-3 w-3" />,
     APPROVED: <CheckCircle2 className="h-3 w-3" />,
     REJECTED: <XCircle className="h-3 w-3" />,
@@ -149,47 +160,51 @@ function SortHeader({
   );
 }
 
+// ─── Per-status visible actions ──────────────────────────────────────────────
+
+function visibleActions(status: string): Set<string> {
+  switch (status) {
+    case "QUEUED":
+      return new Set(["play", "delete"]);
+    case "SCANNING":
+    case "PROCESSING":
+      return new Set(["stop", "delete"]);
+    case "CANCELLING":
+      return new Set(["delete"]);
+    case "REVIEW":
+      return new Set(["review", "approve", "reprocess", "export", "delete"]);
+    case "APPROVED":
+      return new Set(["reprocess", "export", "delete"]);
+    case "REJECTED":
+      return new Set(["reprocess", "delete"]);
+    case "EXPORTED":
+      return new Set(["reprocess", "export", "delete"]);
+    case "ERROR":
+      return new Set(["play", "reprocess", "delete"]);
+    default:
+      return new Set(["review", "reprocess", "export", "delete"]);
+  }
+}
+
 // ─── Row Actions Dropdown ─────────────────────────────────────────────────────
 
 function RowActions({
   docId,
-  onReview,
-  onRefresh,
+  status,
+  runAction,
 }: {
   docId: string;
-  onReview: (id: string) => void;
-  onRefresh: () => void;
+  status: string;
+  runAction: (action: string, docId: string) => void;
 }) {
-  const run = async (action: string) => {
-    try {
-      switch (action) {
-        case "review":
-          onReview(docId);
-          break;
-        case "approve":
-          await documentsApi.approve(docId);
-          onRefresh();
-          break;
-        case "reprocess":
-          await documentsApi.reprocess(docId);
-          await queueApi.add([docId]);
-          onRefresh();
-          break;
-        case "export":
-          await exportApi.exportDocuments([docId], "excel");
-          onRefresh();
-          break;
-        case "delete":
-          if (confirm("Delete this document? This cannot be undone.")) {
-            await documentsApi.delete(docId);
-            onRefresh();
-          }
-          break;
-      }
-    } catch (err) {
-      console.error(`Action ${action} failed:`, err);
-    }
-  };
+  const run = (action: string) => runAction(action, docId);
+  const show = visibleActions(status);
+  const hasQueueSection = show.has("play") || show.has("stop");
+  const hasActionSection =
+    show.has("review") ||
+    show.has("approve") ||
+    show.has("reprocess") ||
+    show.has("export");
 
   return (
     <DropdownMenu>
@@ -204,18 +219,37 @@ function RowActions({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="min-w-[160px]">
-        <DropdownMenuItem onClick={() => run("review")}>
-          <Eye className="h-4 w-4" /> Review
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => run("approve")}>
-          <CheckCircle2 className="h-4 w-4 text-green-500" /> Approve
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => run("reprocess")}>
-          <RotateCcw className="h-4 w-4 text-amber-500" /> Reprocess
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => run("export")}>
-          <FileOutput className="h-4 w-4" /> Export
-        </DropdownMenuItem>
+        {show.has("play") && (
+          <DropdownMenuItem onClick={() => run("play")}>
+            <Play className="h-4 w-4 text-green-500" /> Start
+          </DropdownMenuItem>
+        )}
+        {show.has("stop") && (
+          <DropdownMenuItem onClick={() => run("stop")}>
+            <Square className="h-4 w-4 text-red-500" /> Stop
+          </DropdownMenuItem>
+        )}
+        {hasQueueSection && hasActionSection && <DropdownMenuSeparator />}
+        {show.has("review") && (
+          <DropdownMenuItem onClick={() => run("review")}>
+            <Eye className="h-4 w-4" /> Review
+          </DropdownMenuItem>
+        )}
+        {show.has("approve") && (
+          <DropdownMenuItem onClick={() => run("approve")}>
+            <CheckCircle2 className="h-4 w-4 text-green-500" /> Approve
+          </DropdownMenuItem>
+        )}
+        {show.has("reprocess") && (
+          <DropdownMenuItem onClick={() => run("reprocess")}>
+            <RotateCcw className="h-4 w-4 text-amber-500" /> Reprocess
+          </DropdownMenuItem>
+        )}
+        {show.has("export") && (
+          <DropdownMenuItem onClick={() => run("export")}>
+            <FileOutput className="h-4 w-4" /> Export
+          </DropdownMenuItem>
+        )}
         <DropdownMenuSeparator />
         <DropdownMenuItem
           className="text-destructive focus:text-destructive"
@@ -264,6 +298,50 @@ export function SessionDataTable({
     doc.status === "QUEUED" ||
     doc.status === "SCANNING" ||
     doc.status === "PROCESSING";
+
+  // ── Shared doc action handler ─────────────────────────────────────
+  const runDocAction = useCallback(
+    async (action: string, docId: string) => {
+      try {
+        switch (action) {
+          case "play":
+            await queueApi.add([docId]);
+            await queueApi.resume();
+            onRefresh();
+            break;
+          case "stop":
+            await queueApi.cancel([docId]).catch(() => {});
+            onRefresh();
+            break;
+          case "review":
+            onReview(docId);
+            break;
+          case "approve":
+            await documentsApi.approve(docId);
+            onRefresh();
+            break;
+          case "reprocess":
+            await documentsApi.reprocess(docId);
+            await queueApi.add([docId]);
+            onRefresh();
+            break;
+          case "export":
+            await exportApi.exportDocuments([docId], "excel");
+            onRefresh();
+            break;
+          case "delete":
+            if (confirm("Delete this document? This cannot be undone.")) {
+              await documentsApi.delete(docId);
+              onRefresh();
+            }
+            break;
+        }
+      } catch (err) {
+        console.error(`Action ${action} failed:`, err);
+      }
+    },
+    [onReview, onRefresh],
+  );
 
   const columns = useMemo((): ColumnDef<DocumentListItem>[] => {
     const selectCol: ColumnDef<DocumentListItem> = {
@@ -401,7 +479,7 @@ export function SessionDataTable({
                     });
                   }}
                 >
-                  <Crosshair className="h-3 w-3" />
+                  <Undo2 className="h-3.5 w-3.5" />
                 </button>
               </div>
             );
@@ -420,15 +498,15 @@ export function SessionDataTable({
         <div className="flex justify-center">
           <RowActions
             docId={row.original.id}
-            onReview={onReview}
-            onRefresh={onRefresh}
+            status={row.original.status}
+            runAction={runDocAction}
           />
         </div>
       ),
     };
 
     return [selectCol, ...fixed, ...dynamicCols, actionsCol];
-  }, [isTableMode, sessionColumns, onReview, onRefresh]);
+  }, [isTableMode, sessionColumns, runDocAction]);
 
   const filteredData = useMemo(
     () =>
@@ -486,6 +564,44 @@ export function SessionDataTable({
           }
           className="max-w-sm bg-card"
         />
+        {/* Batch actions — shown when rows are selected */}
+        {table.getFilteredSelectedRowModel().rows.length > 0 && (
+          <>
+            <span className="text-xs text-muted-foreground">
+              {table.getFilteredSelectedRowModel().rows.length} selected
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5 text-xs h-8"
+              onClick={async () => {
+                const ids = table
+                  .getFilteredSelectedRowModel()
+                  .rows.map((r) => r.original.id);
+                await queueApi.add(ids);
+                setRowSelection({});
+                onRefresh();
+              }}
+            >
+              <Play className="h-3.5 w-3.5 text-green-500" />
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5 text-xs h-8"
+              onClick={async () => {
+                const ids = table
+                  .getFilteredSelectedRowModel()
+                  .rows.map((r) => r.original.id);
+                await queueApi.cancel(ids).catch(() => {});
+                setRowSelection({});
+                onRefresh();
+              }}
+            >
+              <Square className="h-3.5 w-3.5 text-red-500" />
+            </Button>
+          </>
+        )}
         <Select
           value={statusFilter}
           onValueChange={(v) => {
@@ -581,30 +697,115 @@ export function SessionDataTable({
           <TableBody>
             {table.getRowModel().rows?.length ? (
               table.getRowModel().rows.map((row) => (
-                <TableRow
-                  key={row.id}
-                  data-state={row.getIsSelected() && "selected"}
-                  className="cursor-pointer"
-                  onClick={() => onReview(row.original.id)}
-                >
-                  {row.getVisibleCells().map((cell) => (
-                    <TableCell key={cell.id} className="overflow-hidden">
-                      <div
-                        className="truncate"
-                        title={
-                          typeof cell.getValue() === "string"
-                            ? (cell.getValue() as string)
-                            : undefined
-                        }
-                      >
-                        {flexRender(
-                          cell.column.columnDef.cell,
-                          cell.getContext(),
+                <ContextMenu key={row.id}>
+                  <ContextMenuTrigger asChild>
+                    <TableRow
+                      data-state={row.getIsSelected() && "selected"}
+                      className="cursor-pointer"
+                      onClick={() => onReview(row.original.id)}
+                    >
+                      {row.getVisibleCells().map((cell) => (
+                        <TableCell key={cell.id} className="overflow-hidden">
+                          <div
+                            className="truncate"
+                            title={
+                              typeof cell.getValue() === "string"
+                                ? (cell.getValue() as string)
+                                : undefined
+                            }
+                          >
+                            {flexRender(
+                              cell.column.columnDef.cell,
+                              cell.getContext(),
+                            )}
+                          </div>
+                        </TableCell>
+                      ))}
+                    </TableRow>
+                  </ContextMenuTrigger>
+                  {(() => {
+                    const show = visibleActions(row.original.status);
+                    const hasQueueSection =
+                      show.has("play") || show.has("stop");
+                    const hasActionSection =
+                      show.has("review") ||
+                      show.has("approve") ||
+                      show.has("reprocess") ||
+                      show.has("export");
+                    return (
+                      <ContextMenuContent className="min-w-[160px]">
+                        {show.has("play") && (
+                          <ContextMenuItem
+                            onClick={() =>
+                              runDocAction("play", row.original.id)
+                            }
+                          >
+                            <Play className="h-4 w-4 text-green-500" /> Start
+                          </ContextMenuItem>
                         )}
-                      </div>
-                    </TableCell>
-                  ))}
-                </TableRow>
+                        {show.has("stop") && (
+                          <ContextMenuItem
+                            onClick={() =>
+                              runDocAction("stop", row.original.id)
+                            }
+                          >
+                            <Square className="h-4 w-4 text-red-500" /> Stop
+                          </ContextMenuItem>
+                        )}
+                        {hasQueueSection && hasActionSection && (
+                          <ContextMenuSeparator />
+                        )}
+                        {show.has("review") && (
+                          <ContextMenuItem
+                            onClick={() =>
+                              runDocAction("review", row.original.id)
+                            }
+                          >
+                            <Eye className="h-4 w-4" /> Review
+                          </ContextMenuItem>
+                        )}
+                        {show.has("approve") && (
+                          <ContextMenuItem
+                            onClick={() =>
+                              runDocAction("approve", row.original.id)
+                            }
+                          >
+                            <CheckCircle2 className="h-4 w-4 text-green-500" />{" "}
+                            Approve
+                          </ContextMenuItem>
+                        )}
+                        {show.has("reprocess") && (
+                          <ContextMenuItem
+                            onClick={() =>
+                              runDocAction("reprocess", row.original.id)
+                            }
+                          >
+                            <RotateCcw className="h-4 w-4 text-amber-500" />{" "}
+                            Reprocess
+                          </ContextMenuItem>
+                        )}
+                        {show.has("export") && (
+                          <ContextMenuItem
+                            onClick={() =>
+                              runDocAction("export", row.original.id)
+                            }
+                          >
+                            <FileOutput className="h-4 w-4" /> Export
+                          </ContextMenuItem>
+                        )}
+                        <ContextMenuSeparator />
+                        <ContextMenuItem
+                          className="text-destructive focus:text-destructive"
+                          onClick={() =>
+                            runDocAction("delete", row.original.id)
+                          }
+                        >
+                          <Trash2 className="h-4 w-4" /> Delete
+                        </ContextMenuItem>
+                      </ContextMenuContent>
+                    );
+                  })()}
+                </ContextMenu>
               ))
             ) : (
               <TableRow>

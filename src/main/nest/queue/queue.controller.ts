@@ -36,6 +36,13 @@ export class QueueController {
     return { resumed: true };
   }
 
+  @Post("cancel")
+  @ApiOperation({ summary: "Cancel specific documents from queue" })
+  async cancel(@Body() body: { documentIds: string[] }) {
+    await this.queueService.cancel(body.documentIds);
+    return { cancelled: body.documentIds.length };
+  }
+
   @Delete()
   @ApiOperation({ summary: "Clear the queue" })
   clear() {

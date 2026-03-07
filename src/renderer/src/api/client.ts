@@ -114,6 +114,11 @@ export const queueApi = {
   pause: () => request<any>("/queue/pause", { method: "POST" }),
   resume: () => request<any>("/queue/resume", { method: "POST" }),
   clear: () => request<any>("/queue", { method: "DELETE" }),
+  cancel: (documentIds: string[]) =>
+    request<any>("/queue/cancel", {
+      method: "POST",
+      body: JSON.stringify({ documentIds }),
+    }),
 };
 
 // ─── Sessions ────────────────────────────────────────────

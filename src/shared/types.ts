@@ -2,6 +2,8 @@
 export const SessionMode = {
   OCR_EXTRACT: "OCR_EXTRACT",
   TABLE_EXTRACT: "TABLE_EXTRACT",
+  PDF_EXTRACT: "PDF_EXTRACT",
+  JSON_EXTRACT: "JSON_EXTRACT",
 } as const;
 export type SessionMode = (typeof SessionMode)[keyof typeof SessionMode];
 
@@ -47,6 +49,7 @@ export const DocumentStatus = {
   QUEUED: "QUEUED",
   SCANNING: "SCANNING",
   PROCESSING: "PROCESSING",
+  CANCELLING: "CANCELLING",
   REVIEW: "REVIEW",
   APPROVED: "APPROVED",
   REJECTED: "REJECTED",
