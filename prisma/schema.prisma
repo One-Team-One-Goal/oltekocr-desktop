@@ -25,6 +25,19 @@ model Session {
   @@map("sessions")
 }
 
+model SessionPreset {
+  id        String   @id @default(uuid())
+  name      String
+  mode      String   @default("TABLE_EXTRACT") // "OCR_EXTRACT" | "TABLE_EXTRACT"
+  columns   String   @default("[]")            // JSON: SessionColumn[]
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([mode])
+  @@index([createdAt])
+  @@map("session_presets")
+}
+
 model Document {
   id             String   @id @default(uuid())
   filename       String   @default("")

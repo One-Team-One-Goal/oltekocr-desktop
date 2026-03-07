@@ -7,6 +7,7 @@ import { ScannerModule } from "./scanner/scanner.module";
 import { OcrModule } from "./ocr/ocr.module";
 import { QueueModule } from "./queue/queue.module";
 import { SessionsModule } from "./sessions/sessions.module";
+import { SessionPresetsModule } from "./session-presets/session-presets.module";
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { SessionsModule } from "./sessions/sessions.module";
     OcrModule,
     QueueModule,
     SessionsModule,
+    SessionPresetsModule,
   ],
 })
 export class AppModule {}

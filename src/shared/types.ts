@@ -44,6 +44,22 @@ export interface SessionListItem {
   createdAt: string;
 }
 
+export interface SessionPresetRecord {
+  id: string;
+  name: string;
+  mode: SessionMode;
+  columns: SessionColumn[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type DuplicateSessionStrategy = "FULL" | "COLUMNS_ONLY";
+
+export interface DuplicateSessionResult {
+  session: SessionRecord;
+  documents: DocumentListItem[];
+}
+
 // ─── Document Status ─────────────────────────────────────
 export const DocumentStatus = {
   QUEUED: "QUEUED",

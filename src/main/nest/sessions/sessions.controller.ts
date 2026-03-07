@@ -13,6 +13,7 @@ import { ApiTags, ApiOperation } from "@nestjs/swagger";
 import { SessionsService } from "./sessions.service";
 import {
   CreateSessionDto,
+  DuplicateSessionDto,
   IngestFilesDto,
   IngestFolderDto,
   UpdateColumnsDto,
@@ -40,6 +41,15 @@ export class SessionsController {
   @ApiOperation({ summary: "Get a session by ID" })
   findOne(@Param("id") id: string) {
     return this.sessionsService.findOne(id);
+  }
+
+  @Post(":id/duplicate")
+  @ApiOperation({
+    summary:
+      "Duplicate a session: columns only, or full duplicate including current files",
+  })
+  duplicate(@Param("id") id: string, @Body() dto: DuplicateSessionDto) {
+    return this.sessionsService.duplicate(id, dto);
   }
 
   @Patch(":id/columns")

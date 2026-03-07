@@ -3,12 +3,13 @@ import { FileText, Table2, FolderOpen, ChevronRight } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
 import { Input } from "@/components/ui/input";
 import type { SessionListItem, SessionMode } from "@shared/types";
-import { formatDate, statusColor, statusDotColor } from "@/lib/utils";
+import { formatDate } from "@/lib/utils";
 
 interface SessionCardProps {
   session: SessionListItem;
   onOpen: () => void;
   selectMode?: boolean;
+  selectionIntent?: "delete" | "duplicate";
   selected?: boolean;
   onSelect?: () => void;
   onRename?: (id: string, name: string) => void;
@@ -51,6 +52,7 @@ export function SessionCard({
   session,
   onOpen,
   selectMode = false,
+  selectionIntent = "delete",
   selected = false,
   onSelect,
   onRename,
@@ -85,8 +87,12 @@ export function SessionCard({
       className={`relative border rounded-xl shadow-sm p-5 flex flex-col gap-4 transition-all cursor-pointer ${
         selectMode
           ? selected
-            ? "bg-destructive/10 border-destructive ring-1 ring-destructive"
-            : "bg-card border-dashed border-border/70 hover:border-destructive/50 hover:bg-destructive/5"
+            ? selectionIntent === "delete"
+              ? "bg-destructive/10 border-destructive ring-1 ring-destructive"
+              : "bg-blue-50 border-blue-400 ring-1 ring-blue-400"
+            : selectionIntent === "delete"
+              ? "bg-card border-dashed border-border/70 hover:border-destructive/50 hover:bg-destructive/5"
+              : "bg-card border-dashed border-border/70 hover:border-blue-400/60 hover:bg-blue-50/40"
           : "bg-card border-border hover:shadow-md"
       }`}
       onClick={selectMode ? onSelect : onOpen}

@@ -81,3 +81,17 @@ export class IngestFolderDto {
   @IsNotEmpty()
   folderPath: string;
 }
+
+export class DuplicateSessionDto {
+  @ApiProperty({ enum: ["FULL", "COLUMNS_ONLY"] })
+  @IsEnum(["FULL", "COLUMNS_ONLY"])
+  strategy: "FULL" | "COLUMNS_ONLY";
+
+  @ApiPropertyOptional({
+    description: "Optional target session name. Defaults to '<source> (Copy)'",
+  })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  name?: string;
+}
