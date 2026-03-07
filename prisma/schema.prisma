@@ -64,7 +64,7 @@ model Document {
 
   // Session link
   sessionId    String?  @map("session_id")
-  session      Session? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  session      Session? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   // Extraction
   userEdits     String @default("{}") @map("user_edits")

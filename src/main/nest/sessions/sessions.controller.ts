@@ -16,6 +16,7 @@ import {
   IngestFilesDto,
   IngestFolderDto,
   UpdateColumnsDto,
+  RenameSessionDto,
 } from "./sessions.dto";
 
 @ApiTags("sessions")
@@ -48,6 +49,12 @@ export class SessionsController {
   })
   updateColumns(@Param("id") id: string, @Body() dto: UpdateColumnsDto) {
     return this.sessionsService.updateColumns(id, dto);
+  }
+
+  @Patch(":id/rename")
+  @ApiOperation({ summary: "Rename a session" })
+  rename(@Param("id") id: string, @Body() dto: RenameSessionDto) {
+    return this.sessionsService.rename(id, dto.name);
   }
 
   @Delete(":id")

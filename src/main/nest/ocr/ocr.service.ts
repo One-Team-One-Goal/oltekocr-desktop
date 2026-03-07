@@ -40,10 +40,14 @@ export class OcrService {
     const doc = await this.prisma.document.findUnique({
       where: { id: documentId },
     });
-    if (!doc) throw new Error(`Document ${documentId} not found`);
+    // Document was deleted (e.g. session cascade) before processing started
+    if (!doc) {
+      this.logger.warn(`Document ${documentId} no longer exists — skipping`);
+      return { fullText: "", markdown: "", textBlocks: [], tables: [], avgConfidence: 0, processingTime: 0, pageCount: 0, warnings: [] } as OcrResult;
+    }
 
-    // Mark as PROCESSING
-    await this.prisma.document.update({
+    // Mark as PROCESSING — use updateMany so a mid-flight delete doesn't throw
+    await this.prisma.document.updateMany({
       where: { id: documentId },
       data: { status: "PROCESSING" },
     });
@@ -53,7 +57,7 @@ export class OcrService {
       ocrResult = await this.runPythonOcr(doc.imagePath);
     } catch (err: any) {
       // Store error state and re-throw so the queue marks it ERROR
-      await this.prisma.document.update({
+      await this.prisma.document.updateMany({
         where: { id: documentId },
         data: {
           status: "ERROR",
@@ -63,8 +67,8 @@ export class OcrService {
       throw err;
     }
 
-    // Persist OCR result
-    await this.prisma.document.update({
+    // Persist OCR result — updateMany is a no-op if doc was deleted mid-flight
+    await this.prisma.document.updateMany({
       where: { id: documentId },
       data: {
         status: "REVIEW",
@@ -87,11 +91,37 @@ export class OcrService {
   }
 
   /**
+   * Resolve the Python executable: prefer the local .venv, then the configured
+   * path, then fall back to the system "python" / "python3".
+   */
+  private resolvePythonExe(configured: string): string {
+    // If the user explicitly set a non-default path, honour it
+    if (configured && configured !== "python" && configured !== "python3") {
+      return configured;
+    }
+
+    // Auto-detect .venv inside the project root
+    const root = process.cwd();
+    const candidates = [
+      join(root, ".venv", "Scripts", "python.exe"), // Windows venv
+      join(root, ".venv", "bin", "python"),          // macOS / Linux venv
+    ];
+    for (const candidate of candidates) {
+      if (existsSync(candidate)) {
+        this.logger.log(`Using venv Python: ${candidate}`);
+        return candidate;
+      }
+    }
+
+    return configured || "python";
+  }
+
+  /**
    * Spawn the Python OCR sidecar and resolve with the parsed OcrResult.
    */
   private runPythonOcr(imagePath: string): Promise<OcrResult> {
     const cfg = this.settings.getAll().ocr;
-    const pythonExe = cfg.pythonPath || "python";
+    const pythonExe = this.resolvePythonExe(cfg.pythonPath || "python");
     const timeoutMs = (cfg.timeout ?? 120) * 1000;
     const script = this.scriptPath;
 

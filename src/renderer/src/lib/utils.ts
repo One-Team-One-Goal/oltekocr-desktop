@@ -89,3 +89,15 @@ export function formatDate(isoString: string): string {
     minute: "2-digit",
   });
 }
+
+/** Format date as DD/MM/YY HH:mm (24-hour) */
+export function formatShortDateTime(isoString: string): string {
+  if (!isoString) return "—";
+  const d = new Date(isoString);
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const yy = String(d.getFullYear()).slice(-2);
+  const HH = String(d.getHours()).padStart(2, "0");
+  const min = String(d.getMinutes()).padStart(2, "0");
+  return `${dd}/${mm}/${yy} ${HH}:${min}`;
+}

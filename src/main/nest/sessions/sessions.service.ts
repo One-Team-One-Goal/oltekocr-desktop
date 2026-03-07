@@ -97,6 +97,14 @@ export class SessionsService {
     return this.toRecord(session);
   }
 
+  // ─── Rename ────────────────────────────────────────────
+  async rename(id: string, name: string): Promise<SessionRecord> {
+    const session = await this.prisma.session.findUnique({ where: { id } });
+    if (!session) throw new NotFoundException(`Session ${id} not found`);
+    await this.prisma.session.update({ where: { id }, data: { name } });
+    return this.findOne(id);
+  }
+
   // ─── Update Columns ────────────────────────────────────
   async updateColumns(
     id: string,
@@ -127,17 +135,10 @@ export class SessionsService {
     const session = await this.prisma.session.findUnique({ where: { id } });
     if (!session) throw new NotFoundException(`Session ${id} not found`);
 
-    // Cascade delete documents (and their files) in the session
-    const docs = await this.prisma.document.findMany({
-      where: { sessionId: id },
-      select: { id: true },
-    });
-    for (const doc of docs) {
-      await this.documentsService.remove(doc.id);
-    }
-
+    // Deleting the session cascades to all its documents (and their exports/summaries)
+    // via the onDelete: Cascade relation in the Prisma schema.
     await this.prisma.session.delete({ where: { id } });
-    this.logger.log(`Deleted session ${id}`);
+    this.logger.log(`Deleted session ${id} (documents cascade-deleted)`);
   }
 
   // ─── Ingest Files ──────────────────────────────────────

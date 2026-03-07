@@ -3,7 +3,6 @@ import { useDocuments } from "@/hooks/useDocuments";
 import { useQueue } from "@/hooks/useQueue";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { StatsCards } from "./StatsCards";
-import { FilterBar } from "./FilterBar";
 import { DocumentTable } from "./DocumentTable";
 import { QueueProgress } from "./QueueProgress";
 import { ReviewDialog } from "@/components/ReviewDialog";
@@ -18,7 +17,6 @@ export function Dashboard() {
   const {
     queueSize,
     processing,
-    paused,
     refresh: refreshQueue,
     setQueueSize,
     setProcessing,
@@ -96,46 +94,58 @@ export function Dashboard() {
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <header className="flex items-center justify-between h-14 px-6 border-b bg-card shrink-0">
-        <h1 className="text-lg font-semibold">Dashboard</h1>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={handleLoadFiles}>
-            <FilePlus className="h-4 w-4 mr-2" />
-            Load Files
-          </Button>
-          <Button variant="outline" size="sm" onClick={handleLoadFolder}>
-            <FolderOpen className="h-4 w-4 mr-2" />
-            Load Folder
-          </Button>
-          <Button variant="ghost" size="icon" onClick={refresh}>
+      <header className="flex items-center justify-between h-14 px-6 border-b border-border/50 shrink-0">
+        <h1 className="text-sm font-semibold tracking-tight">Documents</h1>
+        <div className="flex items-center gap-1.5">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8 text-muted-foreground"
+            onClick={refresh}
+          >
             <RefreshCw className="h-4 w-4" />
           </Button>
           <Button
             variant="ghost"
             size="icon"
+            className="h-8 w-8 text-muted-foreground"
             onClick={() => setSettingsOpen(true)}
           >
             <Settings className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs gap-1.5"
+            onClick={handleLoadFolder}
+          >
+            <FolderOpen className="h-3.5 w-3.5" />
+            Load Folder
+          </Button>
+          <Button
+            size="sm"
+            className="h-8 text-xs gap-1.5"
+            onClick={handleLoadFiles}
+          >
+            <FilePlus className="h-3.5 w-3.5" />
+            Load Files
           </Button>
         </div>
       </header>
 
       {/* Content */}
-      <div className="flex-1 overflow-auto p-6 space-y-6">
+      <div className="flex-1 overflow-auto p-6 space-y-5">
         <StatsCards stats={stats} />
-
-        <FilterBar
-          onFilter={handleFilter}
-          statusFilter={statusFilter}
-          searchQuery={searchQuery}
-          onExport={handleExportAll}
-        />
 
         <DocumentTable
           documents={documents}
           loading={loading}
           onReview={(id: string) => setReviewDocId(id)}
           onRefresh={refresh}
+          onFilter={handleFilter}
+          onExport={handleExportAll}
+          statusFilter={statusFilter}
+          searchQuery={searchQuery}
         />
       </div>
 

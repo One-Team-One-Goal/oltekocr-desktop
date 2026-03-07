@@ -15,6 +15,11 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     throw new Error(body.message || `HTTP ${res.status}: ${res.statusText}`);
   }
 
+  // 204 No Content (e.g. DELETE) — return undefined without calling res.json()
+  if (res.status === 204 || res.headers.get("content-length") === "0") {
+    return undefined as T;
+  }
+
   return res.json();
 }
 
@@ -125,6 +130,11 @@ export const sessionsApi = {
     request<any>("/sessions", { method: "POST", body: JSON.stringify(data) }),
   remove: (id: string) =>
     request<void>(`/sessions/${id}`, { method: "DELETE" }),
+  rename: (id: string, name: string) =>
+    request<any>(`/sessions/${id}/rename`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    }),
   updateColumns: (
     id: string,
     columns: { key: string; label: string; question: string }[],

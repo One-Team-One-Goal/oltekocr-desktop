@@ -1,20 +1,17 @@
-import { useState } from "react";
-import { Button } from "@/components/ui/button";
-import { sessionsApi } from "@/api/client";
-import {
-  FileText,
-  Table2,
-  FolderOpen,
-  Trash2,
-  ChevronRight,
-} from "lucide-react";
+import { Check, Pencil } from "lucide-react";
+import { FileText, Table2, FolderOpen, ChevronRight } from "lucide-react";
+import { useState, useRef, useEffect } from "react";
+import { Input } from "@/components/ui/input";
 import type { SessionListItem, SessionMode } from "@shared/types";
 import { formatDate, statusColor, statusDotColor } from "@/lib/utils";
 
 interface SessionCardProps {
   session: SessionListItem;
   onOpen: () => void;
-  onDeleted: () => void;
+  selectMode?: boolean;
+  selected?: boolean;
+  onSelect?: () => void;
+  onRename?: (id: string, name: string) => void;
 }
 
 const modeConfig: Record<
@@ -50,44 +47,54 @@ const sessionStatusDot: Record<string, string> = {
   ERROR: "bg-red-500",
 };
 
-export function SessionCard({ session, onOpen, onDeleted }: SessionCardProps) {
-  const [deleting, setDeleting] = useState(false);
+export function SessionCard({
+  session,
+  onOpen,
+  selectMode = false,
+  selected = false,
+  onSelect,
+  onRename,
+}: SessionCardProps) {
   const mode = modeConfig[session.mode] ?? modeConfig.OCR_EXTRACT;
   const Icon = mode.icon;
-
-  const handleDelete = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!confirm(`Delete session "${session.name}" and all its documents?`))
-      return;
-    setDeleting(true);
-    try {
-      await sessionsApi.remove(session.id);
-      onDeleted();
-    } catch (err) {
-      console.error("Failed to delete session:", err);
-      setDeleting(false);
-    }
-  };
+  const [editing, setEditing] = useState(false);
+  const [editName, setEditName] = useState(session.name);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const progress =
     session.documentCount > 0
       ? Math.round((session.processedCount / session.documentCount) * 100)
       : 0;
 
+  useEffect(() => {
+    if (editing) inputRef.current?.focus();
+  }, [editing]);
+
+  const commitRename = () => {
+    const trimmed = editName.trim();
+    if (trimmed && trimmed !== session.name) {
+      onRename?.(session.id, trimmed);
+    } else {
+      setEditName(session.name);
+    }
+    setEditing(false);
+  };
+
   return (
     <div
-      className="bg-card border border-border rounded-xl shadow-sm p-5 flex flex-col gap-4 hover:shadow-md transition-shadow cursor-pointer group"
-      onClick={onOpen}
+      className={`relative border rounded-xl shadow-sm p-5 flex flex-col gap-4 transition-all cursor-pointer ${
+        selectMode
+          ? selected
+            ? "bg-destructive/10 border-destructive ring-1 ring-destructive"
+            : "bg-card border-dashed border-border/70 hover:border-destructive/50 hover:bg-destructive/5"
+          : "bg-card border-border hover:shadow-md"
+      }`}
+      onClick={selectMode ? onSelect : onOpen}
     >
       {/* Header */}
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <span
-            className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border text-xs font-medium shrink-0 ${mode.bg} ${mode.text} ${mode.border}`}
-          >
-            <Icon className="h-3 w-3" />
-            {mode.label}
-          </span>
+      <div className="flex items-start justify-between">
+        <div className="flex items-center min-w-0 text-sm text-primary/80">
+          {mode.label}
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
           <span
@@ -101,9 +108,42 @@ export function SessionCard({ session, onOpen, onDeleted }: SessionCardProps) {
 
       {/* Name */}
       <div>
-        <h3 className="font-semibold text-base text-foreground truncate">
-          {session.name}
-        </h3>
+        {editing ? (
+          <Input
+            ref={inputRef}
+            className="h-8 text-lg font-semibold"
+            value={editName}
+            onChange={(e) => setEditName(e.target.value)}
+            onBlur={commitRename}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commitRename();
+              if (e.key === "Escape") {
+                setEditName(session.name);
+                setEditing(false);
+              }
+            }}
+            onClick={(e) => e.stopPropagation()}
+          />
+        ) : (
+          <div className="group/name flex items-center gap-1.5">
+            <h3 className="font-semibold text-lg text-foreground truncate">
+              {session.name}
+            </h3>
+            {!selectMode && (
+              <button
+                className="opacity-0 group-hover/name:opacity-100 transition-opacity text-muted-foreground hover:text-foreground shrink-0"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setEditName(session.name);
+                  setEditing(true);
+                }}
+                title="Rename session"
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+        )}
         <p className="text-xs text-muted-foreground mt-0.5">
           {formatDate(session.createdAt)}
         </p>
@@ -117,37 +157,6 @@ export function SessionCard({ session, onOpen, onDeleted }: SessionCardProps) {
           </span>
           <span>{progress}%</span>
         </div>
-        <div className="h-1.5 bg-muted rounded-full overflow-hidden">
-          <div
-            className="h-full bg-primary rounded-full transition-all"
-            style={{ width: `${progress}%` }}
-          />
-        </div>
-      </div>
-
-      {/* Footer */}
-      <div className="flex items-center justify-between pt-1">
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-7 w-7 text-muted-foreground hover:text-red-500"
-          disabled={deleting}
-          onClick={handleDelete}
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          className="gap-1 text-xs shadow-sm"
-          onClick={(e) => {
-            e.stopPropagation();
-            onOpen();
-          }}
-        >
-          Open
-          <ChevronRight className="h-3.5 w-3.5" />
-        </Button>
       </div>
     </div>
   );

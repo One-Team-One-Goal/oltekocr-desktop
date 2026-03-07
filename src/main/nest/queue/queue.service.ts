@@ -91,13 +91,21 @@ export class QueueService {
       this.logger.log(
         `Completed: ${documentId} (conf: ${result.avgConfidence}%, time: ${result.processingTime}s)`,
       );
-    } catch (err) {
-      this.logger.error(`Failed to process document: ${documentId}`, err);
-      this.gateway.sendDocumentStatus(
-        documentId,
-        "ERROR",
-        new Date().toISOString(),
-      );
+    } catch (err: any) {
+      // P2025 = record not found — document was deleted while queued, not a real error
+      const isGone =
+        err?.code === "P2025" ||
+        (typeof err?.message === "string" && err.message.includes("not found"));
+      if (isGone) {
+        this.logger.warn(`Document ${documentId} was deleted before processing finished — skipping`);
+      } else {
+        this.logger.error(`Failed to process document: ${documentId}`, err);
+        this.gateway.sendDocumentStatus(
+          documentId,
+          "ERROR",
+          new Date().toISOString(),
+        );
+      }
     } finally {
       this.processing = null;
       this.gateway.sendQueueUpdate(this.queue.length, null);
