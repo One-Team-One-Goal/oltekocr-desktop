@@ -2,24 +2,20 @@ import { useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import {
   LayoutDashboard,
-  Settings,
   ScanLine,
   FileOutput,
-  ChevronLeft,
-  ChevronRight,
   BookOpen,
   Palette,
   Check,
   Moon,
   Sun,
+  X,
+  Minus,
+  Maximize2,
+  EllipsisVertical,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -33,6 +29,10 @@ import { SWAGGER_URL } from "@/api/client";
 import { useTheme, themes } from "@/components/ThemeProvider";
 import ayahayLogo from "@/assets/ayahay_logo_blue.svg";
 
+// CSS drag region helpers (Electron-specific)
+const drag = { WebkitAppRegion: "drag" } as React.CSSProperties;
+const noDrag = { WebkitAppRegion: "no-drag" } as React.CSSProperties;
+
 const navItems = [
   { icon: LayoutDashboard, label: "Dashboard", path: "/" },
   { icon: ScanLine, label: "Scanner", path: "/scanner" },
@@ -45,11 +45,9 @@ const bottomItems = [
     label: "API Docs",
     action: () => window.open(SWAGGER_URL, "_blank"),
   },
-  { icon: Settings, label: "Settings", path: "/settings" },
 ];
 
 export function Sidebar() {
-  const [collapsed, setCollapsed] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
   const { theme: currentTheme, setTheme } = useTheme();
@@ -58,48 +56,35 @@ export function Sidebar() {
   const lightThemes = themes.filter((t) => t.type === "light");
 
   return (
-    <div
-      className={cn(
-        "flex flex-col bg-[hsl(var(--sidebar))] border-r border-border/50 transition-all duration-200 no-select",
-        collapsed ? "w-16" : "w-56",
-      )}
-    >
-      {/* Logo + collapse toggle */}
-      <div className="flex items-center h-14 px-3 border-b border-border/50">
-        {collapsed ? (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="w-full text-muted-foreground hover:text-foreground"
-            onClick={() => setCollapsed(false)}
+    <div className="flex flex-col bg-[hsl(var(--sidebar))] border-r border-border/50 transition-all duration-200 no-select w-60">
+      {/* Traffic lights */}
+      <div
+        className="flex items-center h-14 px-3 border-b border-border/50 pl-5"
+        style={drag}
+      >
+        <div className="flex items-center gap-1.5" style={noDrag}>
+          <TrafficLight
+            color="#ff5f57"
+            hoverColor="#c0392b"
+            onClick={() => window.api.windowClose()}
           >
-            <ChevronRight className="h-4 w-4" />
-          </Button>
-        ) : (
-          <>
-            <div className="flex items-center gap-2 flex-1 min-w-0">
-              <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border border-border">
-                <img src={ayahayLogo} alt="Logo" className="w-4 h-4" />
-              </div>
-              <div className="flex flex-col min-w-0">
-                <span className="font-semibold text-sm tracking-tight">
-                  OltekOCR
-                </span>
-                <span className="text-[10px] text-muted-foreground">
-                  v1.0.0
-                </span>
-              </div>
-            </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="shrink-0 text-muted-foreground hover:text-foreground h-7 w-7"
-              onClick={() => setCollapsed(true)}
-            >
-              <ChevronLeft className="h-4 w-4" />
-            </Button>
-          </>
-        )}
+            <X className="h-2 w-2" />
+          </TrafficLight>
+          <TrafficLight
+            color="#ffbd2e"
+            hoverColor="#e67e22"
+            onClick={() => window.api.windowMinimize()}
+          >
+            <Minus className="h-2 w-2" />
+          </TrafficLight>
+          <TrafficLight
+            color="#28c840"
+            hoverColor="#27ae60"
+            onClick={() => window.api.windowMaximize()}
+          >
+            <Maximize2 className="h-2 w-2" />
+          </TrafficLight>
+        </div>
       </div>
 
       {/* Nav items */}
@@ -112,7 +97,6 @@ export function Sidebar() {
               variant={isActive ? "secondary" : "ghost"}
               className={cn(
                 "w-full justify-start gap-2.5 h-9 text-sm",
-                collapsed && "justify-center px-0",
                 isActive
                   ? "bg-secondary/80 text-foreground"
                   : "text-muted-foreground hover:text-foreground hover:bg-secondary/50",
@@ -120,23 +104,12 @@ export function Sidebar() {
               onClick={() => navigate(item.path)}
             >
               <item.icon className="h-4 w-4 shrink-0" />
-              {!collapsed && <span>{item.label}</span>}
+              <span>{item.label}</span>
             </Button>
           );
-
-          if (collapsed) {
-            return (
-              <Tooltip key={item.path}>
-                <TooltipTrigger asChild>{btn}</TooltipTrigger>
-                <TooltipContent side="right">{item.label}</TooltipContent>
-              </Tooltip>
-            );
-          }
           return btn;
         })}
       </nav>
-
-      <Separator className="opacity-30" />
 
       {/* Bottom items */}
       <div className="py-3 px-2 space-y-0.5">
@@ -147,12 +120,11 @@ export function Sidebar() {
               variant="ghost"
               className={cn(
                 "w-full justify-start gap-2.5 h-8 text-sm",
-                collapsed && "justify-center px-0",
                 "text-muted-foreground hover:text-foreground hover:bg-secondary/50",
               )}
             >
               <Palette className="h-4 w-4 shrink-0" />
-              {!collapsed && <span>Theme</span>}
+              <span>Theme</span>
             </Button>
           );
 
@@ -208,14 +180,7 @@ export function Sidebar() {
             </DropdownMenu>
           );
 
-          return collapsed ? (
-            <Tooltip>
-              <TooltipTrigger asChild>{dropdown}</TooltipTrigger>
-              <TooltipContent side="right">Theme</TooltipContent>
-            </Tooltip>
-          ) : (
-            dropdown
-          );
+          return dropdown;
         })()}
 
         {bottomItems.map((item) => {
@@ -226,7 +191,6 @@ export function Sidebar() {
               variant={isActive ? "secondary" : "ghost"}
               className={cn(
                 "w-full justify-start gap-2.5 h-9 text-sm",
-                collapsed && "justify-center px-0",
                 isActive
                   ? "bg-secondary/80 text-foreground"
                   : "text-muted-foreground hover:text-foreground hover:bg-secondary/50",
@@ -238,21 +202,59 @@ export function Sidebar() {
               }
             >
               <item.icon className="h-4 w-4 shrink-0" />
-              {!collapsed && <span>{item.label}</span>}
+              <span>{item.label}</span>
             </Button>
           );
-
-          if (collapsed) {
-            return (
-              <Tooltip key={item.label}>
-                <TooltipTrigger asChild>{btn}</TooltipTrigger>
-                <TooltipContent side="right">{item.label}</TooltipContent>
-              </Tooltip>
-            );
-          }
           return btn;
         })}
+
+        {/* OltekOCR branding */}
+        <div className="flex items-center gap-2 px-2 py-1.5 rounded-md pt-4">
+          <div className="w-7 h-7 rounded-md flex items-center justify-center shrink-0 border border-border">
+            <img src={ayahayLogo} alt="Logo" className="w-3.5 h-3.5" />
+          </div>
+          <div className="flex flex-col min-w-0">
+            <span className="font-semibold text-xs tracking-tight text-foreground">
+              OltekOCR
+            </span>
+            <span className="text-[10px] text-muted-foreground">v1.0.0</span>
+          </div>
+            <EllipsisVertical className="ml-auto h-4 w-4"/>
+        </div>
       </div>
     </div>
+  );
+}
+
+// ─── Traffic Light Button ─────────────────────────────────────────────────────
+function TrafficLight({
+  color,
+  hoverColor,
+  onClick,
+  children,
+}: {
+  color: string;
+  hoverColor: string;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  const [hovered, setHovered] = useState(false);
+  return (
+    <button
+      className="relative flex items-center justify-center w-3 h-3 rounded-full transition-colors focus:outline-none"
+      style={{ backgroundColor: hovered ? hoverColor : color }}
+      onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <span
+        className={cn(
+          "text-black/70 transition-opacity",
+          hovered ? "opacity-100" : "opacity-0",
+        )}
+      >
+        {children}
+      </span>
+    </button>
   );
 }

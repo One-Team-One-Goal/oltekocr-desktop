@@ -17,6 +17,9 @@ interface OltekApi {
   getAppPath: () => Promise<string>;
   showItemInFolder: (path: string) => Promise<void>;
   getNestPort: () => Promise<number>;
+  windowClose: () => Promise<void>;
+  windowMinimize: () => Promise<void>;
+  windowMaximize: () => Promise<void>;
 }
 
 declare global {

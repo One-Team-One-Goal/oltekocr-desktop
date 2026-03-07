@@ -16,8 +16,11 @@ async function createWindow(): Promise<void> {
     minWidth: 1024,
     minHeight: 700,
     show: false,
+    frame: false,
+    titleBarStyle: "hidden",
+    titleBarOverlay: false,
     autoHideMenuBar: true,
-    title: "OltekOCR",
+    title: "",
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),
       sandbox: false,
@@ -81,6 +84,17 @@ function registerIpcHandlers(): void {
 
   // Expose the NestJS port to the renderer
   ipcMain.handle("nest:get-port", () => nestPort);
+
+  // Window controls
+  ipcMain.handle(IpcChannel.WINDOW_CLOSE, () => mainWindow?.close());
+  ipcMain.handle(IpcChannel.WINDOW_MINIMIZE, () => mainWindow?.minimize());
+  ipcMain.handle(IpcChannel.WINDOW_MAXIMIZE, () => {
+    if (mainWindow?.isMaximized()) {
+      mainWindow.unmaximize();
+    } else {
+      mainWindow?.maximize();
+    }
+  });
 }
 
 // ─── App Lifecycle ──────────────────────────────────────

@@ -24,6 +24,11 @@ const api = {
 
   /** Get the NestJS server port */
   getNestPort: () => ipcRenderer.invoke("nest:get-port"),
+
+  /** Window controls */
+  windowClose: () => ipcRenderer.invoke(IpcChannel.WINDOW_CLOSE),
+  windowMinimize: () => ipcRenderer.invoke(IpcChannel.WINDOW_MINIMIZE),
+  windowMaximize: () => ipcRenderer.invoke(IpcChannel.WINDOW_MAXIMIZE),
 };
 
 // Expose APIs via contextBridge

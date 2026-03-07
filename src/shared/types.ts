@@ -247,4 +247,7 @@ export const IpcChannel = {
   SAVE_FILE_DIALOG: "dialog:save-file",
   GET_APP_PATH: "app:get-path",
   SHOW_ITEM_IN_FOLDER: "shell:show-item",
+  WINDOW_CLOSE: "window:close",
+  WINDOW_MINIMIZE: "window:minimize",
+  WINDOW_MAXIMIZE: "window:maximize",
 } as const;
