@@ -1,5 +1,8 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select,
   SelectContent,
@@ -8,12 +11,25 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
   statusLabel,
-  statusColor,
-  statusDotColor,
   formatConfidence,
-  formatTime,
   formatDate,
+  cn,
 } from "@/lib/utils";
 import { documentsApi, exportApi } from "@/api/client";
 import {
@@ -25,6 +41,7 @@ import {
   MoreHorizontal,
   ChevronLeft,
   ChevronRight,
+  Search,
 } from "lucide-react";
 import type { DocumentListItem } from "@shared/types";
 
@@ -33,25 +50,83 @@ interface DocumentTableProps {
   loading: boolean;
   onReview: (id: string) => void;
   onRefresh: () => void;
+  onFilter: (status: string, search: string) => void;
+  onExport: () => void;
+  statusFilter: string;
+  searchQuery: string;
 }
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
 const DEFAULT_PAGE_SIZE = 20;
+
+const TABS = [
+  { value: "", label: "All" },
+  { value: "REVIEW", label: "Pending Review" },
+  { value: "QUEUED", label: "In Queue" },
+  { value: "APPROVED", label: "Approved" },
+  { value: "REJECTED", label: "Rejected" },
+];
+
+function StatusBadge({ status }: { status: string }) {
+  const isDone = status === "APPROVED" || status === "EXPORTED";
+  const isError = status === "REJECTED" || status === "ERROR";
+  const isReview = status === "REVIEW";
+  const isActive =
+    status === "QUEUED" || status === "SCANNING" || status === "PROCESSING";
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 text-xs font-medium px-2 py-0.5 rounded-full border",
+        isDone && "bg-green-500/10 text-green-400 border-green-500/20",
+        isError && "bg-red-500/10 text-red-400 border-red-500/20",
+        isReview && "bg-purple-500/10 text-purple-400 border-purple-500/20",
+        isActive && "bg-amber-500/10 text-amber-400 border-amber-500/20",
+        !isDone &&
+          !isError &&
+          !isReview &&
+          !isActive &&
+          "bg-zinc-500/10 text-zinc-400 border-zinc-500/20",
+      )}
+    >
+      <span
+        className={cn(
+          "h-1.5 w-1.5 rounded-full shrink-0",
+          isDone && "bg-green-400",
+          isError && "bg-red-400",
+          isReview && "bg-purple-400",
+          isActive && "bg-amber-400",
+          !isDone && !isError && !isReview && !isActive && "bg-zinc-400",
+        )}
+      />
+      {statusLabel(status)}
+    </span>
+  );
+}
 
 export function DocumentTable({
   documents,
   loading,
   onReview,
   onRefresh,
+  onFilter,
+  onExport,
+  statusFilter,
+  searchQuery,
 }: DocumentTableProps) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [contextMenu, setContextMenu] = useState<{
-    x: number;
-    y: number;
-    docId: string;
-  } | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [localSearch, setLocalSearch] = useState(searchQuery);
+
+  const handleTabChange = (value: string) => {
+    setPage(1);
+    onFilter(value, localSearch);
+  };
+
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    onFilter(statusFilter, localSearch);
+  };
 
   // ── Pagination ────────────────────────────────────────
   const totalPages = Math.max(1, Math.ceil(documents.length / pageSize));
@@ -60,12 +135,6 @@ export function DocumentTable({
   const end = start + pageSize;
   const paginatedDocs = documents.slice(start, end);
 
-  const handlePageSizeChange = (val: string) => {
-    setPageSize(Number(val));
-    setPage(1);
-  };
-
-  // Visible page buttons (max 5 centered around current)
   const pageNumbers = (() => {
     const delta = 2;
     const range: number[] = [];
@@ -96,16 +165,8 @@ export function DocumentTable({
     }
   };
 
-  // ── Context menu ─────────────────────────────────────
-  const handleContextMenu = (e: React.MouseEvent, docId: string) => {
-    e.preventDefault();
-    setContextMenu({ x: e.clientX, y: e.clientY, docId });
-  };
-
-  const closeContextMenu = () => setContextMenu(null);
-
+  // ── Actions ──────────────────────────────────────────
   const handleAction = async (action: string, docId: string) => {
-    closeContextMenu();
     try {
       switch (action) {
         case "review":
@@ -145,172 +206,202 @@ export function DocumentTable({
     }
   };
 
-  // ── States ────────────────────────────────────────────
-  if (loading) {
-    return (
-      <div className="bg-white border border-border rounded-xl flex items-center justify-center h-64 text-muted-foreground shadow-sm">
-        Loading documents...
-      </div>
-    );
-  }
-
   return (
-    <div className="bg-white border border-border rounded-xl shadow-sm overflow-hidden">
-      {/* Table header row */}
-      <div className="flex items-center justify-between px-5 py-3.5 border-b border-border">
-        <h2 className="text-base font-semibold text-foreground">
-          All Documents
-        </h2>
-        <div className="flex items-center gap-2">
+    <div className="rounded-xl border border-border/50 overflow-hidden">
+      {/* Toolbar */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border/50 gap-3">
+        <Tabs
+          value={statusFilter || ""}
+          onValueChange={handleTabChange}
+          className="w-auto"
+        >
+          <TabsList className="h-8 bg-secondary/40 p-0.5 gap-0.5">
+            {TABS.map((tab) => (
+              <TabsTrigger
+                key={tab.value}
+                value={tab.value}
+                className="h-7 px-3 text-xs data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm"
+              >
+                {tab.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+
+        <div className="flex items-center gap-2 ml-auto">
           {selectedIds.size > 0 && (
             <Button
               variant="outline"
               size="sm"
               onClick={handleBulkExport}
-              className="text-xs shadow-sm"
+              className="h-8 text-xs gap-1.5"
             >
-              <FileOutput className="h-3.5 w-3.5 mr-1" />
-              Export {selectedIds.size} selected
+              <FileOutput className="h-3.5 w-3.5" />
+              Export {selectedIds.size}
             </Button>
           )}
+          <form onSubmit={handleSearch} className="relative">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
+            <Input
+              placeholder="Search..."
+              value={localSearch}
+              onChange={(e) => setLocalSearch(e.target.value)}
+              className="h-8 pl-8 w-44 text-xs bg-secondary/30 border-border/50"
+            />
+          </form>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onExport}
+            className="h-8 text-xs gap-1.5"
+          >
+            <FileOutput className="h-3.5 w-3.5" />
+            Export All
+          </Button>
         </div>
       </div>
 
-      {/* Empty state */}
-      {documents.length === 0 ? (
+      {/* Loading */}
+      {loading ? (
+        <div className="flex items-center justify-center h-48 text-muted-foreground text-sm">
+          Loading documents...
+        </div>
+      ) : documents.length === 0 ? (
         <div className="flex flex-col items-center justify-center h-48 text-muted-foreground gap-2">
-          <p className="text-base font-medium">No documents yet</p>
-          <p className="text-sm">
-            Load files or set up a folder watcher to get started.
-          </p>
+          <p className="text-sm font-medium">No documents found</p>
+          <p className="text-xs">Load files or adjust your filters.</p>
         </div>
       ) : (
         <>
-          {/* Table */}
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border text-muted-foreground">
-                  <th className="pl-5 pr-3 py-3 text-left font-medium w-8">
-                    <input
-                      type="checkbox"
-                      checked={
-                        selectedIds.size === paginatedDocs.length &&
-                        paginatedDocs.length > 0
-                      }
-                      onChange={toggleSelectAll}
-                      className="rounded-sm"
+          <Table>
+            <TableHeader>
+              <TableRow className="border-border/50 hover:bg-transparent">
+                <TableHead className="w-10 pl-4">
+                  <Checkbox
+                    checked={
+                      selectedIds.size === paginatedDocs.length &&
+                      paginatedDocs.length > 0
+                    }
+                    onCheckedChange={toggleSelectAll}
+                  />
+                </TableHead>
+                <TableHead>Filename</TableHead>
+                <TableHead className="w-36">Status</TableHead>
+                <TableHead className="w-36">Scanned</TableHead>
+                <TableHead className="w-20 text-center">Conf.</TableHead>
+                <TableHead className="w-16 text-center">Pages</TableHead>
+                <TableHead className="w-16 text-center">Tables</TableHead>
+                <TableHead className="w-28">Notes</TableHead>
+                <TableHead className="w-10" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {paginatedDocs.map((doc) => (
+                <TableRow
+                  key={doc.id}
+                  className="border-border/50 cursor-pointer"
+                  onDoubleClick={() => onReview(doc.id)}
+                >
+                  <TableCell className="pl-4">
+                    <Checkbox
+                      checked={selectedIds.has(doc.id)}
+                      onCheckedChange={() => toggleSelect(doc.id)}
+                      onClick={(e) => e.stopPropagation()}
                     />
-                  </th>
-                  <th className="px-4 py-3 text-left font-medium">Filename</th>
-                  <th className="px-4 py-3 text-left font-medium w-28">
-                    Status
-                  </th>
-                  <th className="px-4 py-3 text-left font-medium w-36">
-                    Scanned
-                  </th>
-                  <th className="px-4 py-3 text-center font-medium w-20">
-                    Conf.
-                  </th>
-                  <th className="px-4 py-3 text-center font-medium w-16">
-                    Pages
-                  </th>
-                  <th className="px-4 py-3 text-center font-medium w-16">
-                    Tables
-                  </th>
-                  <th className="px-4 py-3 text-left font-medium w-28">
-                    Notes
-                  </th>
-                  <th className="px-4 py-3 text-center font-medium w-16">
-                    Action
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {paginatedDocs.map((doc) => (
-                  <tr
-                    key={doc.id}
-                    className="border-b border-border last:border-0 hover:bg-gray-50 cursor-pointer transition-colors"
-                    onDoubleClick={() => onReview(doc.id)}
-                    onContextMenu={(e) => handleContextMenu(e, doc.id)}
-                  >
-                    <td className="pl-5 pr-3 py-3">
-                      <input
-                        type="checkbox"
-                        checked={selectedIds.has(doc.id)}
-                        onChange={() => toggleSelect(doc.id)}
-                        className="rounded-sm"
-                        onClick={(e) => e.stopPropagation()}
-                      />
-                    </td>
-                    <td className="px-4 py-3 font-medium text-foreground max-w-[220px]">
-                      <span className="truncate block">{doc.filename}</span>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span
-                        className={`inline-flex items-center gap-1.5 font-medium ${statusColor(doc.status)}`}
-                      >
-                        <span
-                          className={`inline-block h-2 w-2 rounded-full shrink-0 ${statusDotColor(doc.status)}`}
-                        />
-                        {statusLabel(doc.status)}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground text-xs">
-                      {formatDate(doc.createdAt)}
-                    </td>
-                    <td className="px-4 py-3 text-center font-mono text-xs">
-                      {formatConfidence(doc.ocrAvgConfidence)}
-                    </td>
-                    <td className="px-4 py-3 text-center font-mono text-xs">
-                      {doc.ocrPageCount || "—"}
-                    </td>
-                    <td className="px-4 py-3 text-center font-mono text-xs">
-                      {doc.ocrTableCount || "—"}
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground text-xs">
-                      <span className="truncate block max-w-[100px]">
-                        {doc.notes || "—"}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-center">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleContextMenu(
-                            e as unknown as React.MouseEvent,
-                            doc.id,
-                          );
-                        }}
-                      >
-                        <MoreHorizontal className="h-4 w-4" />
-                      </Button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                  </TableCell>
+                  <TableCell className="font-medium max-w-[200px]">
+                    <span className="truncate block">{doc.filename}</span>
+                  </TableCell>
+                  <TableCell>
+                    <StatusBadge status={doc.status} />
+                  </TableCell>
+                  <TableCell className="text-muted-foreground text-xs">
+                    {formatDate(doc.createdAt)}
+                  </TableCell>
+                  <TableCell className="text-center font-mono text-xs text-muted-foreground">
+                    {formatConfidence(doc.ocrAvgConfidence)}
+                  </TableCell>
+                  <TableCell className="text-center font-mono text-xs text-muted-foreground">
+                    {doc.ocrPageCount || "—"}
+                  </TableCell>
+                  <TableCell className="text-center font-mono text-xs text-muted-foreground">
+                    {doc.ocrTableCount || "—"}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground text-xs">
+                    <span className="truncate block max-w-[100px]">
+                      {doc.notes || "—"}
+                    </span>
+                  </TableCell>
+                  <TableCell>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <MoreHorizontal className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-40">
+                        <DropdownMenuItem
+                          onClick={() => handleAction("review", doc.id)}
+                        >
+                          <Eye className="h-4 w-4 mr-2" />
+                          Review
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onClick={() => handleAction("approve", doc.id)}
+                        >
+                          <CheckCircle2 className="h-4 w-4 mr-2 text-green-500" />
+                          Approve
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onClick={() => handleAction("reprocess", doc.id)}
+                        >
+                          <RotateCcw className="h-4 w-4 mr-2 text-amber-500" />
+                          Reprocess
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onClick={() => handleAction("export", doc.id)}
+                        >
+                          <FileOutput className="h-4 w-4 mr-2" />
+                          Export
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          onClick={() => handleAction("delete", doc.id)}
+                          className="text-red-400 focus:text-red-400"
+                        >
+                          <Trash2 className="h-4 w-4 mr-2" />
+                          Delete
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
 
-          {/* Pagination footer */}
-          <div className="flex items-center justify-between px-5 py-3.5 border-t border-border">
-            {/* Showing X-Y of N + per-page selector */}
-            <div className="flex items-center gap-3 text-sm text-muted-foreground">
+          {/* Pagination */}
+          <div className="flex items-center justify-between px-4 py-3 border-t border-border/50">
+            <div className="flex items-center gap-3 text-xs text-muted-foreground">
               <span>
-                Showing {documents.length === 0 ? 0 : start + 1} to{" "}
-                {Math.min(end, documents.length)} of {documents.length}{" "}
-                documents
+                {documents.length === 0 ? "0" : start + 1}–
+                {Math.min(end, documents.length)} of {documents.length}
               </span>
               <div className="flex items-center gap-1.5">
-                <span className="text-xs">Show:</span>
+                <span>Show</span>
                 <Select
                   value={String(pageSize)}
-                  onValueChange={handlePageSizeChange}
+                  onValueChange={(val) => {
+                    setPageSize(Number(val));
+                    setPage(1);
+                  }}
                 >
-                  <SelectTrigger className="h-7 w-16 text-xs bg-white shadow-sm">
+                  <SelectTrigger className="h-7 w-14 text-xs">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -321,20 +412,18 @@ export function DocumentTable({
                     ))}
                   </SelectContent>
                 </Select>
-                <span className="text-xs">per page</span>
               </div>
             </div>
 
-            {/* Page number buttons */}
             <div className="flex items-center gap-1">
               <Button
                 variant="outline"
                 size="icon"
-                className="h-8 w-8 shadow-sm"
+                className="h-7 w-7"
                 disabled={safeCurrentPage === 1}
                 onClick={() => setPage((p) => p - 1)}
               >
-                <ChevronLeft className="h-4 w-4" />
+                <ChevronLeft className="h-3.5 w-3.5" />
               </Button>
 
               {pageNumbers[0] > 1 && (
@@ -342,7 +431,7 @@ export function DocumentTable({
                   <Button
                     variant="outline"
                     size="sm"
-                    className="h-8 w-8 shadow-sm text-xs"
+                    className="h-7 w-7 text-xs"
                     onClick={() => setPage(1)}
                   >
                     1
@@ -360,7 +449,7 @@ export function DocumentTable({
                   key={n}
                   size="sm"
                   variant={n === safeCurrentPage ? "default" : "outline"}
-                  className={`h-8 w-8 text-xs shadow-sm ${n === safeCurrentPage ? "bg-primary text-primary-foreground hover:bg-primary/90" : "bg-white"}`}
+                  className="h-7 w-7 text-xs"
                   onClick={() => setPage(n)}
                 >
                   {n}
@@ -377,7 +466,7 @@ export function DocumentTable({
                   <Button
                     variant="outline"
                     size="sm"
-                    className="h-8 w-8 shadow-sm text-xs"
+                    className="h-7 w-7 text-xs"
                     onClick={() => setPage(totalPages)}
                   >
                     {totalPages}
@@ -388,76 +477,16 @@ export function DocumentTable({
               <Button
                 variant="outline"
                 size="icon"
-                className="h-8 w-8 shadow-sm"
+                className="h-7 w-7"
                 disabled={safeCurrentPage === totalPages}
                 onClick={() => setPage((p) => p + 1)}
               >
-                <ChevronRight className="h-4 w-4" />
+                <ChevronRight className="h-3.5 w-3.5" />
               </Button>
             </div>
           </div>
         </>
       )}
-
-      {/* Context Menu */}
-      {contextMenu && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={closeContextMenu} />
-          <div
-            className="fixed z-50 min-w-[160px] rounded-lg border border-border bg-white p-1 shadow-lg"
-            style={{ left: contextMenu.x, top: contextMenu.y }}
-          >
-            <CtxItem
-              icon={<Eye className="h-4 w-4" />}
-              label="Review"
-              onClick={() => handleAction("review", contextMenu.docId)}
-            />
-            <CtxItem
-              icon={<CheckCircle2 className="h-4 w-4 text-green-500" />}
-              label="Approve"
-              onClick={() => handleAction("approve", contextMenu.docId)}
-            />
-            <CtxItem
-              icon={<RotateCcw className="h-4 w-4 text-amber-500" />}
-              label="Reprocess"
-              onClick={() => handleAction("reprocess", contextMenu.docId)}
-            />
-            <CtxItem
-              icon={<FileOutput className="h-4 w-4" />}
-              label="Export"
-              onClick={() => handleAction("export", contextMenu.docId)}
-            />
-            <div className="my-1 h-px bg-border" />
-            <CtxItem
-              icon={<Trash2 className="h-4 w-4 text-red-500" />}
-              label="Delete"
-              className="text-red-500"
-              onClick={() => handleAction("delete", contextMenu.docId)}
-            />
-          </div>
-        </>
-      )}
     </div>
-  );
-}
-
-function CtxItem({
-  icon,
-  label,
-  onClick,
-  className = "",
-}: {
-  icon: React.ReactNode;
-  label: string;
-  onClick: () => void;
-  className?: string;
-}) {
-  return (
-    <button
-      className={`flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-sm hover:bg-gray-50 transition-colors ${className}`}
-      onClick={onClick}
-    >
-      {icon} {label}
-    </button>
   );
 }

@@ -1,19 +1,14 @@
-import { useState } from "react";
-import { Button } from "@/components/ui/button";
-import {
-  FileText,
-  Table2,
-  FolderOpen,
-  Trash2,
-  ChevronRight,
-} from "lucide-react";
+import { Check } from "lucide-react";
+import { FileText, Table2, FolderOpen, ChevronRight } from "lucide-react";
 import type { SessionListItem, SessionMode } from "@shared/types";
 import { formatDate, statusColor, statusDotColor } from "@/lib/utils";
 
 interface SessionCardProps {
   session: SessionListItem;
   onOpen: () => void;
-  onDelete: () => Promise<void>;
+  selectMode?: boolean;
+  selected?: boolean;
+  onSelect?: () => void;
 }
 
 const modeConfig: Record<
@@ -49,25 +44,15 @@ const sessionStatusDot: Record<string, string> = {
   ERROR: "bg-red-500",
 };
 
-export function SessionCard({ session, onOpen, onDelete }: SessionCardProps) {
-  const [deleting, setDeleting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+export function SessionCard({
+  session,
+  onOpen,
+  selectMode = false,
+  selected = false,
+  onSelect,
+}: SessionCardProps) {
   const mode = modeConfig[session.mode] ?? modeConfig.OCR_EXTRACT;
   const Icon = mode.icon;
-
-  const handleDelete = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!confirm(`Delete session "${session.name}" and all its documents?`))
-      return;
-    setDeleting(true);
-    setError(null);
-    try {
-      await onDelete();
-    } catch (err: any) {
-      setError(err?.message ?? "Failed to delete");
-      setDeleting(false);
-    }
-  };
 
   const progress =
     session.documentCount > 0
@@ -76,18 +61,19 @@ export function SessionCard({ session, onOpen, onDelete }: SessionCardProps) {
 
   return (
     <div
-      className="bg-card border border-border rounded-xl shadow-sm p-5 flex flex-col gap-4 hover:shadow-md transition-shadow cursor-pointer group"
-      onClick={onOpen}
+      className={`relative border rounded-xl shadow-sm p-5 flex flex-col gap-4 transition-all cursor-pointer ${
+        selectMode
+          ? selected
+            ? "bg-destructive/10 border-destructive ring-1 ring-destructive"
+            : "bg-card border-dashed border-border/70 hover:border-destructive/50 hover:bg-destructive/5"
+          : "bg-card border-border hover:shadow-md"
+      }`}
+      onClick={selectMode ? onSelect : onOpen}
     >
       {/* Header */}
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <span
-            className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border text-xs font-medium shrink-0 ${mode.bg} ${mode.text} ${mode.border}`}
-          >
-            <Icon className="h-3 w-3" />
-            {mode.label}
-          </span>
+      <div className="flex items-start justify-between">
+        <div className="flex items-center min-w-0 text-sm text-primary/80">
+          {mode.label}
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
           <span
@@ -101,7 +87,7 @@ export function SessionCard({ session, onOpen, onDelete }: SessionCardProps) {
 
       {/* Name */}
       <div>
-        <h3 className="font-semibold text-base text-foreground truncate">
+        <h3 className="font-semibold text-lg text-foreground truncate">
           {session.name}
         </h3>
         <p className="text-xs text-muted-foreground mt-0.5">
@@ -117,42 +103,6 @@ export function SessionCard({ session, onOpen, onDelete }: SessionCardProps) {
           </span>
           <span>{progress}%</span>
         </div>
-        <div className="h-1.5 bg-muted rounded-full overflow-hidden">
-          <div
-            className="h-full bg-primary rounded-full transition-all"
-            style={{ width: `${progress}%` }}
-          />
-        </div>
-      </div>
-
-      {/* Footer */}
-      <div className="flex items-center justify-between pt-1">
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-7 w-7 text-muted-foreground hover:text-red-500"
-          disabled={deleting}
-          onClick={handleDelete}
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </Button>
-        {error && (
-          <span className="text-xs text-red-500 truncate max-w-[140px]" title={error}>
-            {error}
-          </span>
-        )}
-        <Button
-          size="sm"
-          variant="outline"
-          className="gap-1 text-xs shadow-sm"
-          onClick={(e) => {
-            e.stopPropagation();
-            onOpen();
-          }}
-        >
-          Open
-          <ChevronRight className="h-3.5 w-3.5" />
-        </Button>
       </div>
     </div>
   );

@@ -4,7 +4,7 @@ import { sessionsApi, queueApi } from "@/api/client";
 import { SessionCard } from "./SessionCard";
 import { NewSessionDialog } from "./NewSessionDialog";
 import { Button } from "@/components/ui/button";
-import { Plus, RefreshCw } from "lucide-react";
+import { CirclePlus, Plus, RefreshCw, Trash2 } from "lucide-react";
 import type { SessionListItem } from "@shared/types";
 
 export function SessionsHome() {
@@ -12,6 +12,36 @@ export function SessionsHome() {
   const [sessions, setSessions] = useState<SessionListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [deleteMode, setDeleteMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  const toggleDeleteMode = () => {
+    setDeleteMode((prev) => !prev);
+    setSelectedIds(new Set());
+  };
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleDeleteSelected = async () => {
+    const ids = [...selectedIds];
+    if (
+      !confirm(
+        `Delete ${ids.length} session${ids.length > 1 ? "s" : ""} and all their documents?`,
+      )
+    )
+      return;
+    setSessions((prev) => prev.filter((s) => !selectedIds.has(s.id)));
+    setSelectedIds(new Set());
+    setDeleteMode(false);
+    await Promise.all(ids.map((id) => sessionsApi.remove(id)));
+  };
 
   const fetchSessions = async () => {
     try {
@@ -45,14 +75,46 @@ export function SessionsHome() {
   return (
     <div className="flex flex-col h-full bg-background">
       {/* Header */}
-      <header className="flex items-center justify-between h-14 px-6 border-b bg-card shrink-0">
+      <header className="flex items-center justify-between h-14 px-6 border-b shrink-0">
         <h1 className="text-lg font-semibold">Sessions</h1>
         <div className="flex items-center gap-2">
-          <Button variant="ghost" size="icon" onClick={fetchSessions}>
-            <RefreshCw className="h-4 w-4" />
-          </Button>
-          <Button onClick={() => setDialogOpen(true)} className="gap-2">
-            <Plus className="h-4 w-4" />
+          {deleteMode ? (
+            <>
+              {selectedIds.size > 0 && (
+                <Button
+                  variant="destructive"
+                  size="xs"
+                  onClick={handleDeleteSelected}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Delete ({selectedIds.size})
+                </Button>
+              )}
+              <Button variant="secondary" size="xs" onClick={toggleDeleteMode}>
+                Cancel
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button variant="ghost" size="icon" onClick={fetchSessions}>
+                <RefreshCw className="h-4 w-4" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={toggleDeleteMode}
+                title="Select sessions to delete"
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </>
+          )}
+          <Button
+            onClick={() => setDialogOpen(true)}
+            variant="default"
+            size="xs"
+          >
+            <CirclePlus className="h-4 w-4" />
             New Session
           </Button>
         </div>
@@ -86,21 +148,10 @@ export function SessionsHome() {
               <SessionCard
                 key={session.id}
                 session={session}
+                selectMode={deleteMode}
+                selected={selectedIds.has(session.id)}
+                onSelect={() => toggleSelect(session.id)}
                 onOpen={() => navigate(`/sessions/${session.id}`)}
-                onDelete={async () => {
-                  // Optimistic: remove immediately
-                  setSessions((prev) => prev.filter((s) => s.id !== session.id));
-                  try {
-                    await sessionsApi.remove(session.id);
-                  } catch (err) {
-                    // Rollback: restore the card if the API call failed
-                    setSessions((prev) => {
-                      if (prev.find((s) => s.id === session.id)) return prev;
-                      return [session, ...prev];
-                    });
-                    throw err;
-                  }
-                }}
               />
             ))}
           </div>

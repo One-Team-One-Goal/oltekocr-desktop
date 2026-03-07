@@ -1,10 +1,8 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { Panel, Group as PanelGroup } from "react-resizable-panels";
-import { sessionsApi, queueApi, documentsApi, exportApi } from "@/api/client";
+import { sessionsApi, queueApi, exportApi } from "@/api/client";
 import { useWebSocket } from "@/hooks/useWebSocket";
-import { FilesTable } from "./FilesTable";
-import { ExtractedTable } from "./ExtractedTable";
+import { SessionDataTable } from "./SessionDataTable";
 import { ReviewDialog } from "@/components/ReviewDialog";
 import { EditColumnsDialog } from "./EditColumnsDialog";
 import { Button } from "@/components/ui/button";
@@ -89,7 +87,6 @@ export function SessionDetail() {
   const [filteredDocs, setFilteredDocs] = useState<DocumentListItem[]>([]);
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(true);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [reviewDocId, setReviewDocId] = useState<string | null>(null);
   const [editColumnsOpen, setEditColumnsOpen] = useState(false);
 
@@ -171,39 +168,12 @@ export function SessionDetail() {
     await exportApi.exportDocuments(ids, "excel");
   };
 
-  // ── Scroll sync ────────────────────────────────────────────────────────────
-  const leftScrollRef = useRef<HTMLDivElement>(null);
-  const rightScrollRef = useRef<HTMLDivElement>(null);
-  const syncing = useRef(false);
-
-  const handleLeftScroll = () => {
-    if (syncing.current || !leftScrollRef.current || !rightScrollRef.current)
-      return;
-    syncing.current = true;
-    rightScrollRef.current.scrollTop = leftScrollRef.current.scrollTop;
-    syncing.current = false;
-  };
-
-  const handleRightScroll = () => {
-    if (syncing.current || !leftScrollRef.current || !rightScrollRef.current)
-      return;
-    syncing.current = true;
-    leftScrollRef.current.scrollTop = rightScrollRef.current.scrollTop;
-    syncing.current = false;
-  };
-
   // ── Mode badge ─────────────────────────────────────────
   const modeBadge =
     session?.mode === "TABLE_EXTRACT" ? (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-violet-50 text-violet-700 border border-violet-200 text-xs font-medium">
-        <Table2 className="h-3 w-3" />
-        Table Extract
-      </span>
+      <Table2 className="h-4 w-4" />
     ) : (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200 text-xs font-medium">
-        <FileText className="h-3 w-3" />
-        OCR Extract
-      </span>
+      <FileText className="h-3 w-3" />
     );
 
   if (loading) {
@@ -217,7 +187,7 @@ export function SessionDetail() {
   return (
     <div className="flex flex-col h-full bg-background">
       {/* Header */}
-      <header className="flex items-center justify-between h-14 px-4 border-b bg-card shrink-0 gap-3">
+      <header className="flex items-center justify-between h-14 px-4 border-b shrink-0 gap-3">
         <div className="flex items-center gap-3 min-w-0">
           <Button
             variant="ghost"
@@ -282,102 +252,17 @@ export function SessionDetail() {
       {/* Stats + filter */}
       <div className="px-4 pt-4 pb-3 space-y-3 shrink-0">
         <SessionStatsStrip stats={stats} />
-
-        {/* Filter bar */}
-        <div className="flex items-center gap-2 bg-card border border-border rounded-xl shadow-sm px-3 py-2">
-          <Select value={statusFilter} onValueChange={setStatusFilter}>
-            <SelectTrigger className="h-8 w-36 text-xs border-0 shadow-none bg-transparent">
-              <SelectValue placeholder="All Status" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all" className="text-xs">
-                All Status
-              </SelectItem>
-              {[
-                "QUEUED",
-                "SCANNING",
-                "PROCESSING",
-                "REVIEW",
-                "APPROVED",
-                "REJECTED",
-                "EXPORTED",
-                "ERROR",
-              ].map((s) => (
-                <SelectItem key={s} value={s} className="text-xs capitalize">
-                  {s.charAt(0) + s.slice(1).toLowerCase()}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <div className="h-4 w-px bg-border" />
-          <div className="relative flex-1">
-            <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-            <Input
-              placeholder="Search filename…"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="h-8 pl-7 text-xs border-0 shadow-none bg-transparent focus-visible:ring-0"
-            />
-          </div>
-        </div>
       </div>
 
-      {/* Split pane: Files | Extracted */}
-      <div className="flex-1 min-h-0 px-4 pb-4">
-        <PanelGroup
-          orientation="horizontal"
-          className="h-full bg-card border border-border rounded-xl shadow-sm overflow-hidden"
-        >
-          {/* Left: Files Table */}
-          <Panel defaultSize={45} minSize={25}>
-            <div className="h-full flex flex-col">
-              <div className="px-4 py-2.5 border-b border-border bg-muted/40 shrink-0">
-                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                  Files · {filteredDocs.length}
-                </p>
-              </div>
-              <div className="flex-1 min-h-0">
-                <FilesTable
-                  documents={filteredDocs}
-                  loading={loading}
-                  selectedId={selectedId}
-                  onSelectId={setSelectedId}
-                  onReview={setReviewDocId}
-                  onRefresh={refresh}
-                  scrollContainerRef={leftScrollRef}
-                  onTableScroll={handleLeftScroll}
-                />
-              </div>
-            </div>
-          </Panel>
-
-          {/* Drag handle */}
-          <div className="w-1 bg-border hover:bg-primary/40 transition-colors cursor-col-resize shrink-0" />
-
-          {/* Right: Extracted Table */}
-          <Panel defaultSize={55} minSize={25}>
-            <div className="h-full flex flex-col">
-              <div className="px-4 py-2.5 border-b border-border bg-muted/40 shrink-0">
-                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                  {session?.mode === "TABLE_EXTRACT"
-                    ? `Extracted Fields · ${session.columns.length} columns`
-                    : "OCR Output"}
-                </p>
-              </div>
-              <div className="flex-1 min-h-0">
-                <ExtractedTable
-                  documents={filteredDocs}
-                  session={session}
-                  selectedId={selectedId}
-                  onSelectId={setSelectedId}
-                  onRefresh={refresh}
-                  scrollContainerRef={rightScrollRef}
-                  onTableScroll={handleRightScroll}
-                />
-              </div>
-            </div>
-          </Panel>
-        </PanelGroup>
+      {/* Unified data table */}
+      <div className="flex-1 min-h-0 overflow-auto px-4 pb-4">
+        <SessionDataTable
+          documents={filteredDocs}
+          loading={loading}
+          session={session}
+          onReview={setReviewDocId}
+          onRefresh={refresh}
+        />
       </div>
 
       {/* Review Dialog */}

@@ -1,5 +1,11 @@
 import { documentsApi } from "@/api/client";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ColumnDef,
+  flexRender,
+  getCoreRowModel,
+  useReactTable,
+} from "@tanstack/react-table";
 import {
   Dialog,
   DialogContent,
@@ -12,6 +18,13 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import {
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import {
   Loader2,
   Pencil,
@@ -52,49 +65,123 @@ export function ExtractedTable({
   onTableScroll,
 }: ExtractedTableProps) {
   const isTableMode = session?.mode === "TABLE_EXTRACT";
-  const columns = session?.columns ?? [];
-
+  const sessionColumns = session?.columns ?? [];
   const [detailDocId, setDetailDocId] = useState<string | null>(null);
 
-  const [colWidths, setColWidths] = useState<number[]>(() =>
-    isTableMode ? [140, ...columns.map(() => 140)] : [140, 0, 48, 56],
-  );
-  const resizing = useRef<{
-    colIdx: number;
-    startX: number;
-    startWidth: number;
-  } | null>(null);
+  const columns = useMemo((): ColumnDef<DocumentListItem>[] => {
+    const isPending = (doc: DocumentListItem) =>
+      doc.status === "QUEUED" ||
+      doc.status === "SCANNING" ||
+      doc.status === "PROCESSING";
 
-  useEffect(() => {
-    if (isTableMode) setColWidths([140, ...columns.map(() => 140)]);
-  }, [isTableMode, columns.length]);
+    const filenameCol: ColumnDef<DocumentListItem> = {
+      accessorKey: "filename",
+      header: "Filename",
+      size: 160,
+      cell: ({ row }) => (
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span
+            className="truncate text-xs font-medium min-w-0"
+            title={row.original.filename}
+          >
+            {row.original.filename}
+          </span>
+          {isTableMode && !isPending(row.original) && (
+            <Pencil className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-60 transition-opacity" />
+          )}
+        </div>
+      ),
+    };
 
-  const startResize = (e: React.MouseEvent, colIdx: number) => {
-    e.preventDefault();
-    e.stopPropagation();
-    resizing.current = {
-      colIdx,
-      startX: e.clientX,
-      startWidth: colWidths[colIdx],
-    };
-    const onMove = (ev: MouseEvent) => {
-      if (!resizing.current) return;
-      const delta = ev.clientX - resizing.current.startX;
-      const newW = Math.max(60, resizing.current.startWidth + delta);
-      setColWidths((p) => {
-        const n = [...p];
-        n[resizing.current!.colIdx] = newW;
-        return n;
-      });
-    };
-    const onUp = () => {
-      resizing.current = null;
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-  };
+    if (isTableMode) {
+      return [
+        filenameCol,
+        ...sessionColumns.map(
+          (col): ColumnDef<DocumentListItem> => ({
+            id: col.key,
+            header: col.label,
+            size: 160,
+            cell: ({ row }) => {
+              if (isPending(row.original)) {
+                return (
+                  <span className="text-muted-foreground italic text-xs">
+                    pending…
+                  </span>
+                );
+              }
+              const cell = row.original.extractedRow?.[col.key];
+              const answer = cell?.answer ?? "";
+              const score = cell?.score ?? 0;
+              if (answer.length > 0 && score > 0) {
+                return (
+                  <span className="flex items-center gap-1 min-w-0">
+                    <span className="truncate text-xs" title={answer}>
+                      {answer}
+                    </span>
+                    <span className="shrink-0 text-[10px] text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity">
+                      {Math.round(score * 100)}%
+                    </span>
+                  </span>
+                );
+              }
+              return <span className="text-muted-foreground text-xs">—</span>;
+            },
+          }),
+        ),
+      ];
+    }
+
+    // OCR mode
+    return [
+      filenameCol,
+      {
+        id: "textPreview",
+        header: "Text Preview",
+        cell: ({ row }) => {
+          if (isPending(row.original)) {
+            return (
+              <span className="italic text-muted-foreground text-xs">
+                pending…
+              </span>
+            );
+          }
+          if (row.original.ocrPageCount > 0) {
+            return <OcrTextPreview docId={row.original.id} />;
+          }
+          return (
+            <span className="text-muted-foreground text-xs">No OCR data</span>
+          );
+        },
+      },
+      {
+        accessorKey: "ocrPageCount",
+        header: "Pgs",
+        size: 60,
+        cell: ({ row }) => (
+          <span className="font-mono text-xs block text-center">
+            {row.original.ocrPageCount || "—"}
+          </span>
+        ),
+      },
+      {
+        accessorKey: "ocrTableCount",
+        header: "Tables",
+        size: 72,
+        cell: ({ row }) => (
+          <span className="font-mono text-xs block text-center">
+            {(row.original as any).ocrTableCount || "—"}
+          </span>
+        ),
+      },
+    ];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isTableMode, sessionColumns]);
+
+  const table = useReactTable({
+    data: documents,
+    columns,
+    getCoreRowModel: getCoreRowModel(),
+  });
 
   if (!session) return null;
 
@@ -114,163 +201,67 @@ export function ExtractedTable({
             No documents yet
           </div>
         ) : (
-          <table className="w-full text-sm table-fixed">
-            <thead className="sticky top-0 bg-white z-10">
-              <tr className="h-10 border-b border-border text-muted-foreground divide-x divide-border">
-                <th
-                  className="pl-4 pr-3 py-2 text-left font-medium text-xs relative select-none"
-                  style={{ width: colWidths[0] }}
+          <table
+            className="w-full caption-bottom text-sm"
+            style={{ tableLayout: "fixed" }}
+          >
+            <colgroup>
+              {table.getFlatHeaders().map((header) => (
+                <col key={header.id} style={{ width: header.getSize() }} />
+              ))}
+            </colgroup>
+            <TableHeader className="sticky top-0 bg-card z-10">
+              {table.getHeaderGroups().map((hg) => (
+                <TableRow
+                  key={hg.id}
+                  className="h-10 hover:bg-transparent divide-x divide-border"
                 >
-                  Filename
-                  <div
-                    className="absolute right-0 top-0 h-full w-1 cursor-col-resize hover:bg-primary/40 transition-colors z-10"
-                    onMouseDown={(e) => startResize(e, 0)}
-                  />
-                </th>
-
-                {isTableMode ? (
-                  columns.map((col, i) => (
-                    <th
-                      key={col.key}
-                      className="px-3 py-2 text-left font-medium text-xs overflow-hidden relative select-none"
-                      style={{ width: colWidths[i + 1] ?? 140 }}
+                  {hg.headers.map((header) => (
+                    <TableHead
+                      key={header.id}
+                      className="py-2 text-xs font-medium text-muted-foreground overflow-hidden"
                     >
-                      <span className="block truncate" title={col.label}>
-                        {col.label}
+                      <span className="truncate block" title={header.id}>
+                        {header.isPlaceholder
+                          ? null
+                          : flexRender(
+                              header.column.columnDef.header,
+                              header.getContext(),
+                            )}
                       </span>
-                      <div
-                        className="absolute right-0 top-0 h-full w-1 cursor-col-resize hover:bg-primary/40 transition-colors z-10"
-                        onMouseDown={(e) => startResize(e, i + 1)}
-                      />
-                    </th>
-                  ))
-                ) : (
-                  <>
-                    <th className="px-3 py-2 text-left font-medium text-xs relative select-none">
-                      Text Preview
-                      <div
-                        className="absolute right-0 top-0 h-full w-1 cursor-col-resize hover:bg-primary/40 transition-colors z-10"
-                        onMouseDown={(e) => startResize(e, 1)}
-                      />
-                    </th>
-                    <th
-                      className="px-3 py-2 text-center font-medium text-xs relative select-none"
-                      style={{ width: colWidths[2] ?? 48 }}
-                    >
-                      Pgs
-                      <div
-                        className="absolute right-0 top-0 h-full w-1 cursor-col-resize hover:bg-primary/40 transition-colors z-10"
-                        onMouseDown={(e) => startResize(e, 2)}
-                      />
-                    </th>
-                    <th
-                      className="px-3 py-2 text-center font-medium text-xs relative select-none"
-                      style={{ width: colWidths[3] ?? 56 }}
-                    >
-                      Tables
-                    </th>
-                  </>
-                )}
-              </tr>
-            </thead>
-            <tbody>
-              {documents.map((doc) => {
-                const isSelected = doc.id === selectedId;
-                const isPending =
-                  doc.status === "QUEUED" ||
-                  doc.status === "SCANNING" ||
-                  doc.status === "PROCESSING";
-
+                    </TableHead>
+                  ))}
+                </TableRow>
+              ))}
+            </TableHeader>
+            <TableBody>
+              {table.getRowModel().rows.map((row) => {
+                const isSelected = row.original.id === selectedId;
                 return (
-                  <tr
-                    key={doc.id}
-                    className={`h-10 border-b border-border cursor-pointer transition-colors group divide-x divide-border ${
-                      isSelected
-                        ? "bg-primary/5 hover:bg-primary/10"
-                        : "hover:bg-gray-50"
-                    }`}
+                  <TableRow
+                    key={row.id}
+                    data-state={isSelected ? "selected" : undefined}
+                    className="h-10 cursor-pointer divide-x divide-border group"
                     onClick={() => {
-                      onSelectId(doc.id);
-                      if (isTableMode) setDetailDocId(doc.id);
+                      onSelectId(row.original.id);
+                      if (isTableMode) setDetailDocId(row.original.id);
                     }}
                   >
-                    <td
-                      className="pl-4 pr-3 py-2 font-medium text-foreground overflow-hidden"
-                      style={{ width: colWidths[0] }}
-                    >
-                      <div className="flex items-center gap-1.5 min-w-0">
-                        <span
-                          className="truncate block text-xs min-w-0"
-                          title={doc.filename}
-                        >
-                          {doc.filename}
-                        </span>
-                        {isTableMode && !isPending && (
-                          <Pencil className="h-3 w-3 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-60 transition-opacity" />
+                    {row.getVisibleCells().map((cell) => (
+                      <TableCell
+                        key={cell.id}
+                        className="py-2 text-xs overflow-hidden"
+                      >
+                        {flexRender(
+                          cell.column.columnDef.cell,
+                          cell.getContext(),
                         )}
-                      </div>
-                    </td>
-
-                    {isTableMode ? (
-                      columns.map((col, colIdx) => {
-                        const cell = doc.extractedRow?.[col.key];
-                        const answer = cell?.answer ?? "";
-                        const score = cell?.score ?? 0;
-                        const hasAnswer = answer.length > 0 && score > 0;
-
-                        return (
-                          <td
-                            key={col.key}
-                            className="px-3 py-2 text-xs overflow-hidden"
-                            style={{ width: colWidths[colIdx + 1] ?? 140 }}
-                          >
-                            {isPending ? (
-                              <span className="text-muted-foreground italic">
-                                pending…
-                              </span>
-                            ) : hasAnswer ? (
-                              <span className="flex items-center gap-1 min-w-0">
-                                <span
-                                  className="truncate block min-w-0"
-                                  title={answer}
-                                >
-                                  {answer}
-                                </span>
-                                {score > 0 && (
-                                  <span className="shrink-0 text-[10px] text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity">
-                                    {Math.round(score * 100)}%
-                                  </span>
-                                )}
-                              </span>
-                            ) : (
-                              <span className="text-muted-foreground">—</span>
-                            )}
-                          </td>
-                        );
-                      })
-                    ) : (
-                      <>
-                        <td className="px-3 py-2 text-xs text-muted-foreground max-w-xs">
-                          {isPending ? (
-                            <span className="italic">pending…</span>
-                          ) : doc.ocrPageCount > 0 ? (
-                            <OcrTextPreview docId={doc.id} />
-                          ) : (
-                            <span>No OCR data</span>
-                          )}
-                        </td>
-                        <td className="px-3 py-2 text-center font-mono text-xs">
-                          {doc.ocrPageCount || "—"}
-                        </td>
-                        <td className="px-3 py-2 text-center font-mono text-xs">
-                          {doc.ocrTableCount || "—"}
-                        </td>
-                      </>
-                    )}
-                  </tr>
+                      </TableCell>
+                    ))}
+                  </TableRow>
                 );
               })}
-            </tbody>
+            </TableBody>
           </table>
         )}
       </div>

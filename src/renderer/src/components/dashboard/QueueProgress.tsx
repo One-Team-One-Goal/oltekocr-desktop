@@ -37,53 +37,50 @@ export function QueueProgress({ status, onRefresh }: QueueProgressProps) {
   };
 
   return (
-    <div className="rounded-md border bg-card p-4 space-y-3">
+    <div className="border-t border-border/50 px-6 py-3 space-y-2">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           {status.processing && (
-            <Loader2 className="h-4 w-4 animate-spin text-primary" />
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-orange-400" />
           )}
-          <span className="text-sm font-medium">Processing Queue</span>
-          <Badge variant="secondary" className="text-xs">
+          <span className="text-xs font-medium text-muted-foreground">
+            Processing Queue
+          </span>
+          <Badge variant="secondary" className="text-xs h-5 px-1.5 rounded-md">
             {status.length} remaining
           </Badge>
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-0.5">
           {status.processing ? (
             <Button
               variant="ghost"
               size="icon"
-              className="h-7 w-7"
+              className="h-6 w-6 text-muted-foreground hover:text-foreground"
               onClick={handlePause}
             >
-              <Pause className="h-3.5 w-3.5" />
+              <Pause className="h-3 w-3" />
             </Button>
           ) : (
             <Button
               variant="ghost"
               size="icon"
-              className="h-7 w-7"
+              className="h-6 w-6 text-muted-foreground hover:text-foreground"
               onClick={handleResume}
             >
-              <Play className="h-3.5 w-3.5" />
+              <Play className="h-3 w-3" />
             </Button>
           )}
           <Button
             variant="ghost"
             size="icon"
-            className="h-7 w-7 text-red-400 hover:text-red-300"
+            className="h-6 w-6 text-red-400/60 hover:text-red-400"
             onClick={handleClear}
           >
-            <Trash2 className="h-3.5 w-3.5" />
+            <Trash2 className="h-3 w-3" />
           </Button>
         </div>
       </div>
-      <Progress value={status.progress} className="h-2" />
-      <p className="text-xs text-muted-foreground">
-        {status.processing
-          ? `Processing document... ${Math.round(status.progress)}%`
-          : "Queue paused"}
-      </p>
+      <Progress value={status.progress} className="h-1" />
     </div>
   );
 }
