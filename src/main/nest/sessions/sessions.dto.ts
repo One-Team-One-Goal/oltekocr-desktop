@@ -61,6 +61,13 @@ export class UpdateColumnsDto {
   columns: SessionColumnDto[];
 }
 
+export class RenameSessionDto {
+  @ApiProperty({ example: "Court Orders Batch 2" })
+  @IsString()
+  @IsNotEmpty()
+  name: string;
+}
+
 export class IngestFilesDto {
   @ApiProperty({ type: [String] })
   @IsArray()

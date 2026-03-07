@@ -130,6 +130,11 @@ export const sessionsApi = {
     request<any>("/sessions", { method: "POST", body: JSON.stringify(data) }),
   remove: (id: string) =>
     request<void>(`/sessions/${id}`, { method: "DELETE" }),
+  rename: (id: string, name: string) =>
+    request<any>(`/sessions/${id}/rename`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    }),
   updateColumns: (
     id: string,
     columns: { key: string; label: string; question: string }[],

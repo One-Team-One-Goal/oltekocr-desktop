@@ -8,6 +8,10 @@ import {
   ChevronLeft,
   ChevronRight,
   BookOpen,
+  Palette,
+  Check,
+  Moon,
+  Sun,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -16,8 +20,17 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Separator } from "@/components/ui/separator";
 import { SWAGGER_URL } from "@/api/client";
+import { useTheme, themes } from "@/components/ThemeProvider";
 import ayahayLogo from "@/assets/ayahay_logo_blue.svg";
 
 const navItems = [
@@ -39,6 +52,10 @@ export function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
+  const { theme: currentTheme, setTheme } = useTheme();
+
+  const darkThemes = themes.filter((t) => t.type === "dark");
+  const lightThemes = themes.filter((t) => t.type === "light");
 
   return (
     <div
@@ -123,6 +140,84 @@ export function Sidebar() {
 
       {/* Bottom items */}
       <div className="py-3 px-2 space-y-0.5">
+        {/* Theme dropdown */}
+        {(() => {
+          const themeBtn = (
+            <Button
+              variant="ghost"
+              className={cn(
+                "w-full justify-start gap-2.5 h-8 text-sm",
+                collapsed && "justify-center px-0",
+                "text-muted-foreground hover:text-foreground hover:bg-secondary/50",
+              )}
+            >
+              <Palette className="h-4 w-4 shrink-0" />
+              {!collapsed && <span>Theme</span>}
+            </Button>
+          );
+
+          const dropdown = (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>{themeBtn}</DropdownMenuTrigger>
+              <DropdownMenuContent
+                side="right"
+                align="start"
+                sideOffset={4}
+                className="w-52"
+              >
+                <DropdownMenuLabel className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
+                  <Moon className="h-3 w-3" /> Dark
+                </DropdownMenuLabel>
+                {darkThemes.map((t) => (
+                  <DropdownMenuItem
+                    key={t.id}
+                    className="flex items-center gap-2.5 cursor-pointer"
+                    onClick={() => setTheme(t.id)}
+                  >
+                    <div
+                      className="h-4 w-4 rounded border border-border shrink-0"
+                      style={{ backgroundColor: t.preview }}
+                    />
+                    <span className="flex-1 text-sm">{t.name}</span>
+                    {currentTheme.id === t.id && (
+                      <Check className="h-3.5 w-3.5 text-primary shrink-0" />
+                    )}
+                  </DropdownMenuItem>
+                ))}
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
+                  <Sun className="h-3 w-3" /> Light
+                </DropdownMenuLabel>
+                {lightThemes.map((t) => (
+                  <DropdownMenuItem
+                    key={t.id}
+                    className="flex items-center gap-2.5 cursor-pointer"
+                    onClick={() => setTheme(t.id)}
+                  >
+                    <div
+                      className="h-4 w-4 rounded border border-border shrink-0"
+                      style={{ backgroundColor: t.preview }}
+                    />
+                    <span className="flex-1 text-sm">{t.name}</span>
+                    {currentTheme.id === t.id && (
+                      <Check className="h-3.5 w-3.5 text-primary shrink-0" />
+                    )}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          );
+
+          return collapsed ? (
+            <Tooltip>
+              <TooltipTrigger asChild>{dropdown}</TooltipTrigger>
+              <TooltipContent side="right">Theme</TooltipContent>
+            </Tooltip>
+          ) : (
+            dropdown
+          );
+        })()}
+
         {bottomItems.map((item) => {
           const isActive = "path" in item && location.pathname === item.path;
           const btn = (

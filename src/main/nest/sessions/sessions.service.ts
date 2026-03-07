@@ -97,6 +97,14 @@ export class SessionsService {
     return this.toRecord(session);
   }
 
+  // ─── Rename ────────────────────────────────────────────
+  async rename(id: string, name: string): Promise<SessionRecord> {
+    const session = await this.prisma.session.findUnique({ where: { id } });
+    if (!session) throw new NotFoundException(`Session ${id} not found`);
+    await this.prisma.session.update({ where: { id }, data: { name } });
+    return this.findOne(id);
+  }
+
   // ─── Update Columns ────────────────────────────────────
   async updateColumns(
     id: string,
