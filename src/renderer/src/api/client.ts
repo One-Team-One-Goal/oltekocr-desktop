@@ -127,10 +127,11 @@ export const sessionsApi = {
   get: (id: string) => request<any>(`/sessions/${id}`),
   create: (data: {
     name: string;
-    mode: "OCR_EXTRACT" | "TABLE_EXTRACT";
+    mode: "OCR_EXTRACT" | "TABLE_EXTRACT" | "PDF_EXTRACT" | "JSON_EXTRACT";
     columns?: { key: string; label: string; question: string }[];
     sourceType: "FILES" | "FOLDER";
     sourcePath?: string;
+    documentType?: string;
   }) =>
     request<any>("/sessions", { method: "POST", body: JSON.stringify(data) }),
   remove: (id: string) =>

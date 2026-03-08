@@ -1,5 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { OcrService } from "../ocr/ocr.service";
+import { ContractExtractionService } from "../contract-extraction/contract-extraction.service";
 import { DocumentsGateway } from "../documents/documents.gateway";
 import { PrismaService } from "../prisma/prisma.service";
 
@@ -16,6 +17,7 @@ export class QueueService {
 
   constructor(
     private readonly ocrService: OcrService,
+    private readonly contractExtractionService: ContractExtractionService,
     private readonly gateway: DocumentsGateway,
     private readonly prisma: PrismaService,
   ) {}
@@ -106,11 +108,25 @@ export class QueueService {
     this.processing = documentId;
     this.gateway.sendQueueUpdate(this.queue.length, this.processing);
 
-    try {
-      this.logger.log(`Processing document: ${documentId}`);
-      this.gateway.sendProcessingProgress(documentId, 0, "Starting OCR...");
+    // Determine session mode to dispatch to the correct processor
+    const docRecord = await this.prisma.document.findUnique({
+      where: { id: documentId },
+      select: { session: { select: { mode: true } } },
+    });
+    const sessionMode = docRecord?.session?.mode ?? "OCR_EXTRACT";
+    const isPdfExtract = sessionMode === "PDF_EXTRACT";
 
-      const result = await this.ocrService.process(documentId);
+    try {
+      this.logger.log(`Processing document: ${documentId} [${sessionMode}]`);
+      this.gateway.sendProcessingProgress(
+        documentId,
+        0,
+        isPdfExtract ? "Extracting contract data..." : "Starting OCR...",
+      );
+
+      const result = isPdfExtract
+        ? await this.contractExtractionService.process(documentId)
+        : await this.ocrService.process(documentId);
 
       this.gateway.sendProcessingProgress(documentId, 100, "Complete");
 
@@ -135,8 +151,9 @@ export class QueueService {
           "REVIEW",
           new Date().toISOString(),
         );
+        const time = (result as any).processingTime ?? 0;
         this.logger.log(
-          `Completed: ${documentId} (conf: ${result.avgConfidence}%, time: ${result.processingTime}s)`,
+          `Completed: ${documentId} [${sessionMode}] (time: ${time}s)`,
         );
       }
     } catch (err: any) {

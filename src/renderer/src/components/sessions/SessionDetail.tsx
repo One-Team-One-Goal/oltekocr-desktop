@@ -4,6 +4,7 @@ import { sessionsApi, queueApi, exportApi } from "@/api/client";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { SessionDataTable } from "./SessionDataTable";
 import { ReviewDialog } from "@/components/ReviewDialog";
+import { ContractReviewDialog } from "./ContractReviewDialog";
 import { EditColumnsDialog } from "./EditColumnsDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -336,9 +337,19 @@ export function SessionDetail() {
         />
       </div>
 
-      {/* Review Dialog */}
-      {reviewDocId && (
+      {/* Review Dialog — OCR/TABLE sessions */}
+      {reviewDocId && session?.mode !== "PDF_EXTRACT" && (
         <ReviewDialog
+          documentId={reviewDocId}
+          open={!!reviewDocId}
+          onClose={() => setReviewDocId(null)}
+          onRefresh={refresh}
+        />
+      )}
+
+      {/* Contract Review Dialog — PDF_EXTRACT sessions */}
+      {reviewDocId && session?.mode === "PDF_EXTRACT" && (
+        <ContractReviewDialog
           documentId={reviewDocId}
           open={!!reviewDocId}
           onClose={() => setReviewDocId(null)}

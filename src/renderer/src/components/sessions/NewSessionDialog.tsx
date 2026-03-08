@@ -24,6 +24,14 @@ import {
   FileScan,
   Construction,
   Settings2,
+  Receipt,
+  ScrollText,
+  ClipboardList,
+  Scale,
+  BarChart3,
+  BadgeCheck,
+  HelpCircle,
+  type LucideIcon,
 } from "lucide-react";
 import type { SessionColumn, SessionPresetRecord } from "@shared/types";
 import {
@@ -46,6 +54,32 @@ type SessionMode =
   | "TABLE_EXTRACT"
   | "PDF_EXTRACT"
   | "JSON_EXTRACT";
+
+type PdfDocumentType =
+  | "INVOICE"
+  | "CONTRACT"
+  | "REPORT"
+  | "FORM"
+  | "LEGAL"
+  | "RECEIPT"
+  | "ID"
+  | "OTHER";
+
+const PDF_DOC_TYPES: {
+  value: PdfDocumentType;
+  icon: LucideIcon;
+  label: string;
+  desc: string;
+}[] = [
+  { value: "INVOICE", icon: Receipt, label: "Invoice / Bill", desc: "Billing documents, purchase orders, and statements." },
+  { value: "CONTRACT", icon: ScrollText, label: "Contract / Agreement", desc: "Signed agreements, terms, MoUs and similar." },
+  { value: "REPORT", icon: BarChart3, label: "Report / Letter", desc: "Business or technical reports and correspondence." },
+  { value: "FORM", icon: ClipboardList, label: "Form / Application", desc: "Filled-in forms, registrations, or applications." },
+  { value: "LEGAL", icon: Scale, label: "Legal / Court Order", desc: "Court orders, judgements, and legal filings." },
+  { value: "ID", icon: BadgeCheck, label: "ID / Certificate", desc: "Identity documents, licences, and certificates." },
+  { value: "RECEIPT", icon: FileText, label: "Receipt / Voucher", desc: "Payment receipts and transaction vouchers." },
+  { value: "OTHER", icon: HelpCircle, label: "Other", desc: "Any other document type not listed above." },
+];
 type SourceType = "FILES" | "FOLDER";
 
 const STEPS = ["Details", "Columns", "Source"] as const;
@@ -88,6 +122,9 @@ export function NewSessionDialog({
   const [selectedPresetId, setSelectedPresetId] = useState<string>("none");
   const [presetDialogOpen, setPresetDialogOpen] = useState(false);
 
+  // ── PDF document type ──────────────────────────────────
+  const [documentType, setDocumentType] = useState<PdfDocumentType | "">("INVOICE");
+
   // ── Loading ────────────────────────────────────────────
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -106,8 +143,8 @@ export function NewSessionDialog({
   }, [open]);
 
   // ── Total steps depends on mode ────────────────────────
-  const totalSteps = mode === "TABLE_EXTRACT" ? 3 : 2;
-  const isMockMode = mode === "PDF_EXTRACT" || mode === "JSON_EXTRACT";
+  const totalSteps = mode === "TABLE_EXTRACT" || mode === "PDF_EXTRACT" ? 3 : 2;
+  const isMockMode = mode === "JSON_EXTRACT";
 
   // ── Reset on close ────────────────────────────────────
   const handleClose = () => {
@@ -120,6 +157,7 @@ export function NewSessionDialog({
     setFilePaths([]);
     setFolderPath("");
     setSelectedPresetId("none");
+    setDocumentType("INVOICE");
     setError("");
     onClose();
   };
@@ -155,23 +193,29 @@ export function NewSessionDialog({
         (c) => c.label.trim() && c.key.trim() && c.question.trim(),
       );
     }
-    const lastStep = mode === "TABLE_EXTRACT" ? 3 : 2;
-    if (step === lastStep) {
+    // Source step for OCR_EXTRACT (step 2) and PDF_EXTRACT (step 2) and TABLE_EXTRACT (step 3)
+    const sourceStep =
+      mode === "TABLE_EXTRACT" ? 3 : 2;
+    if (step === sourceStep && mode !== "PDF_EXTRACT") {
       return sourceType === "FILES"
         ? filePaths.length > 0
         : folderPath.trim().length > 0;
+    }
+    // PDF_EXTRACT: step 2 = source, step 3 = doc type
+    if (mode === "PDF_EXTRACT") {
+      if (step === 2) {
+        return sourceType === "FILES"
+          ? filePaths.length > 0
+          : folderPath.trim().length > 0;
+      }
+      if (step === 3) return documentType !== "";
     }
     return true;
   };
 
   const nextStep = () => {
     if (!canAdvance()) return;
-    // Skip column step for OCR_EXTRACT
-    if (step === 1 && mode === "OCR_EXTRACT") {
-      setStep(2); // sourceType step becomes step 2 for OCR_EXTRACT
-    } else {
-      setStep((s) => s + 1);
-    }
+    setStep((s) => s + 1);
   };
 
   // ── File picker ───────────────────────────────────────
@@ -226,9 +270,10 @@ export function NewSessionDialog({
       // 1. Create session
       const session = await sessionsApi.create({
         name: name.trim(),
-        mode: mode as "OCR_EXTRACT" | "TABLE_EXTRACT",
+        mode,
         columns: mode === "TABLE_EXTRACT" ? columns : [],
         sourceType,
+        documentType: mode === "PDF_EXTRACT" ? documentType : undefined,
       });
 
       // 2. Ingest files / folder
@@ -249,7 +294,8 @@ export function NewSessionDialog({
   };
 
   // ── Render ─────────────────────────────────────────────
-  const isLastStep = mode === "TABLE_EXTRACT" ? step === 3 : step === 2;
+  const isLastStep =
+    mode === "TABLE_EXTRACT" || mode === "PDF_EXTRACT" ? step === 3 : step === 2;
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && handleClose()}>
@@ -258,7 +304,9 @@ export function NewSessionDialog({
         <div className="flex border-b px-6 pt-5 pb-0 gap-0">
           {(mode === "TABLE_EXTRACT"
             ? ["Details", "Columns", "Source"]
-            : ["Details", "Source"]
+            : mode === "PDF_EXTRACT"
+              ? ["Details", "Source", "Doc Type"]
+              : ["Details", "Source"]
           ).map((label, i) => {
             const n = i + 1;
             const active = n === step;
@@ -289,7 +337,7 @@ export function NewSessionDialog({
                   </span>
                   {label}
                 </button>
-                {i < (mode === "TABLE_EXTRACT" ? 2 : 1) && (
+                {i < (mode === "TABLE_EXTRACT" || mode === "PDF_EXTRACT" ? 2 : 1) && (
                   <ChevronRight className="h-3 w-3 text-muted-foreground mx-1 mb-2" />
                 )}
               </div>
@@ -336,7 +384,7 @@ export function NewSessionDialog({
                         icon: FileScan,
                         title: "PDF Extract",
                         desc: "Directly extract structured text from digital PDF files — no OCR needed.",
-                        mock: true,
+                        mock: false,
                       },
                       {
                         value: "JSON_EXTRACT" as const,
@@ -556,8 +604,48 @@ export function NewSessionDialog({
             </div>
           )}
 
+          {/* ── STEP 3: Doc Type (PDF_EXTRACT only) ── */}
+          {step === 3 && mode === "PDF_EXTRACT" && (
+            <div className="space-y-3">
+              <div>
+                <p className="text-sm font-medium">Document Type</p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Select the type of document you are extracting. This helps
+                  tailor the extraction pipeline.
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-2.5">
+                {PDF_DOC_TYPES.map(({ value, icon: Icon, label, desc }) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setDocumentType(value)}
+                    className={`text-left p-3 rounded-xl border-2 transition-all ${
+                      documentType === value
+                        ? "border-primary bg-primary/5"
+                        : "border-border hover:border-muted-foreground/50"
+                    }`}
+                  >
+                    <Icon
+                      className={`h-4 w-4 mb-1.5 ${
+                        documentType === value
+                          ? "text-primary"
+                          : "text-muted-foreground"
+                      }`}
+                    />
+                    <p className="text-xs font-semibold">{label}</p>
+                    <p className="text-[10px] text-muted-foreground mt-0.5 leading-tight">
+                      {desc}
+                    </p>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* ── STEP 2/3: Source ── */}
           {((step === 2 && mode === "OCR_EXTRACT") ||
+            (step === 2 && mode === "PDF_EXTRACT") ||
             (step === 3 && mode === "TABLE_EXTRACT")) && (
             <div className="space-y-4">
               <div className="space-y-2">
@@ -672,12 +760,7 @@ export function NewSessionDialog({
             variant="ghost"
             size="sm"
             onClick={
-              step === 1
-                ? handleClose
-                : () => {
-                    if (step === 2 && mode === "OCR_EXTRACT") setStep(1);
-                    else setStep((s) => s - 1);
-                  }
+              step === 1 ? handleClose : () => setStep((s) => s - 1)
             }
           >
             {step === 1 ? (

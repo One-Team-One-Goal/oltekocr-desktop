@@ -52,6 +52,7 @@ export class SessionsService {
         columns: JSON.stringify(dto.columns ?? []),
         sourceType: dto.sourceType,
         sourcePath: dto.sourcePath ?? "",
+        documentType: dto.documentType ?? "",
         status: "PENDING",
       },
     });
@@ -366,6 +367,7 @@ export class SessionsService {
       columns: JSON.parse(s.columns || "[]") as SessionColumn[],
       sourceType: s.sourceType,
       sourcePath: s.sourcePath,
+      documentType: s.documentType ?? "",
       status: s.status,
       createdAt: s.createdAt?.toISOString?.() ?? s.createdAt,
       updatedAt: s.updatedAt?.toISOString?.() ?? s.updatedAt,

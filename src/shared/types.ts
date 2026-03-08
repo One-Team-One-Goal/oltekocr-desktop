@@ -29,6 +29,7 @@ export interface SessionRecord {
   columns: SessionColumn[];
   sourceType: "FILES" | "FOLDER";
   sourcePath: string;
+  documentType: string;
   status: SessionStatus;
   createdAt: string;
   updatedAt: string;
