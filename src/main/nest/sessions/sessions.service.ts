@@ -28,6 +28,12 @@ import type {
 @Injectable()
 export class SessionsService {
   private readonly logger = new Logger(SessionsService.name);
+  private readonly allowedExtractionModels = new Set([
+    "docling",
+    "pdfplumber",
+    "pymupdf",
+    "unstructured",
+  ]);
 
   constructor(
     private readonly prisma: PrismaService,
@@ -91,6 +97,7 @@ export class SessionsService {
       name: s.name,
       mode: s.mode as any,
       status: s.status as any,
+      extractionModel: s.extractionModel ?? "docling",
       documentCount: s._count.documents,
       processedCount: processedMap[s.id] ?? 0,
       createdAt: s.createdAt.toISOString(),
@@ -109,7 +116,9 @@ export class SessionsService {
     sourceId: string,
     dto: DuplicateSessionDto,
   ): Promise<DuplicateSessionResult> {
-    const source = await this.prisma.session.findUnique({ where: { id: sourceId } });
+    const source = await this.prisma.session.findUnique({
+      where: { id: sourceId },
+    });
     if (!source) throw new NotFoundException(`Session ${sourceId} not found`);
 
     const sourceDocuments =
@@ -211,6 +220,32 @@ export class SessionsService {
     const session = await this.prisma.session.findUnique({ where: { id } });
     if (!session) throw new NotFoundException(`Session ${id} not found`);
     await this.prisma.session.update({ where: { id }, data: { name } });
+    return this.findOne(id);
+  }
+
+  // ─── Update Extraction Model ───────────────────────────
+  async updateExtractionModel(
+    id: string,
+    extractionModel: string,
+  ): Promise<SessionRecord> {
+    const session = await this.prisma.session.findUnique({ where: { id } });
+    if (!session) throw new NotFoundException(`Session ${id} not found`);
+
+    const nextModel = this.allowedExtractionModels.has(extractionModel)
+      ? extractionModel
+      : "docling";
+
+    await this.prisma.session.update({
+      where: { id },
+      data: { extractionModel: nextModel },
+    });
+
+    if (nextModel !== extractionModel) {
+      this.logger.warn(
+        `Unsupported extraction model "${extractionModel}" for session ${id}; defaulted to docling`,
+      );
+    }
+
     return this.findOne(id);
   }
 
@@ -369,6 +404,7 @@ export class SessionsService {
       sourcePath: s.sourcePath,
       documentType: s.documentType ?? "",
       status: s.status,
+      extractionModel: s.extractionModel ?? "docling",
       createdAt: s.createdAt?.toISOString?.() ?? s.createdAt,
       updatedAt: s.updatedAt?.toISOString?.() ?? s.updatedAt,
     };

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -10,107 +10,83 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import { Download, Trash2, BrainCircuit, Loader2, Cloud } from "lucide-react";
-
-// ─── Data ─────────────────────────────────────────────────────────────────────
-
-interface LlmModel {
-  id: string;
-  name: string;
-  description: string;
-  recommended?: boolean;
-  cloud?: boolean; // cloud models are always available, no download needed
-  downloaded: boolean;
-  size: string;
-}
-
-const INITIAL_MODELS: LlmModel[] = [
-  {
-    id: "gpt4o",
-    name: "gpt-4o",
-    description:
-      "State-of-the-art multimodal model. Excellent for complex document understanding and structured extraction.",
-    recommended: true,
-    cloud: true,
-    downloaded: true,
-    size: "Cloud API",
-  },
-  {
-    id: "claude-sonnet",
-    name: "Claude 3.5 Sonnet",
-    description:
-      "Superior reasoning and instruction-following. Best for nuanced extraction and long-document tasks.",
-    cloud: true,
-    downloaded: true,
-    size: "Cloud API",
-  },
-  {
-    id: "llama3-8b",
-    name: "Llama 3.2 8B",
-    description:
-      "Fast local model for general document Q&A. Keeps data on-device — no internet required.",
-    downloaded: false,
-    size: "5 GB",
-  },
-  {
-    id: "mistral-7b",
-    name: "Mistral 7B Instruct",
-    description:
-      "Lightweight and fast local model. Good balance of speed and accuracy for structured field extraction.",
-    downloaded: false,
-    size: "4 GB",
-  },
-  {
-    id: "qwen2-7b",
-    name: "Qwen 2.5 7B",
-    description:
-      "Multilingual local model with strong support for Asian languages and mixed-language documents.",
-    downloaded: false,
-    size: "4.5 GB",
-  },
-];
+import { Download, Trash2, FileSearch, Loader2 } from "lucide-react";
+import { modelsApi, sessionsApi, type ModelStatus } from "@/api/client";
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
-interface LlmDialogProps {
+interface PdfModelDialogProps {
   open: boolean;
   onClose: () => void;
+  sessionId?: string;
+  currentModel?: string;
   onSelectionChange?: (name: string) => void;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export function LlmDialog({
+export function PdfModelDialog({
   open,
   onClose,
+  sessionId,
+  currentModel,
   onSelectionChange,
-}: LlmDialogProps) {
-  const [models, setModels] = useState<LlmModel[]>(INITIAL_MODELS);
-  const [selectedId, setSelectedId] = useState("gpt4o");
+}: PdfModelDialogProps) {
+  const [models, setModels] = useState<ModelStatus[]>([]);
+  const [selectedId, setSelectedId] = useState(currentModel || "docling");
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  // Sync selectedId when currentModel prop changes
+  useEffect(() => {
+    if (currentModel) setSelectedId(currentModel);
+  }, [currentModel]);
+
+  // Fetch real model list from backend whenever the dialog opens
+  const fetchModels = useCallback(async () => {
+    setLoading(true);
+    try {
+      const list = await modelsApi.list();
+      setModels(list);
+    } catch (err) {
+      console.error("Failed to fetch models:", err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (open) fetchModels();
+  }, [open, fetchModels]);
 
   useEffect(() => {
     const selected = models.find((m) => m.id === selectedId);
     if (selected) onSelectionChange?.(selected.name);
-  }, [selectedId]);
+  }, [selectedId, models, onSelectionChange]);
+
   const [pendingDownloadId, setPendingDownloadId] = useState<string | null>(
     null,
   );
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [downloading, setDownloading] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
 
-  const startDownload = (modelId: string, selectAfter = false) => {
+  const startDownload = async (modelId: string, selectAfter = false) => {
     setDownloading(modelId);
-    // Mock download — replace with real API call when available
-    setTimeout(() => {
+    try {
+      await modelsApi.install(modelId);
       setModels((prev) =>
         prev.map((m) => (m.id === modelId ? { ...m, downloaded: true } : m)),
       );
       if (selectAfter) setSelectedId(modelId);
+    } catch (err) {
+      console.error("Model install failed:", err);
+    } finally {
       setDownloading(null);
-    }, 2000);
+    }
   };
 
-  const handleSelect = (model: LlmModel) => {
+  const handleSelect = (model: ModelStatus) => {
     if (!model.downloaded) {
       setPendingDownloadId(model.id);
     } else {
@@ -125,15 +101,22 @@ export function LlmDialog({
     startDownload(id, true);
   };
 
-  const handleDeleteConfirm = () => {
+  const handleDeleteConfirm = async () => {
     if (!pendingDeleteId) return;
-    setModels((prev) =>
-      prev.map((m) =>
-        m.id === pendingDeleteId ? { ...m, downloaded: false } : m,
-      ),
-    );
-    if (selectedId === pendingDeleteId) setSelectedId("gpt4o");
+    const id = pendingDeleteId;
     setPendingDeleteId(null);
+    setDeleting(id);
+    try {
+      await modelsApi.uninstall(id);
+      setModels((prev) =>
+        prev.map((m) => (m.id === id ? { ...m, downloaded: false } : m)),
+      );
+      if (selectedId === id) setSelectedId("docling");
+    } catch (err) {
+      console.error("Model uninstall failed:", err);
+    } finally {
+      setDeleting(null);
+    }
   };
 
   const pendingDownloadModel = pendingDownloadId
@@ -153,19 +136,26 @@ export function LlmDialog({
         <DialogContent className="sm:max-w-[540px]">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <BrainCircuit className="h-4 w-4" />
-              LLM Model
+              <FileSearch className="h-4 w-4" />
+              Document Extraction Model
             </DialogTitle>
             <DialogDescription>
-              Choose the language model used for field extraction and document
-              understanding.
+              Choose the model used to extract text and tables from documents
+              (PDF, DOCX, HTML, images, and more).
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-2 max-h-[400px] overflow-y-auto pr-1">
+            {loading && models.length === 0 && (
+              <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                Loading models…
+              </div>
+            )}
             {models.map((model) => {
               const isSelected = selectedId === model.id;
               const isDownloading = downloading === model.id;
+              const isDeleting = deleting === model.id;
               return (
                 <div
                   key={model.id}
@@ -207,16 +197,7 @@ export function LlmDialog({
                           Recommended
                         </Badge>
                       )}
-                      {model.cloud && (
-                        <Badge
-                          variant="secondary"
-                          className="text-[10px] px-1.5 py-0 h-4 bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400"
-                        >
-                          <Cloud className="h-2.5 w-2.5 mr-0.5" />
-                          Cloud
-                        </Badge>
-                      )}
-                      {!model.downloaded && !model.cloud && !isDownloading && (
+                      {!model.downloaded && !isDownloading && (
                         <Badge
                           variant="outline"
                           className="text-[10px] px-1.5 py-0 h-4 text-muted-foreground"
@@ -229,7 +210,7 @@ export function LlmDialog({
                           variant="outline"
                           className="text-[10px] px-1.5 py-0 h-4 text-blue-600 border-blue-300"
                         >
-                          Downloading…
+                          Installing…
                         </Badge>
                       )}
                     </div>
@@ -237,9 +218,7 @@ export function LlmDialog({
                       {model.description}
                     </p>
                     <span className="text-[10px] text-muted-foreground mt-1 block">
-                      {model.cloud
-                        ? "No download required"
-                        : `Model size: ${model.size}`}
+                      Model size: {model.size}
                     </span>
                   </div>
 
@@ -248,12 +227,12 @@ export function LlmDialog({
                     className="shrink-0 flex items-center ml-2"
                     onClick={(e) => e.stopPropagation()}
                   >
-                    {model.cloud ? null : model.downloaded ? (
+                    {model.downloaded ? (
                       <Button
                         variant="ghost"
                         size="icon"
                         className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                        disabled={isSelected}
+                        disabled={isSelected || isDeleting}
                         title={
                           isSelected
                             ? "Cannot delete the active model"
@@ -261,7 +240,11 @@ export function LlmDialog({
                         }
                         onClick={() => setPendingDeleteId(model.id)}
                       >
-                        <Trash2 className="h-3.5 w-3.5" />
+                        {isDeleting ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Trash2 className="h-3.5 w-3.5" />
+                        )}
                       </Button>
                     ) : (
                       <Button
@@ -276,7 +259,7 @@ export function LlmDialog({
                         ) : (
                           <Download className="h-3 w-3" />
                         )}
-                        {isDownloading ? "Downloading…" : "Download"}
+                        {isDownloading ? "Installing…" : "Download"}
                       </Button>
                     )}
                   </div>
@@ -289,7 +272,27 @@ export function LlmDialog({
             <Button variant="outline" onClick={onClose}>
               Cancel
             </Button>
-            <Button onClick={onClose}>Apply</Button>
+            <Button
+              disabled={saving}
+              onClick={async () => {
+                if (sessionId) {
+                  setSaving(true);
+                  try {
+                    await sessionsApi.updateExtractionModel(
+                      sessionId,
+                      selectedId,
+                    );
+                  } catch (err) {
+                    console.error("Failed to save extraction model:", err);
+                  } finally {
+                    setSaving(false);
+                  }
+                }
+                onClose();
+              }}
+            >
+              {saving ? "Saving…" : "Apply"}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -304,8 +307,8 @@ export function LlmDialog({
             <DialogTitle>Download model?</DialogTitle>
             <DialogDescription>
               <strong>{pendingDownloadModel?.name}</strong> (
-              {pendingDownloadModel?.size}) needs to be downloaded before it can
-              be used. This may take a moment depending on your connection.
+              {pendingDownloadModel?.size}) will be installed via pip. This may
+              take a moment depending on your connection.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -329,9 +332,9 @@ export function LlmDialog({
           <DialogHeader>
             <DialogTitle>Delete model files?</DialogTitle>
             <DialogDescription>
-              This will remove all downloaded files for{" "}
-              <strong>{pendingDeleteModel?.name}</strong> (
-              {pendingDeleteModel?.size}). You can re-download it at any time.
+              This will remove the local files for{" "}
+              <strong>{pendingDeleteModel?.name}</strong>. You can re-download
+              them later.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

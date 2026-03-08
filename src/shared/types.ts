@@ -31,6 +31,7 @@ export interface SessionRecord {
   sourcePath: string;
   documentType: string;
   status: SessionStatus;
+  extractionModel: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -40,6 +41,7 @@ export interface SessionListItem {
   name: string;
   mode: SessionMode;
   status: SessionStatus;
+  extractionModel: string;
   documentCount: number;
   processedCount: number;
   createdAt: string;
@@ -155,6 +157,7 @@ export interface DocumentRecord {
   tags: string[];
   exported: boolean;
   exportPath: string;
+  extractionType: ExtractionType;
   quality: QualityCheck;
   ocrResult: OcrResult | null;
   userEdits: Record<string, unknown>;
@@ -270,7 +273,16 @@ export interface WsProcessingProgress {
   data: { id: string; progress: number; message: string };
 }
 
-export type WsEvent = WsQueueUpdate | WsDocumentStatus | WsProcessingProgress;
+export interface WsProcessingLog {
+  event: "processing:log";
+  data: { id: string; line: string; timestamp: string };
+}
+
+export type WsEvent =
+  | WsQueueUpdate
+  | WsDocumentStatus
+  | WsProcessingProgress
+  | WsProcessingLog;
 
 // ─── IPC Channels ────────────────────────────────────────
 export const IpcChannel = {

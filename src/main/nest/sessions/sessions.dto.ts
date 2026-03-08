@@ -100,3 +100,14 @@ export class DuplicateSessionDto {
   @IsNotEmpty()
   name?: string;
 }
+
+export class UpdateExtractionModelDto {
+  @ApiProperty({
+    example: "docling",
+    description:
+      'Extraction model ID: "docling" | "pdfplumber" | "pymupdf" | "unstructured"',
+  })
+  @IsString()
+  @IsNotEmpty()
+  extractionModel: string;
+}

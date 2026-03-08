@@ -9,6 +9,7 @@ import { QueueModule } from "./queue/queue.module";
 import { SessionsModule } from "./sessions/sessions.module";
 import { SessionPresetsModule } from "./session-presets/session-presets.module";
 import { ContractExtractionModule } from "./contract-extraction/contract-extraction.module";
+import { ModelsModule } from "./models/models.module";
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { ContractExtractionModule } from "./contract-extraction/contract-extract
     SessionsModule,
     SessionPresetsModule,
     ContractExtractionModule,
+    ModelsModule,
   ],
 })
 export class AppModule {}

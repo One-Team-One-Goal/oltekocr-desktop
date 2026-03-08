@@ -198,7 +198,7 @@ export function OcrEngineDialog({
                       {engine.recommended && (
                         <Badge
                           variant="secondary"
-                          className="text-[10px] px-1.5 py-0 h-4 bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400"
+                          className="text-[10px] px-1.5 py-0 h-4 bg-green-100 text-green-700"
                         >
                           Recommended
                         </Badge>

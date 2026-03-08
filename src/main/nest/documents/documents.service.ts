@@ -415,6 +415,7 @@ export class DocumentsService {
       tags: JSON.parse(doc.tags || "[]"),
       exported: doc.exported,
       exportPath: doc.exportPath,
+      extractionType: doc.extractionType || "AUTO",
       quality: {
         valid: doc.qualityValid,
         dpi: doc.qualityDpi,
