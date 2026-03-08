@@ -57,6 +57,15 @@ export const documentsApi = {
     request<any>(`/documents/${id}/reprocess`, { method: "PATCH" }),
   delete: (id: string) =>
     request<any>(`/documents/${id}`, { method: "DELETE" }),
+  batchUpdateExtractionType: (ids: string[], extractionType: string) =>
+    Promise.all(
+      ids.map((id) =>
+        request<any>(`/documents/${id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ extractionType }),
+        }),
+      ),
+    ),
   imageUrl: (id: string) => `${BASE_URL}/documents/${id}/image`,
   thumbnailUrl: (id: string) => `${BASE_URL}/documents/${id}/thumbnail`,
 };
@@ -196,7 +205,8 @@ export const sessionPresetsApi = {
       method: "PATCH",
       body: JSON.stringify(data),
     }),
-  remove: (id: string) => request<void>(`/session-presets/${id}`, { method: "DELETE" }),
+  remove: (id: string) =>
+    request<void>(`/session-presets/${id}`, { method: "DELETE" }),
 };
 
 // ─── Swagger ─────────────────────────────────────────────

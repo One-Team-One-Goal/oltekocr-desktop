@@ -15,6 +15,9 @@ import {
   unlinkSync,
   readdirSync,
   statSync,
+  openSync,
+  readSync,
+  closeSync,
 } from "fs";
 import { join, basename, extname } from "path";
 import { getDataPath } from "../../data-dirs";
@@ -73,6 +76,7 @@ export class DocumentsService {
         qualityValid: true,
         qualityIssues: true,
         sessionId: true,
+        extractionType: true,
         extractedRow: true,
       },
     });
@@ -90,6 +94,7 @@ export class DocumentsService {
       qualityValid: d.qualityValid,
       qualityIssueCount: JSON.parse(d.qualityIssues || "[]").length,
       sessionId: d.sessionId,
+      extractionType: (d.extractionType as any) || "IMAGE",
       extractedRow: (() => {
         try {
           const parsed = JSON.parse(d.extractedRow || "{}");
@@ -149,6 +154,7 @@ export class DocumentsService {
           imagePath: destPath,
           thumbnailPath,
           status: "QUEUED",
+          // AUTO means the pipeline will detect the type when processing starts
           ...(sessionId ? { sessionId } : {}),
           qualityValid: quality.valid,
           qualityDpi: quality.dpi,
@@ -175,6 +181,7 @@ export class DocumentsService {
         qualityValid: doc.qualityValid,
         qualityIssueCount: quality.issues.length,
         sessionId: (doc as any).sessionId ?? null,
+        extractionType: ((doc as any).extractionType as any) || "IMAGE",
         extractedRow: null,
       });
 
@@ -217,6 +224,8 @@ export class DocumentsService {
       data.userEdits = JSON.stringify(dto.userEdits);
     if (dto.extractedRow !== undefined)
       data.extractedRow = JSON.stringify(dto.extractedRow);
+    if (dto.extractionType !== undefined)
+      data.extractionType = dto.extractionType;
 
     const doc = await this.prisma.document.update({
       where: { id },
@@ -325,6 +334,26 @@ export class DocumentsService {
   }
 
   // ─── Helpers ───────────────────────────────────────────
+  detectExtractionType(
+    filePath: string,
+  ): "IMAGE" | "PDF_TEXT" | "PDF_IMAGE" | "EXCEL" {
+    const ext = extname(filePath).toLowerCase();
+    if (ext === ".xlsx" || ext === ".xls") return "EXCEL";
+    if (ext !== ".pdf") return "IMAGE";
+    // For PDFs: peek at the binary to see if embedded fonts/text operators exist.
+    // A scanned (image-only) PDF has no /Font resources; a digital PDF always does.
+    try {
+      const fd = openSync(filePath, "r");
+      const buf = Buffer.alloc(65536); // read first 64 KB
+      const bytesRead = readSync(fd, buf, 0, 65536, 0);
+      closeSync(fd);
+      const chunk = buf.slice(0, bytesRead).toString("latin1");
+      return chunk.includes("/Font") ? "PDF_TEXT" : "PDF_IMAGE";
+    } catch {
+      return "PDF_TEXT";
+    }
+  }
+
   private async ensureExists(id: string): Promise<void> {
     const count = await this.prisma.document.count({ where: { id } });
     if (count === 0) throw new NotFoundException(`Document ${id} not found`);
