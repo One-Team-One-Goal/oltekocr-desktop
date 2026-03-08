@@ -80,6 +80,7 @@ model Document {
   session      Session? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   // Extraction
+  extractionType String @default("AUTO") @map("extraction_type") // "AUTO" | "IMAGE" | "PDF_TEXT" | "PDF_IMAGE" | "EXCEL"
   userEdits     String @default("{}") @map("user_edits")
   extractedJson String @default("{}") @map("extracted_json")
   extractedRow  String @default("{}") @map("extracted_row")

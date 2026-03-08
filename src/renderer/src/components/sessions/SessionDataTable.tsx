@@ -78,6 +78,7 @@ import {
   Maximize2,
   FileText,
   Type,
+  Layers,
   Loader2,
   ArrowUpDown,
   ChevronDown,
@@ -97,6 +98,31 @@ import type {
   SessionRecord,
   TextBlock,
 } from "@shared/types";
+import { ExtractionType } from "@shared/types";
+
+const EXTRACTION_TYPE_OPTIONS: {
+  value: ExtractionType;
+  label: string;
+  color: string;
+}[] = [
+  { value: ExtractionType.AUTO, label: "Auto", color: "text-muted-foreground" },
+  { value: ExtractionType.IMAGE, label: "Image", color: "text-sky-500" },
+  {
+    value: ExtractionType.PDF_TEXT,
+    label: "PDF (Text)",
+    color: "text-violet-500",
+  },
+  {
+    value: ExtractionType.PDF_IMAGE,
+    label: "PDF (Scanned)",
+    color: "text-amber-500",
+  },
+  { value: ExtractionType.EXCEL, label: "Excel", color: "text-green-500" },
+];
+
+function extractionTypeColor(t: ExtractionType) {
+  return EXTRACTION_TYPE_OPTIONS.find((o) => o.value === t)?.color ?? "";
+}
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -262,6 +288,85 @@ function RowActions({
   );
 }
 
+// ─── Batch Toolbar ────────────────────────────────────────────────────────────
+
+function BatchToolbar({
+  count,
+  ids,
+  onClear,
+  onRefresh,
+}: {
+  count: number;
+  ids: string[];
+  onClear: () => void;
+  onRefresh: () => void;
+}) {
+  const [batchType, setBatchType] = useState<ExtractionType>(
+    ExtractionType.AUTO,
+  );
+
+  return (
+    <>
+      <span className="text-xs text-muted-foreground shrink-0">
+        {count} selected
+      </span>
+      <Button
+        variant="outline"
+        size="sm"
+        className="gap-1.5 text-xs h-8"
+        onClick={async () => {
+          await queueApi.add(ids);
+          onClear();
+          onRefresh();
+        }}
+      >
+        <Play className="h-3.5 w-3.5 text-green-500" />
+      </Button>
+      <Button
+        variant="outline"
+        size="sm"
+        className="gap-1.5 text-xs h-8"
+        onClick={async () => {
+          await queueApi.cancel(ids).catch(() => {});
+          onClear();
+          onRefresh();
+        }}
+      >
+        <Square className="h-3.5 w-3.5 text-red-500" />
+      </Button>
+      <div className="flex items-center gap-1 border-l pl-2">
+        <Layers className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+        <Select
+          value={batchType}
+          onValueChange={(v) => setBatchType(v as ExtractionType)}
+        >
+          <SelectTrigger className="h-8 w-36 text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {EXTRACTION_TYPE_OPTIONS.map((opt) => (
+              <SelectItem key={opt.value} value={opt.value} className="text-xs">
+                <span className={opt.color}>{opt.label}</span>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button
+          size="sm"
+          className="h-8 text-xs px-3"
+          onClick={async () => {
+            await documentsApi.batchUpdateExtractionType(ids, batchType);
+            onClear();
+            onRefresh();
+          }}
+        >
+          Apply
+        </Button>
+      </div>
+    </>
+  );
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export function SessionDataTable({
@@ -362,6 +467,7 @@ export function SessionDataTable({
           onCheckedChange={(v) => row.toggleSelected(!!v)}
           aria-label="Select row"
           onClick={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => e.stopPropagation()}
         />
       ),
       enableHiding: false,
@@ -431,6 +537,55 @@ export function SessionDataTable({
             {row.original.ocrPageCount || "—"}
           </span>
         ),
+      },
+      {
+        id: "extractionType",
+        header: "Ext. Type",
+        size: 140,
+        cell: ({ row }) => {
+          const current = (row.original.extractionType ??
+            "IMAGE") as ExtractionType;
+          return (
+            <Select
+              value={current}
+              onValueChange={async (val) => {
+                try {
+                  await documentsApi.update(row.original.id, {
+                    extractionType: val,
+                  });
+                  onRefresh();
+                } catch (err) {
+                  console.error("Failed to update extraction type:", err);
+                }
+              }}
+            >
+              <SelectTrigger
+                className="h-7 text-xs border-none shadow-none bg-transparent gap-1 w-full px-1 border border-border rounded-full focus:ring-0"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <span
+                  className={cn(
+                    "font-medium px-2 py-1 border border-border rounded-full",
+                    extractionTypeColor(current),
+                  )}
+                >
+                  <SelectValue />
+                </span>
+              </SelectTrigger>
+              <SelectContent onClick={(e) => e.stopPropagation()}>
+                {EXTRACTION_TYPE_OPTIONS.map((opt) => (
+                  <SelectItem
+                    key={opt.value}
+                    value={opt.value}
+                    className="text-xs"
+                  >
+                    <span className={opt.color}>{opt.label}</span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          );
+        },
       },
     ];
 
@@ -566,41 +721,14 @@ export function SessionDataTable({
         />
         {/* Batch actions — shown when rows are selected */}
         {table.getFilteredSelectedRowModel().rows.length > 0 && (
-          <>
-            <span className="text-xs text-muted-foreground">
-              {table.getFilteredSelectedRowModel().rows.length} selected
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              className="gap-1.5 text-xs h-8"
-              onClick={async () => {
-                const ids = table
-                  .getFilteredSelectedRowModel()
-                  .rows.map((r) => r.original.id);
-                await queueApi.add(ids);
-                setRowSelection({});
-                onRefresh();
-              }}
-            >
-              <Play className="h-3.5 w-3.5 text-green-500" />
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="gap-1.5 text-xs h-8"
-              onClick={async () => {
-                const ids = table
-                  .getFilteredSelectedRowModel()
-                  .rows.map((r) => r.original.id);
-                await queueApi.cancel(ids).catch(() => {});
-                setRowSelection({});
-                onRefresh();
-              }}
-            >
-              <Square className="h-3.5 w-3.5 text-red-500" />
-            </Button>
-          </>
+          <BatchToolbar
+            count={table.getFilteredSelectedRowModel().rows.length}
+            ids={table
+              .getFilteredSelectedRowModel()
+              .rows.map((r) => r.original.id)}
+            onClear={() => setRowSelection({})}
+            onRefresh={onRefresh}
+          />
         )}
         <Select
           value={statusFilter}
@@ -702,7 +830,7 @@ export function SessionDataTable({
                     <TableRow
                       data-state={row.getIsSelected() && "selected"}
                       className="cursor-pointer"
-                      onClick={() => onReview(row.original.id)}
+                      onDoubleClick={() => onReview(row.original.id)}
                     >
                       {row.getVisibleCells().map((cell) => (
                         <TableCell key={cell.id} className="overflow-hidden">

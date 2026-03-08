@@ -4,6 +4,7 @@ import { join } from "path";
 import { existsSync } from "fs";
 import { PrismaService } from "../prisma/prisma.service";
 import { ExtractionService } from "../extraction/extraction.service";
+import { DocumentsService } from "../documents/documents.service";
 import { SettingsService } from "../settings/settings.service";
 import type { OcrResult, SessionColumn } from "@shared/types";
 
@@ -14,6 +15,7 @@ export class OcrService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly extractionService: ExtractionService,
+    private readonly documentsService: DocumentsService,
     private readonly settings: SettingsService,
   ) {}
 
@@ -43,7 +45,31 @@ export class OcrService {
     // Document was deleted (e.g. session cascade) before processing started
     if (!doc) {
       this.logger.warn(`Document ${documentId} no longer exists — skipping`);
-      return { fullText: "", markdown: "", textBlocks: [], tables: [], avgConfidence: 0, processingTime: 0, pageCount: 0, warnings: [] } as OcrResult;
+      return {
+        fullText: "",
+        markdown: "",
+        textBlocks: [],
+        tables: [],
+        avgConfidence: 0,
+        processingTime: 0,
+        pageCount: 0,
+        warnings: [],
+      } as OcrResult;
+    }
+
+    // If extractionType is AUTO, detect it now and persist so downstream
+    // processors (PDF vs image vs excel) know which pipeline to run.
+    if (!doc.extractionType || doc.extractionType === "AUTO") {
+      const detected = this.documentsService.detectExtractionType(
+        doc.imagePath,
+      );
+      await this.prisma.document.updateMany({
+        where: { id: documentId },
+        data: { extractionType: detected },
+      });
+      this.logger.log(
+        `AUTO → resolved extractionType=${detected} for ${documentId}`,
+      );
     }
 
     // Mark as PROCESSING — use updateMany so a mid-flight delete doesn't throw
@@ -104,7 +130,7 @@ export class OcrService {
     const root = process.cwd();
     const candidates = [
       join(root, ".venv", "Scripts", "python.exe"), // Windows venv
-      join(root, ".venv", "bin", "python"),          // macOS / Linux venv
+      join(root, ".venv", "bin", "python"), // macOS / Linux venv
     ];
     for (const candidate of candidates) {
       if (existsSync(candidate)) {

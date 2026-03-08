@@ -60,6 +60,17 @@ export interface DuplicateSessionResult {
   documents: DocumentListItem[];
 }
 
+// ─── Extraction Type ────────────────────────────────────
+export const ExtractionType = {
+  AUTO: "AUTO", // auto-detect at processing time
+  IMAGE: "IMAGE", // standalone image file (jpg, png, tiff…)
+  PDF_TEXT: "PDF_TEXT", // digital PDF with selectable text
+  PDF_IMAGE: "PDF_IMAGE", // scanned PDF — pages are rasterised images
+  EXCEL: "EXCEL", // spreadsheet
+} as const;
+export type ExtractionType =
+  (typeof ExtractionType)[keyof typeof ExtractionType];
+
 // ─── Document Status ─────────────────────────────────────
 export const DocumentStatus = {
   QUEUED: "QUEUED",
@@ -163,6 +174,7 @@ export interface DocumentListItem {
   qualityValid: boolean;
   qualityIssueCount: number;
   sessionId: string | null;
+  extractionType: ExtractionType;
   /** Populated for TABLE_EXTRACT sessions after OCR — key=column.key, value={ answer, score } */
   extractedRow: Record<string, { answer: string; score: number }> | null;
 }
