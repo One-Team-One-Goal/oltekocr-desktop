@@ -11,9 +11,17 @@ export default function App() {
         <Sidebar />
         <main className="flex-1 flex flex-col overflow-hidden">
           <Routes>
-            <Route path="/" element={<SessionsHome />} />
+            <Route path="/" element={<SessionsHome mode="PDF_EXTRACT" />} />
+            <Route
+              path="/ocr-extract"
+              element={<SessionsHome mode="OCR_EXTRACT" />}
+            />
+            <Route
+              path="/keyword-extract"
+              element={<SessionsHome mode="TABLE_EXTRACT" />}
+            />
             <Route path="/sessions/:id" element={<SessionDetail />} />
-            <Route path="*" element={<SessionsHome />} />
+            <Route path="*" element={<SessionsHome mode="PDF_EXTRACT" />} />
           </Routes>
         </main>
       </div>

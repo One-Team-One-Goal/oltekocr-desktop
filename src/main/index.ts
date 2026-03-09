@@ -26,6 +26,7 @@ async function createWindow(): Promise<void> {
       sandbox: false,
       contextIsolation: true,
       nodeIntegration: false,
+      plugins: true,
     },
   });
 

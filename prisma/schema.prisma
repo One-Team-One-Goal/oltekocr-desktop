@@ -9,17 +9,18 @@ datasource db {
 
 // ─── Session ─────────────────────────────────────────────
 model Session {
-  id           String     @id @default(uuid())
-  name         String
-  mode         String     @default("OCR_EXTRACT")  // "OCR_EXTRACT" | "TABLE_EXTRACT" | "PDF_EXTRACT" | "JSON_EXTRACT"
-  columns      String     @default("[]")            // JSON: SessionColumn[]
-  sourceType   String     @default("FILES") @map("source_type")
-  sourcePath   String     @default("") @map("source_path")
-  documentType String     @default("") @map("document_type") // for PDF_EXTRACT: "INVOICE" | "CONTRACT" | etc.
-  status       String     @default("PENDING")       // "PENDING" | "PROCESSING" | "DONE" | "ERROR"
-  createdAt    DateTime   @default(now()) @map("created_at")
-  updatedAt    DateTime   @updatedAt @map("updated_at")
-  documents    Document[]
+  id              String     @id @default(uuid())
+  name            String
+  mode            String     @default("OCR_EXTRACT")  // "OCR_EXTRACT" | "TABLE_EXTRACT" | "PDF_EXTRACT" | "JSON_EXTRACT"
+  columns         String     @default("[]")            // JSON: SessionColumn[]
+  sourceType      String     @default("FILES") @map("source_type")
+  sourcePath      String     @default("") @map("source_path")
+  documentType    String     @default("") @map("document_type") // for PDF_EXTRACT: "INVOICE" | "CONTRACT" | etc.
+  extractionModel String     @default("docling") @map("extraction_model") // e.g. "docling" | "pdfplumber" | "pymupdf" | "unstructured"
+  status          String     @default("PENDING")       // "PENDING" | "PROCESSING" | "DONE" | "ERROR"
+  createdAt       DateTime   @default(now()) @map("created_at")
+  updatedAt       DateTime   @updatedAt @map("updated_at")
+  documents       Document[]
 
   @@index([status])
   @@index([createdAt])
@@ -81,6 +82,7 @@ model Document {
   session      Session? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   // Extraction
+  extractionType String @default("AUTO") @map("extraction_type") // "AUTO" | "IMAGE" | "PDF_TEXT" | "PDF_IMAGE" | "EXCEL"
   userEdits     String @default("{}") @map("user_edits")
   extractedJson String @default("{}") @map("extracted_json")
   extractedRow  String @default("{}") @map("extracted_row")

@@ -57,6 +57,15 @@ export const documentsApi = {
     request<any>(`/documents/${id}/reprocess`, { method: "PATCH" }),
   delete: (id: string) =>
     request<any>(`/documents/${id}`, { method: "DELETE" }),
+  batchUpdateExtractionType: (ids: string[], extractionType: string) =>
+    Promise.all(
+      ids.map((id) =>
+        request<any>(`/documents/${id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ extractionType }),
+        }),
+      ),
+    ),
   imageUrl: (id: string) => `${BASE_URL}/documents/${id}/image`,
   thumbnailUrl: (id: string) => `${BASE_URL}/documents/${id}/thumbnail`,
 };
@@ -161,6 +170,11 @@ export const sessionsApi = {
     }),
   getDocuments: (id: string) => request<any[]>(`/sessions/${id}/documents`),
   getStats: (id: string) => request<any>(`/sessions/${id}/stats`),
+  updateExtractionModel: (id: string, extractionModel: string) =>
+    request<any>(`/sessions/${id}/extraction-model`, {
+      method: "PATCH",
+      body: JSON.stringify({ extractionModel }),
+    }),
   duplicate: (
     id: string,
     data: { strategy: "FULL" | "COLUMNS_ONLY"; name?: string },
@@ -196,7 +210,30 @@ export const sessionPresetsApi = {
       method: "PATCH",
       body: JSON.stringify(data),
     }),
-  remove: (id: string) => request<void>(`/session-presets/${id}`, { method: "DELETE" }),
+  remove: (id: string) =>
+    request<void>(`/session-presets/${id}`, { method: "DELETE" }),
+};
+
+// ─── Models ──────────────────────────────────────────────
+export interface ModelStatus {
+  id: string;
+  name: string;
+  description: string;
+  recommended: boolean;
+  downloaded: boolean;
+  size: string;
+}
+
+export const modelsApi = {
+  list: () => request<ModelStatus[]>("/models"),
+  install: (id: string) =>
+    request<{ ok: boolean; log: string }>(`/models/${id}/install`, {
+      method: "POST",
+    }),
+  uninstall: (id: string) =>
+    request<{ ok: boolean; log: string }>(`/models/${id}`, {
+      method: "DELETE",
+    }),
 };
 
 // ─── Swagger ─────────────────────────────────────────────

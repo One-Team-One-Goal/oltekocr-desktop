@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import {
-  LayoutDashboard,
-  ScanLine,
-  FileOutput,
+  FileText,
+  FileScan,
+  Table2,
   BookOpen,
   Palette,
   Check,
@@ -13,6 +13,7 @@ import {
   Minus,
   Maximize2,
   EllipsisVertical,
+  Settings,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -27,6 +28,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { SWAGGER_URL } from "@/api/client";
 import { useTheme, themes } from "@/components/ThemeProvider";
+import { SettingsDialog } from "@/components/SettingsDialog";
 import ayahayLogo from "@/assets/ayahay_logo_blue.svg";
 
 // CSS drag region helpers (Electron-specific)
@@ -34,16 +36,12 @@ const drag = { WebkitAppRegion: "drag" } as React.CSSProperties;
 const noDrag = { WebkitAppRegion: "no-drag" } as React.CSSProperties;
 
 const navItems = [
-  { icon: LayoutDashboard, label: "Dashboard", path: "/" },
-  { icon: ScanLine, label: "Scanner", path: "/scanner" },
-  { icon: FileOutput, label: "Export", path: "/export" },
-];
-
-const bottomItems = [
+  { icon: Table2, label: "Tables", path: "/" },
+  { icon: FileScan, label: "Images", path: "/ocr-extract" },
   {
-    icon: BookOpen,
-    label: "API Docs",
-    action: () => window.open(SWAGGER_URL, "_blank"),
+    icon: FileText,
+    label: "Keywords",
+    path: "/keyword-extract",
   },
 ];
 
@@ -51,6 +49,7 @@ export function Sidebar() {
   const navigate = useNavigate();
   const location = useLocation();
   const { theme: currentTheme, setTheme } = useTheme();
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const darkThemes = themes.filter((t) => t.type === "dark");
   const lightThemes = themes.filter((t) => t.type === "light");
@@ -89,8 +88,15 @@ export function Sidebar() {
 
       {/* Nav items */}
       <nav className="flex-1 py-3 px-2 space-y-0.5">
+        <p className="px-2 py-1 text-[11px] font-semibold text-muted-foreground/60">
+          Extract
+        </p>
         {navItems.map((item) => {
-          const isActive = location.pathname === item.path;
+          const isActive =
+            item.path === "/"
+              ? location.pathname === "/" ||
+                location.pathname.startsWith("/pdf-extract")
+              : location.pathname.startsWith(item.path);
           const btn = (
             <Button
               key={item.path}
@@ -119,7 +125,7 @@ export function Sidebar() {
             <Button
               variant="ghost"
               className={cn(
-                "w-full justify-start gap-2.5 h-8 text-sm",
+                "w-full justify-start gap-2.5 h-9 text-sm",
                 "text-muted-foreground hover:text-foreground hover:bg-secondary/50",
               )}
             >
@@ -183,30 +189,18 @@ export function Sidebar() {
           return dropdown;
         })()}
 
-        {bottomItems.map((item) => {
-          const isActive = "path" in item && location.pathname === item.path;
-          const btn = (
-            <Button
-              key={item.label}
-              variant={isActive ? "secondary" : "ghost"}
-              className={cn(
-                "w-full justify-start gap-2.5 h-9 text-sm",
-                isActive
-                  ? "bg-secondary/80 text-foreground"
-                  : "text-muted-foreground hover:text-foreground hover:bg-secondary/50",
-              )}
-              onClick={() =>
-                "action" in item && item.action
-                  ? item.action()
-                  : "path" in item && navigate(item.path!)
-              }
-            >
-              <item.icon className="h-4 w-4 shrink-0" />
-              <span>{item.label}</span>
-            </Button>
-          );
-          return btn;
-        })}
+        {/* Settings */}
+        <Button
+          variant="ghost"
+          className={cn(
+            "w-full justify-start gap-2.5 h-9 text-sm",
+            "text-muted-foreground hover:text-foreground hover:bg-secondary/50",
+          )}
+          onClick={() => setSettingsOpen(true)}
+        >
+          <Settings className="h-4 w-4 shrink-0" />
+          <span>Settings</span>
+        </Button>
 
         {/* OltekOCR branding */}
         <div className="flex items-center gap-2 px-2 py-1.5 rounded-md pt-4">
@@ -219,9 +213,34 @@ export function Sidebar() {
             </span>
             <span className="text-[10px] text-muted-foreground">v1.0.0</span>
           </div>
-            <EllipsisVertical className="ml-auto h-4 w-4"/>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" className="ml-auto h-6 w-6">
+                <EllipsisVertical className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              side="right"
+              align="end"
+              sideOffset={4}
+              className="w-44"
+            >
+              <DropdownMenuItem
+                className="flex items-center gap-2 cursor-pointer"
+                onClick={() => window.open(SWAGGER_URL, "_blank")}
+              >
+                <BookOpen className="h-3.5 w-3.5" />
+                <span>API Docs</span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
+
+      <SettingsDialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+      />
     </div>
   );
 }

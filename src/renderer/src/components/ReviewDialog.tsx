@@ -8,7 +8,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import {
   statusLabel,
@@ -33,14 +32,31 @@ import {
   BarChart3,
   FileText,
   Code2,
+  Braces,
+  Loader2,
 } from "lucide-react";
-import type { DocumentRecord, OcrResult, QualityCheck } from "@shared/types";
+import type {
+  DocumentRecord,
+  ExtractionType,
+  OcrResult,
+  QualityCheck,
+} from "@shared/types";
 
 interface ReviewDialogProps {
   documentId: string | null;
   open: boolean;
   onClose: () => void;
   onRefresh: () => void;
+}
+
+/** True when extraction type is a PDF pipeline */
+function isPdfType(t: ExtractionType | string | undefined): boolean {
+  return t === "PDF_TEXT" || t === "PDF_IMAGE";
+}
+
+/** True when extraction type is image-based (OCR) */
+function isImageType(t: ExtractionType | string | undefined): boolean {
+  return !t || t === "IMAGE" || t === "AUTO" || t === "PDF_IMAGE";
 }
 
 export function ReviewDialog({
@@ -57,12 +73,28 @@ export function ReviewDialog({
   const [activeTab, setActiveTab] = useState("formatted");
   const imageRef = useRef<HTMLDivElement>(null);
 
+  // Lazy-load flags for image-scanned docs (Formatted / Raw / Tables)
+  const [formattedLoaded, setFormattedLoaded] = useState(false);
+  const [rawLoaded, setRawLoaded] = useState(false);
+  const [tablesLoaded, setTablesLoaded] = useState(false);
+
   useEffect(() => {
     if (documentId && open) {
       setLoading(true);
+      setFormattedLoaded(false);
+      setRawLoaded(false);
+      setTablesLoaded(false);
       documentsApi
         .get(documentId)
-        .then((d) => setDoc(d))
+        .then((d) => {
+          setDoc(d);
+          // Default tab: JSON for PDFs, formatted for images
+          if (isPdfType(d.extractionType)) {
+            setActiveTab("json");
+          } else {
+            setActiveTab("formatted");
+          }
+        })
         .catch(console.error)
         .finally(() => setLoading(false));
       setZoom(1);
@@ -100,9 +132,14 @@ export function ReviewDialog({
     setRotation(0);
   };
 
-  // ocrResult and quality are nested objects on DocumentRecord
   const ocr: OcrResult | null = doc?.ocrResult ?? null;
   const quality: QualityCheck | null = doc?.quality ?? null;
+  const extType = doc?.extractionType;
+  const isPdf = isPdfType(extType);
+  const isImage = isImageType(extType);
+
+  // For image-scanned docs, tabs are lazy — for PDFs (Docling) they auto-load
+  const shouldLazy = isImage && !isPdf;
 
   const imageUrl = doc
     ? `http://localhost:3847/api/documents/${doc.id}/image`
@@ -126,6 +163,19 @@ export function ReviewDialog({
                   {statusLabel(doc.status)}
                 </Badge>
               )}
+              {doc && extType && (
+                <Badge variant="outline" className="text-xs font-normal">
+                  {extType === "PDF_TEXT"
+                    ? "PDF (Text)"
+                    : extType === "PDF_IMAGE"
+                      ? "PDF (Scanned)"
+                      : extType === "IMAGE"
+                        ? "Image"
+                        : extType === "EXCEL"
+                          ? "Excel"
+                          : extType}
+                </Badge>
+              )}
             </div>
             <div className="flex items-center gap-1 text-xs text-muted-foreground">
               {doc && <span>Scanned: {formatDate(doc.createdAt)}</span>}
@@ -140,135 +190,178 @@ export function ReviewDialog({
             Loading document...
           </div>
         ) : (
-          <div className="flex-1 flex overflow-hidden">
-            {/* Left: Image Viewer */}
-            <div className="w-1/2 flex flex-col border-r">
-              {/* Image Toolbar */}
-              <div className="flex items-center gap-1 p-2 border-b bg-muted/30">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  onClick={zoomIn}
-                >
-                  <ZoomIn className="h-4 w-4" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  onClick={zoomOut}
-                >
-                  <ZoomOut className="h-4 w-4" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  onClick={rotate}
-                >
-                  <RotateCw className="h-4 w-4" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  onClick={fitToView}
-                >
-                  <Maximize2 className="h-4 w-4" />
-                </Button>
-                <Separator orientation="vertical" className="mx-1 h-5" />
-                <Button
-                  variant={showOverlays ? "secondary" : "ghost"}
-                  size="sm"
-                  className="h-7 text-xs"
-                  onClick={() => setShowOverlays(!showOverlays)}
-                >
-                  <Eye className="h-3 w-3 mr-1" />
-                  Overlays
-                </Button>
-                <span className="ml-auto text-xs text-muted-foreground">
-                  {Math.round(zoom * 100)}%
-                </span>
-              </div>
-
-              {/* Image Area */}
-              <div
-                ref={imageRef}
-                className="flex-1 overflow-auto bg-background/50 flex items-center justify-center"
-              >
-                {doc && (
-                  <div className="relative inline-block">
-                    <img
+          <div className="flex-1 flex overflow-hidden min-h-0">
+            {/* Left: Document Viewer */}
+            <div className="w-1/2 flex flex-col border-r min-h-0">
+              {isPdf ? (
+                /* ── PDF Viewer ─────────────────────────── */
+                <>
+                  <div className="flex items-center gap-1 p-2 border-b bg-muted/30">
+                    <span className="text-xs text-muted-foreground">
+                      PDF Preview
+                    </span>
+                  </div>
+                  <div className="flex-1 min-h-0 bg-background/50">
+                    <iframe
                       src={imageUrl}
-                      alt={doc.filename}
-                      className="max-w-none"
-                      style={{
-                        transform: `scale(${zoom}) rotate(${rotation}deg)`,
-                        transformOrigin: "center center",
-                        transition: "transform 0.2s ease",
-                      }}
-                      draggable={false}
+                      className="w-full h-full border-0"
+                      title={doc?.filename ?? "PDF preview"}
                     />
-                    {/* OCR Bounding Box Overlays */}
-                    {showOverlays && ocr?.textBlocks && (
-                      <div
-                        className="absolute inset-0 pointer-events-none"
-                        style={{
-                          transform: `scale(${zoom}) rotate(${rotation}deg)`,
-                          transformOrigin: "center center",
-                        }}
-                      >
-                        {ocr.textBlocks.map((block, i) => (
+                  </div>
+                </>
+              ) : (
+                /* ── Image Viewer ───────────────────────── */
+                <>
+                  <div className="flex items-center gap-1 p-2 border-b bg-muted/30">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      onClick={zoomIn}
+                    >
+                      <ZoomIn className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      onClick={zoomOut}
+                    >
+                      <ZoomOut className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      onClick={rotate}
+                    >
+                      <RotateCw className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      onClick={fitToView}
+                    >
+                      <Maximize2 className="h-4 w-4" />
+                    </Button>
+                    <Separator orientation="vertical" className="mx-1 h-5" />
+                    <Button
+                      variant={showOverlays ? "secondary" : "ghost"}
+                      size="sm"
+                      className="h-7 text-xs"
+                      onClick={() => setShowOverlays(!showOverlays)}
+                    >
+                      <Eye className="h-3 w-3 mr-1" />
+                      Overlays
+                    </Button>
+                    <span className="ml-auto text-xs text-muted-foreground">
+                      {Math.round(zoom * 100)}%
+                    </span>
+                  </div>
+                  <div
+                    ref={imageRef}
+                    className="flex-1 overflow-auto bg-background/50 flex items-center justify-center"
+                  >
+                    {doc && (
+                      <div className="relative inline-block">
+                        <img
+                          src={imageUrl}
+                          alt={doc.filename}
+                          className="max-w-none"
+                          style={{
+                            transform: `scale(${zoom}) rotate(${rotation}deg)`,
+                            transformOrigin: "center center",
+                            transition: "transform 0.2s ease",
+                          }}
+                          draggable={false}
+                        />
+                        {showOverlays && ocr?.textBlocks && (
                           <div
-                            key={i}
-                            className="absolute border"
+                            className="absolute inset-0 pointer-events-none"
                             style={{
-                              left: block.bbox?.[0] ?? 0,
-                              top: block.bbox?.[1] ?? 0,
-                              width:
-                                (block.bbox?.[2] ?? 0) - (block.bbox?.[0] ?? 0),
-                              height:
-                                (block.bbox?.[3] ?? 0) - (block.bbox?.[1] ?? 0),
-                              borderColor:
-                                block.confidence >= 90
-                                  ? "rgba(34, 197, 94, 0.6)"
-                                  : block.confidence >= 70
-                                    ? "rgba(234, 179, 8, 0.6)"
-                                    : "rgba(239, 68, 68, 0.6)",
-                              backgroundColor:
-                                block.confidence >= 90
-                                  ? "rgba(34, 197, 94, 0.05)"
-                                  : block.confidence >= 70
-                                    ? "rgba(234, 179, 8, 0.05)"
-                                    : "rgba(239, 68, 68, 0.05)",
+                              transform: `scale(${zoom}) rotate(${rotation}deg)`,
+                              transformOrigin: "center center",
                             }}
-                          />
-                        ))}
+                          >
+                            {ocr.textBlocks.map((block, i) => (
+                              <div
+                                key={i}
+                                className="absolute border"
+                                style={{
+                                  left: block.bbox?.[0] ?? 0,
+                                  top: block.bbox?.[1] ?? 0,
+                                  width:
+                                    (block.bbox?.[2] ?? 0) -
+                                    (block.bbox?.[0] ?? 0),
+                                  height:
+                                    (block.bbox?.[3] ?? 0) -
+                                    (block.bbox?.[1] ?? 0),
+                                  borderColor:
+                                    block.confidence >= 90
+                                      ? "rgba(34, 197, 94, 0.6)"
+                                      : block.confidence >= 70
+                                        ? "rgba(234, 179, 8, 0.6)"
+                                        : "rgba(239, 68, 68, 0.6)",
+                                  backgroundColor:
+                                    block.confidence >= 90
+                                      ? "rgba(34, 197, 94, 0.05)"
+                                      : block.confidence >= 70
+                                        ? "rgba(234, 179, 8, 0.05)"
+                                        : "rgba(239, 68, 68, 0.05)",
+                                }}
+                              />
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
-                )}
-              </div>
+                </>
+              )}
             </div>
 
-            {/* Right: OCR Data Tabs */}
-            <div className="w-1/2 flex flex-col">
+            {/* Right: OCR / Extraction Data Tabs */}
+            <div className="w-1/2 flex flex-col min-h-0">
               <Tabs
                 value={activeTab}
                 onValueChange={setActiveTab}
-                className="flex-1 flex flex-col"
+                className="flex-1 flex flex-col min-h-0"
               >
                 <TabsList className="mx-2 mt-2 justify-start">
-                  <TabsTrigger value="formatted" className="text-xs gap-1">
-                    <FileText className="h-3 w-3" /> Formatted
-                  </TabsTrigger>
-                  <TabsTrigger value="raw" className="text-xs gap-1">
-                    <Type className="h-3 w-3" /> Raw
-                  </TabsTrigger>
-                  <TabsTrigger value="tables" className="text-xs gap-1">
-                    <Table className="h-3 w-3" /> Tables
-                  </TabsTrigger>
+                  {isPdf ? (
+                    /* PDF tab order: JSON first */
+                    <>
+                      <TabsTrigger value="json" className="text-xs gap-1">
+                        <Braces className="h-3 w-3" /> JSON
+                      </TabsTrigger>
+                      <TabsTrigger value="formatted" className="text-xs gap-1">
+                        <FileText className="h-3 w-3" /> Formatted
+                      </TabsTrigger>
+                      <TabsTrigger value="raw" className="text-xs gap-1">
+                        <Type className="h-3 w-3" /> Raw
+                      </TabsTrigger>
+                      <TabsTrigger value="tables" className="text-xs gap-1">
+                        <Table className="h-3 w-3" /> Tables
+                      </TabsTrigger>
+                    </>
+                  ) : (
+                    /* Image tab order: Formatted first */
+                    <>
+                      <TabsTrigger value="formatted" className="text-xs gap-1">
+                        <FileText className="h-3 w-3" /> Formatted
+                      </TabsTrigger>
+                      <TabsTrigger value="raw" className="text-xs gap-1">
+                        <Type className="h-3 w-3" /> Raw
+                      </TabsTrigger>
+                      <TabsTrigger value="tables" className="text-xs gap-1">
+                        <Table className="h-3 w-3" /> Tables
+                      </TabsTrigger>
+                      <TabsTrigger value="json" className="text-xs gap-1">
+                        <Braces className="h-3 w-3" /> JSON
+                      </TabsTrigger>
+                    </>
+                  )}
                   <TabsTrigger value="quality" className="text-xs gap-1">
                     <BarChart3 className="h-3 w-3" /> Quality
                   </TabsTrigger>
@@ -277,93 +370,151 @@ export function ReviewDialog({
                   </TabsTrigger>
                 </TabsList>
 
-                <TabsContent value="formatted" className="flex-1 mt-0 p-0">
-                  <ScrollArea className="h-full p-4">
-                    {ocr?.textBlocks && ocr.textBlocks.length > 0 ? (
-                      <div className="space-y-2 text-sm whitespace-pre-wrap">
-                        {ocr.textBlocks.map((block, i) => (
-                          <p key={i}>
-                            <span
-                              className={cn(
-                                block.confidence < 70 &&
-                                  "text-red-400 underline decoration-dotted",
-                                block.confidence < 90 &&
-                                  block.confidence >= 70 &&
-                                  "text-amber-400",
-                              )}
-                            >
-                              {block.text}
-                            </span>
-                          </p>
-                        ))}
-                      </div>
+                {/* ── JSON Tab ─────────────────────────────── */}
+                <TabsContent
+                  value="json"
+                  className="flex-1 mt-0 p-0 overflow-hidden min-h-0"
+                >
+                  <div className="h-full overflow-auto p-4">
+                    {ocr ? (
+                      <pre className="text-xs font-mono whitespace-pre-wrap">
+                        {JSON.stringify(ocr, null, 2)}
+                      </pre>
                     ) : (
                       <p className="text-muted-foreground">
-                        No OCR text available.
+                        No JSON data available. Process the document first.
                       </p>
                     )}
-                  </ScrollArea>
+                  </div>
                 </TabsContent>
 
-                <TabsContent value="raw" className="flex-1 mt-0 p-0">
-                  <ScrollArea className="h-full p-4">
-                    <pre className="text-xs font-mono whitespace-pre-wrap text-muted-foreground">
-                      {ocr?.textBlocks?.map((b) => b.text).join("\n") ||
-                        "No OCR text available."}
-                    </pre>
-                  </ScrollArea>
+                {/* ── Formatted Tab ────────────────────────── */}
+                <TabsContent
+                  value="formatted"
+                  className="flex-1 mt-0 p-0 overflow-hidden min-h-0"
+                >
+                  {shouldLazy && !formattedLoaded ? (
+                    <LazyTabPlaceholder
+                      label="Generate Formatted Text"
+                      description="Parse OCR blocks into readable formatted text."
+                      onLoad={() => setFormattedLoaded(true)}
+                    />
+                  ) : (
+                    <div className="h-full overflow-auto p-4">
+                      {ocr?.textBlocks && ocr.textBlocks.length > 0 ? (
+                        <div className="space-y-2 text-sm whitespace-pre-wrap">
+                          {ocr.textBlocks.map((block, i) => (
+                            <p key={i}>
+                              <span
+                                className={cn(
+                                  block.confidence < 70 &&
+                                    "text-red-400 underline decoration-dotted",
+                                  block.confidence < 90 &&
+                                    block.confidence >= 70 &&
+                                    "text-amber-400",
+                                )}
+                              >
+                                {block.text}
+                              </span>
+                            </p>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-muted-foreground">
+                          No OCR text available.
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </TabsContent>
 
-                <TabsContent value="tables" className="flex-1 mt-0 p-0">
-                  <ScrollArea className="h-full p-4">
-                    {ocr?.tables && ocr.tables.length > 0 ? (
-                      <div className="space-y-6">
-                        {ocr.tables.map((table, ti) => (
-                          <div key={ti} className="space-y-2">
-                            <h4 className="text-sm font-medium">
-                              Table {ti + 1}
-                            </h4>
-                            <div className="overflow-auto rounded-md border">
-                              <table className="text-xs w-full">
-                                <tbody>
-                                  {Array.from({ length: table.rows }).map(
-                                    (_, ri) => (
-                                      <tr
-                                        key={ri}
-                                        className="border-b last:border-0"
-                                      >
-                                        {table.cells
-                                          .filter((c) => c.row === ri)
-                                          .sort((a, b) => a.col - b.col)
-                                          .map((cell, ci) => (
-                                            <td
-                                              key={ci}
-                                              className="p-1.5 border-r last:border-0"
-                                              colSpan={cell.colSpan || 1}
-                                              rowSpan={cell.rowSpan || 1}
-                                            >
-                                              {cell.text}
-                                            </td>
-                                          ))}
-                                      </tr>
-                                    ),
-                                  )}
-                                </tbody>
-                              </table>
+                {/* ── Raw Tab ──────────────────────────────── */}
+                <TabsContent
+                  value="raw"
+                  className="flex-1 mt-0 p-0 overflow-hidden min-h-0"
+                >
+                  {shouldLazy && !rawLoaded ? (
+                    <LazyTabPlaceholder
+                      label="Generate Raw Text"
+                      description="Show the unformatted OCR output."
+                      onLoad={() => setRawLoaded(true)}
+                    />
+                  ) : (
+                    <div className="h-full overflow-auto p-4">
+                      <pre className="text-xs font-mono whitespace-pre-wrap text-muted-foreground">
+                        {ocr?.textBlocks?.map((b) => b.text).join("\n") ||
+                          "No OCR text available."}
+                      </pre>
+                    </div>
+                  )}
+                </TabsContent>
+
+                {/* ── Tables Tab ───────────────────────────── */}
+                <TabsContent
+                  value="tables"
+                  className="flex-1 mt-0 p-0 overflow-hidden min-h-0"
+                >
+                  {shouldLazy && !tablesLoaded ? (
+                    <LazyTabPlaceholder
+                      label="Load Tables"
+                      description="Render detected tables from the OCR output."
+                      onLoad={() => setTablesLoaded(true)}
+                    />
+                  ) : (
+                    <div className="h-full overflow-auto p-4">
+                      {ocr?.tables && ocr.tables.length > 0 ? (
+                        <div className="space-y-6">
+                          {ocr.tables.map((table, ti) => (
+                            <div key={ti} className="space-y-2">
+                              <h4 className="text-sm font-medium">
+                                Table {ti + 1}
+                              </h4>
+                              <div className="overflow-auto rounded-md border">
+                                <table className="text-xs w-full">
+                                  <tbody>
+                                    {Array.from({ length: table.rows }).map(
+                                      (_, ri) => (
+                                        <tr
+                                          key={ri}
+                                          className="border-b last:border-0"
+                                        >
+                                          {table.cells
+                                            .filter((c) => c.row === ri)
+                                            .sort((a, b) => a.col - b.col)
+                                            .map((cell, ci) => (
+                                              <td
+                                                key={ci}
+                                                className="p-1.5 border-r last:border-0"
+                                                colSpan={cell.colSpan || 1}
+                                                rowSpan={cell.rowSpan || 1}
+                                              >
+                                                {cell.text}
+                                              </td>
+                                            ))}
+                                        </tr>
+                                      ),
+                                    )}
+                                  </tbody>
+                                </table>
+                              </div>
                             </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="text-muted-foreground">
-                        No tables detected.
-                      </p>
-                    )}
-                  </ScrollArea>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-muted-foreground">
+                          No tables detected.
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </TabsContent>
 
-                <TabsContent value="quality" className="flex-1 mt-0 p-0">
-                  <ScrollArea className="h-full p-4">
+                {/* ── Quality Tab ──────────────────────────── */}
+                <TabsContent
+                  value="quality"
+                  className="flex-1 mt-0 p-0 overflow-hidden min-h-0"
+                >
+                  <div className="h-full overflow-auto p-4">
                     {quality ? (
                       <div className="space-y-4">
                         <div className="grid grid-cols-2 gap-3">
@@ -427,11 +578,15 @@ export function ReviewDialog({
                         No quality data available.
                       </p>
                     )}
-                  </ScrollArea>
+                  </div>
                 </TabsContent>
 
-                <TabsContent value="extract" className="flex-1 mt-0 p-0">
-                  <ScrollArea className="h-full p-4">
+                {/* ── Extract Tab ──────────────────────────── */}
+                <TabsContent
+                  value="extract"
+                  className="flex-1 mt-0 p-0 overflow-hidden min-h-0"
+                >
+                  <div className="h-full overflow-auto p-4">
                     {doc?.extractedJson &&
                     Object.keys(doc.extractedJson).length > 0 ? (
                       <pre className="text-xs font-mono whitespace-pre-wrap">
@@ -446,7 +601,7 @@ export function ReviewDialog({
                         </p>
                       </div>
                     )}
-                  </ScrollArea>
+                  </div>
                 </TabsContent>
               </Tabs>
             </div>
@@ -500,6 +655,30 @@ export function ReviewDialog({
     </Dialog>
   );
 }
+
+// ─── Lazy Tab Placeholder ─────────────────────────────────────────────────────
+
+function LazyTabPlaceholder({
+  label,
+  description,
+  onLoad,
+}: {
+  label: string;
+  description: string;
+  onLoad: () => void;
+}) {
+  return (
+    <div className="flex-1 flex flex-col items-center justify-center gap-3 p-8 text-center">
+      <p className="text-sm text-muted-foreground">{description}</p>
+      <Button variant="outline" size="sm" onClick={onLoad}>
+        <Loader2 className="h-3.5 w-3.5 mr-1.5" />
+        {label}
+      </Button>
+    </div>
+  );
+}
+
+// ─── Metric Card ──────────────────────────────────────────────────────────────
 
 function MetricCard({
   label,

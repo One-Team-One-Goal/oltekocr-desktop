@@ -13,19 +13,38 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { CirclePlus, Copy, Plus, RefreshCw, Trash2, Search } from "lucide-react";
-import type { SessionListItem } from "@shared/types";
+import {
+  CirclePlus,
+  Copy,
+  Plus,
+  RefreshCw,
+  Trash2,
+  Search,
+} from "lucide-react";
+import type { SessionListItem, SessionMode } from "@shared/types";
 
-export function SessionsHome() {
+const MODE_TITLES: Record<SessionMode, string> = {
+  PDF_EXTRACT: "Documents to Table Extract",
+  OCR_EXTRACT: "OCR Extract",
+  TABLE_EXTRACT: "Keyword to Column Extract",
+  JSON_EXTRACT: "JSON Extract",
+};
+
+interface SessionsHomeProps {
+  mode: SessionMode;
+}
+
+export function SessionsHome({ mode }: SessionsHomeProps) {
   const navigate = useNavigate();
   const [sessions, setSessions] = useState<SessionListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [duplicateOpen, setDuplicateOpen] = useState(false);
-  const [actionMode, setActionMode] = useState<"none" | "delete" | "duplicate">("none");
+  const [actionMode, setActionMode] = useState<"none" | "delete" | "duplicate">(
+    "none",
+  );
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
-  const [modeFilter, setModeFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
 
   const toggleActionMode = (nextMode: "delete" | "duplicate") => {
@@ -65,7 +84,7 @@ export function SessionsHome() {
     try {
       setLoading(true);
       const data = await sessionsApi.list();
-      setSessions(data);
+      setSessions(data.filter((s) => s.mode === mode));
     } catch (err) {
       console.error("Failed to fetch sessions:", err);
     } finally {
@@ -75,7 +94,7 @@ export function SessionsHome() {
 
   useEffect(() => {
     fetchSessions();
-  }, []);
+  }, [mode]);
 
   const handleRename = async (id: string, name: string) => {
     try {
@@ -94,14 +113,11 @@ export function SessionsHome() {
       const q = searchQuery.toLowerCase();
       result = result.filter((s) => s.name.toLowerCase().includes(q));
     }
-    if (modeFilter !== "all") {
-      result = result.filter((s) => s.mode === modeFilter);
-    }
     if (statusFilter !== "all") {
       result = result.filter((s) => s.status === statusFilter);
     }
     return result;
-  }, [sessions, searchQuery, modeFilter, statusFilter]);
+  }, [sessions, searchQuery, statusFilter]);
 
   const handleSessionCreated = async (sessionId: string, docIds: string[]) => {
     setDialogOpen(false);
@@ -116,7 +132,9 @@ export function SessionsHome() {
     navigate(`/sessions/${sessionId}`);
   };
 
-  const selectedSessions = sessions.filter((session) => selectedIds.has(session.id));
+  const selectedSessions = sessions.filter((session) =>
+    selectedIds.has(session.id),
+  );
 
   const handleDuplicatesCompleted = async (createdSessionIds: string[]) => {
     setDuplicateOpen(false);
@@ -132,7 +150,7 @@ export function SessionsHome() {
     <div className="flex flex-col h-full bg-background">
       {/* Header */}
       <header className="flex items-center justify-between h-14 px-6 border-b shrink-0">
-        <h1 className="text-lg font-semibold">Sessions</h1>
+        <h1 className="text-lg font-semibold">{MODE_TITLES[mode]}</h1>
         <div className="flex items-center gap-2">
           {actionMode === "delete" ? (
             <>
@@ -157,7 +175,11 @@ export function SessionsHome() {
           ) : actionMode === "duplicate" ? (
             <>
               {selectedIds.size > 0 && (
-                <Button variant="default" size="xs" onClick={handleDuplicateSelected}>
+                <Button
+                  variant="default"
+                  size="xs"
+                  onClick={handleDuplicateSelected}
+                >
                   <Copy className="h-3.5 w-3.5" />
                   Duplicate ({selectedIds.size})
                 </Button>
@@ -216,16 +238,6 @@ export function SessionsHome() {
               className="pl-8 h-8 text-xs bg-card"
             />
           </div>
-          <Select value={modeFilter} onValueChange={setModeFilter}>
-            <SelectTrigger className="w-32 h-8 text-xs bg-card">
-              <SelectValue placeholder="All Modes" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Modes</SelectItem>
-              <SelectItem value="OCR_EXTRACT">OCR Extract</SelectItem>
-              <SelectItem value="TABLE_EXTRACT">Table Extract</SelectItem>
-            </SelectContent>
-          </Select>
           <Select value={statusFilter} onValueChange={setStatusFilter}>
             <SelectTrigger className="w-32 h-8 text-xs bg-card">
               <SelectValue placeholder="All Status" />
@@ -248,7 +260,7 @@ export function SessionsHome() {
             Loading sessions...
           </div>
         ) : sessions.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-64 gap-4">
+          <div className="flex flex-col items-center justify-center h-64 gap-4 mt-52">
             <div className="rounded-full bg-muted p-6">
               <Plus className="h-8 w-8 text-muted-foreground" />
             </div>
@@ -270,7 +282,9 @@ export function SessionsHome() {
                 key={session.id}
                 session={session}
                 selectMode={actionMode !== "none"}
-                selectionIntent={actionMode === "duplicate" ? "duplicate" : "delete"}
+                selectionIntent={
+                  actionMode === "duplicate" ? "duplicate" : "delete"
+                }
                 selected={selectedIds.has(session.id)}
                 onSelect={() => toggleSelect(session.id)}
                 onOpen={() => navigate(`/sessions/${session.id}`)}
@@ -290,6 +304,7 @@ export function SessionsHome() {
         open={dialogOpen}
         onClose={() => setDialogOpen(false)}
         onCreated={handleSessionCreated}
+        defaultMode={mode}
       />
 
       <DuplicateSessionDialog

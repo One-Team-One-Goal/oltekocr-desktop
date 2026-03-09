@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { OcrEngineDialog } from "./OcrEngineDialog";
 import { LlmDialog } from "./LlmDialog";
+import { PdfModelDialog } from "./PdfModelDialog";
+import { ProcessingLogSheet } from "./ProcessingLogSheet";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   type ColumnDef,
   type ColumnFiltersState,
@@ -78,6 +86,7 @@ import {
   Maximize2,
   FileText,
   Type,
+  Layers,
   Loader2,
   ArrowUpDown,
   ChevronDown,
@@ -97,6 +106,38 @@ import type {
   SessionRecord,
   TextBlock,
 } from "@shared/types";
+import { ExtractionType } from "@shared/types";
+
+const MODEL_DISPLAY_NAMES: Record<string, string> = {
+  docling: "Docling 2.x",
+  pdfplumber: "pdfplumber",
+  pymupdf: "PyMuPDF (fitz)",
+  unstructured: "Unstructured.io",
+};
+
+const EXTRACTION_TYPE_OPTIONS: {
+  value: ExtractionType;
+  label: string;
+  color: string;
+}[] = [
+  { value: ExtractionType.AUTO, label: "Auto", color: "text-muted-foreground" },
+  { value: ExtractionType.IMAGE, label: "Image", color: "text-sky-500" },
+  {
+    value: ExtractionType.PDF_TEXT,
+    label: "PDF (Text)",
+    color: "text-violet-500",
+  },
+  {
+    value: ExtractionType.PDF_IMAGE,
+    label: "PDF (Scanned)",
+    color: "text-amber-500",
+  },
+  { value: ExtractionType.EXCEL, label: "Excel", color: "text-green-500" },
+];
+
+function extractionTypeColor(t: ExtractionType) {
+  return EXTRACTION_TYPE_OPTIONS.find((o) => o.value === t)?.color ?? "";
+}
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -113,7 +154,13 @@ const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 
 // ─── Status Badge ─────────────────────────────────────────────────────────────
 
-function StatusBadge({ status }: { status: string }) {
+function StatusBadge({
+  status,
+  onShowLogs,
+}: {
+  status: string;
+  onShowLogs?: () => void;
+}) {
   const icons: Record<string, React.ReactNode> = {
     QUEUED: <Clock className="h-3 w-3" />,
     SCANNING: <ScanLine className="h-3 w-3" />,
@@ -125,12 +172,24 @@ function StatusBadge({ status }: { status: string }) {
     EXPORTED: <FileOutput className="h-3 w-3" />,
     ERROR: <AlertCircle className="h-3 w-3" />,
   };
+  const isClickable = !!onShowLogs;
   return (
     <span
       className={cn(
         "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium",
         statusColor(status),
+        isClickable &&
+          "cursor-pointer border hover:border-border/50 focus:ring-0",
       )}
+      onClick={
+        isClickable
+          ? (e) => {
+              e.stopPropagation();
+              onShowLogs?.();
+            }
+          : undefined
+      }
+      title={isClickable ? "Open logs" : undefined}
     >
       {icons[status] ?? null}
       {statusLabel(status)}
@@ -262,6 +321,126 @@ function RowActions({
   );
 }
 
+// ─── Batch Toolbar ────────────────────────────────────────────────────────────
+
+function BatchToolbar({
+  count,
+  ids,
+  onClear,
+  onRefresh,
+}: {
+  count: number;
+  ids: string[];
+  onClear: () => void;
+  onRefresh: () => void;
+}) {
+  const [batchType, setBatchType] = useState<ExtractionType>(
+    ExtractionType.AUTO,
+  );
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  return (
+    <>
+      <span className="text-xs text-muted-foreground shrink-0">
+        {count} selected
+      </span>
+      <Button
+        variant="outline"
+        size="sm"
+        className="gap-1.5 text-xs h-8"
+        onClick={async () => {
+          await queueApi.add(ids);
+          onClear();
+          onRefresh();
+        }}
+      >
+        <Play className="h-3.5 w-3.5 text-green-500" />
+      </Button>
+      <Button
+        variant="outline"
+        size="sm"
+        className="gap-1.5 text-xs h-8"
+        onClick={async () => {
+          await queueApi.cancel(ids).catch(() => {});
+          onClear();
+          onRefresh();
+        }}
+      >
+        <Square className="h-3.5 w-3.5 text-red-500" />
+      </Button>
+      <Button
+        variant="outline"
+        size="sm"
+        className="gap-1.5 text-xs h-8 text-destructive hover:text-destructive hover:bg-destructive/10 border-destructive/30"
+        onClick={() => setConfirmDelete(true)}
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+      </Button>
+      <Dialog
+        open={confirmDelete}
+        onOpenChange={(v) => !v && setConfirmDelete(false)}
+      >
+        <DialogContent className="sm:max-w-[380px]">
+          <DialogHeader>
+            <DialogTitle>
+              Delete {count} document{count !== 1 ? "s" : ""}?
+            </DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            This will permanently delete the selected document
+            {count !== 1 ? "s" : ""} and cannot be undone.
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmDelete(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={async () => {
+                setConfirmDelete(false);
+                await Promise.all(ids.map((id) => documentsApi.delete(id)));
+                onClear();
+                onRefresh();
+              }}
+            >
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <div className="flex items-center gap-1 border-l pl-2">
+        <Layers className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+        <Select
+          value={batchType}
+          onValueChange={(v) => setBatchType(v as ExtractionType)}
+        >
+          <SelectTrigger className="h-8 w-36 text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {EXTRACTION_TYPE_OPTIONS.map((opt) => (
+              <SelectItem key={opt.value} value={opt.value} className="text-xs">
+                <span className={opt.color}>{opt.label}</span>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button
+          size="sm"
+          className="h-8 text-xs px-3"
+          onClick={async () => {
+            await documentsApi.batchUpdateExtractionType(ids, batchType);
+            onClear();
+            onRefresh();
+          }}
+        >
+          Apply
+        </Button>
+      </div>
+    </>
+  );
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export function SessionDataTable({
@@ -287,12 +466,43 @@ export function SessionDataTable({
   const [statusFilter, setStatusFilter] = useState("all");
   const [ocrEngineOpen, setOcrEngineOpen] = useState(false);
   const [llmOpen, setLlmOpen] = useState(false);
+  const [pdfModelOpen, setPdfModelOpen] = useState(false);
   const [selectedOcrName, setSelectedOcrName] = useState("RapidOCR");
   const [selectedLlmName, setSelectedLlmName] = useState("GPT-4o");
+  const [selectedPdfModelName, setSelectedPdfModelName] = useState(
+    () =>
+      MODEL_DISPLAY_NAMES[session?.extractionModel ?? "docling"] ??
+      "Docling 2.x",
+  );
+  const [logSheetOpen, setLogSheetOpen] = useState(false);
+  const [logSheetDocId, setLogSheetDocId] = useState<string | null>(null);
   const [pagination, setPagination] = useState<PaginationState>({
     pageIndex: 0,
     pageSize: DEFAULT_PAGE_SIZE,
   });
+
+  // Disable model selectors that are irrelevant to the current document set.
+  // AUTO rows are treated as unknown, so they don't force a disable.
+  const onlyImages = useMemo(
+    () =>
+      documents.length > 0 &&
+      documents.every(
+        (d) =>
+          d.extractionType === ExtractionType.IMAGE ||
+          d.extractionType === ExtractionType.EXCEL,
+      ),
+    [documents],
+  );
+  const onlyPdfs = useMemo(
+    () =>
+      documents.length > 0 &&
+      documents.every(
+        (d) =>
+          d.extractionType === ExtractionType.PDF_TEXT ||
+          d.extractionType === ExtractionType.PDF_IMAGE,
+      ),
+    [documents],
+  );
 
   const isPending = (doc: DocumentListItem) =>
     doc.status === "QUEUED" ||
@@ -362,6 +572,7 @@ export function SessionDataTable({
           onCheckedChange={(v) => row.toggleSelected(!!v)}
           aria-label="Select row"
           onClick={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => e.stopPropagation()}
         />
       ),
       enableHiding: false,
@@ -400,7 +611,15 @@ export function SessionDataTable({
         accessorKey: "status",
         header: ({ column }) => <SortHeader column={column} label="Status" />,
         size: 130,
-        cell: ({ row }) => <StatusBadge status={row.original.status} />,
+        cell: ({ row }) => (
+          <StatusBadge
+            status={row.original.status}
+            onShowLogs={() => {
+              setLogSheetDocId(row.original.id);
+              setLogSheetOpen(true);
+            }}
+          />
+        ),
       },
       {
         accessorKey: "createdAt",
@@ -431,6 +650,55 @@ export function SessionDataTable({
             {row.original.ocrPageCount || "—"}
           </span>
         ),
+      },
+      {
+        id: "extractionType",
+        header: "Ext. Type",
+        size: 140,
+        cell: ({ row }) => {
+          const current = (row.original.extractionType ??
+            "IMAGE") as ExtractionType;
+          return (
+            <Select
+              value={current}
+              onValueChange={async (val) => {
+                try {
+                  await documentsApi.update(row.original.id, {
+                    extractionType: val,
+                  });
+                  onRefresh();
+                } catch (err) {
+                  console.error("Failed to update extraction type:", err);
+                }
+              }}
+            >
+              <SelectTrigger
+                className="h-7 text-xs border-none shadow-none bg-transparent gap-1 w-full px-1 border border-border rounded-full focus:ring-0"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <span
+                  className={cn(
+                    "font-medium px-2 py-1 border border-border rounded-full",
+                    extractionTypeColor(current),
+                  )}
+                >
+                  <SelectValue />
+                </span>
+              </SelectTrigger>
+              <SelectContent onClick={(e) => e.stopPropagation()}>
+                {EXTRACTION_TYPE_OPTIONS.map((opt) => (
+                  <SelectItem
+                    key={opt.value}
+                    value={opt.value}
+                    className="text-xs"
+                  >
+                    <span className={opt.color}>{opt.label}</span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          );
+        },
       },
     ];
 
@@ -566,41 +834,14 @@ export function SessionDataTable({
         />
         {/* Batch actions — shown when rows are selected */}
         {table.getFilteredSelectedRowModel().rows.length > 0 && (
-          <>
-            <span className="text-xs text-muted-foreground">
-              {table.getFilteredSelectedRowModel().rows.length} selected
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              className="gap-1.5 text-xs h-8"
-              onClick={async () => {
-                const ids = table
-                  .getFilteredSelectedRowModel()
-                  .rows.map((r) => r.original.id);
-                await queueApi.add(ids);
-                setRowSelection({});
-                onRefresh();
-              }}
-            >
-              <Play className="h-3.5 w-3.5 text-green-500" />
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="gap-1.5 text-xs h-8"
-              onClick={async () => {
-                const ids = table
-                  .getFilteredSelectedRowModel()
-                  .rows.map((r) => r.original.id);
-                await queueApi.cancel(ids).catch(() => {});
-                setRowSelection({});
-                onRefresh();
-              }}
-            >
-              <Square className="h-3.5 w-3.5 text-red-500" />
-            </Button>
-          </>
+          <BatchToolbar
+            count={table.getFilteredSelectedRowModel().rows.length}
+            ids={table
+              .getFilteredSelectedRowModel()
+              .rows.map((r) => r.original.id)}
+            onClear={() => setRowSelection({})}
+            onRefresh={onRefresh}
+          />
         )}
         <Select
           value={statusFilter}
@@ -654,24 +895,70 @@ export function SessionDataTable({
           </DropdownMenuContent>
         </DropdownMenu>
         <div className="ml-auto flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="gap-1.5 text-xs"
-            onClick={() => setOcrEngineOpen(true)}
-          >
-            {selectedOcrName}
-            <ChevronsUpDown className="h-3.5 w-3.5" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="gap-1.5 text-xs"
-            onClick={() => setLlmOpen(true)}
-          >
-            {selectedLlmName}
-            <ChevronsUpDown className="h-3.5 w-3.5" />
-          </Button>
+          <TooltipProvider delayDuration={300}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="gap-1.5 text-xs"
+                    disabled={onlyImages}
+                    onClick={() => setPdfModelOpen(true)}
+                  >
+                    {selectedPdfModelName}
+                    <ChevronsUpDown className="h-3.5 w-3.5" />
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>
+                {onlyImages
+                  ? "Not used — session contains image files only."
+                  : "For extracting text inside of a PDF / Word."}
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+          <TooltipProvider delayDuration={300}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="gap-1.5 text-xs"
+                    disabled={onlyPdfs}
+                    onClick={() => setOcrEngineOpen(true)}
+                  >
+                    {selectedOcrName}
+                    <ChevronsUpDown className="h-3.5 w-3.5" />
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>
+                {onlyPdfs
+                  ? "Not used — session contains PDF files only."
+                  : "Image and PDF containing image only."}
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+          <TooltipProvider delayDuration={300}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="gap-1.5 text-xs"
+                  onClick={() => setLlmOpen(true)}
+                >
+                  {selectedLlmName}
+                  <ChevronsUpDown className="h-3.5 w-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                For extracting and transforming data.
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
         </div>
       </div>
 
@@ -702,7 +989,7 @@ export function SessionDataTable({
                     <TableRow
                       data-state={row.getIsSelected() && "selected"}
                       className="cursor-pointer"
-                      onClick={() => onReview(row.original.id)}
+                      onDoubleClick={() => onReview(row.original.id)}
                     >
                       {row.getVisibleCells().map((cell) => (
                         <TableCell key={cell.id} className="overflow-hidden">
@@ -887,6 +1174,13 @@ export function SessionDataTable({
         />
       )}
 
+      <PdfModelDialog
+        open={pdfModelOpen}
+        onClose={() => setPdfModelOpen(false)}
+        sessionId={session?.id}
+        currentModel={session?.extractionModel}
+        onSelectionChange={setSelectedPdfModelName}
+      />
       <OcrEngineDialog
         open={ocrEngineOpen}
         onClose={() => setOcrEngineOpen(false)}
@@ -896,6 +1190,14 @@ export function SessionDataTable({
         open={llmOpen}
         onClose={() => setLlmOpen(false)}
         onSelectionChange={setSelectedLlmName}
+      />
+      <ProcessingLogSheet
+        open={logSheetOpen}
+        documentId={logSheetDocId}
+        onOpenChange={(open) => {
+          setLogSheetOpen(open);
+          if (!open) setLogSheetDocId(null);
+        }}
       />
     </div>
   );
@@ -1143,6 +1445,10 @@ function MiniOcrPicker({
 
   const ocr = fullDoc?.ocrResult ?? null;
   const imageUrl = `http://localhost:3847/api/documents/${docId}/image`;
+  const isPdfDoc =
+    fullDoc?.extractionType === ExtractionType.PDF_TEXT ||
+    fullDoc?.extractionType === ExtractionType.PDF_IMAGE ||
+    (fullDoc?.filename ?? "").toLowerCase().endsWith(".pdf");
 
   const handleTextSelection = useCallback(() => {
     const sel = window.getSelection()?.toString().trim() ?? "";
@@ -1233,60 +1539,70 @@ function MiniOcrPicker({
               </div>
               <div className="flex-1 overflow-auto bg-muted/20 flex items-start justify-center p-4">
                 {fullDoc ? (
-                  <div className="relative inline-block">
-                    <img
-                      src={imageUrl}
-                      alt={fullDoc.filename}
-                      className="max-w-none block"
-                      style={{
-                        transform: `scale(${zoom}) rotate(${rotation}deg)`,
-                        transformOrigin: "top center",
-                        transition: "transform 0.2s ease",
-                      }}
-                      draggable={false}
-                    />
-                    {showOverlays && ocr?.textBlocks && (
-                      <div
-                        className="absolute inset-0"
+                  isPdfDoc ? (
+                    <div className="w-full h-full min-h-[420px] rounded border bg-background overflow-hidden">
+                      <iframe
+                        src={`${imageUrl}#toolbar=1&navpanes=0&view=FitH`}
+                        className="w-full h-full border-0"
+                        title={fullDoc.filename || "PDF preview"}
+                      />
+                    </div>
+                  ) : (
+                    <div className="relative inline-block">
+                      <img
+                        src={imageUrl}
+                        alt={fullDoc.filename}
+                        className="max-w-none block"
                         style={{
                           transform: `scale(${zoom}) rotate(${rotation}deg)`,
                           transformOrigin: "top center",
+                          transition: "transform 0.2s ease",
                         }}
-                      >
-                        {ocr.textBlocks.map((block, i) => {
-                          const isHighlighted = highlightedBlock === i;
-                          const conf = block.confidence ?? 100;
-                          return (
-                            <div
-                              key={i}
-                              className={cn(
-                                "absolute border cursor-pointer transition-all",
-                                isHighlighted
-                                  ? "border-primary bg-primary/20 ring-1 ring-primary"
-                                  : conf >= 90
-                                    ? "border-green-500/50 bg-green-500/5 hover:bg-green-500/15"
-                                    : conf >= 70
-                                      ? "border-amber-500/50 bg-amber-500/5 hover:bg-amber-500/15"
-                                      : "border-red-500/50 bg-red-500/5 hover:bg-red-500/15",
-                              )}
-                              style={{
-                                left: block.bbox?.[0] ?? 0,
-                                top: block.bbox?.[1] ?? 0,
-                                width:
-                                  (block.bbox?.[2] ?? 0) -
-                                  (block.bbox?.[0] ?? 0),
-                                height:
-                                  (block.bbox?.[3] ?? 0) -
-                                  (block.bbox?.[1] ?? 0),
-                              }}
-                              onClick={() => handleBlockClick(block, i)}
-                              title={block.text}
-                            />
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
+                        draggable={false}
+                      />
+                      {showOverlays && ocr?.textBlocks && (
+                        <div
+                          className="absolute inset-0"
+                          style={{
+                            transform: `scale(${zoom}) rotate(${rotation}deg)`,
+                            transformOrigin: "top center",
+                          }}
+                        >
+                          {ocr.textBlocks.map((block, i) => {
+                            const isHighlighted = highlightedBlock === i;
+                            const conf = block.confidence ?? 100;
+                            return (
+                              <div
+                                key={i}
+                                className={cn(
+                                  "absolute border cursor-pointer transition-all",
+                                  isHighlighted
+                                    ? "border-primary bg-primary/20 ring-1 ring-primary"
+                                    : conf >= 90
+                                      ? "border-green-500/50 bg-green-500/5 hover:bg-green-500/15"
+                                      : conf >= 70
+                                        ? "border-amber-500/50 bg-amber-500/5 hover:bg-amber-500/15"
+                                        : "border-red-500/50 bg-red-500/5 hover:bg-red-500/15",
+                                )}
+                                style={{
+                                  left: block.bbox?.[0] ?? 0,
+                                  top: block.bbox?.[1] ?? 0,
+                                  width:
+                                    (block.bbox?.[2] ?? 0) -
+                                    (block.bbox?.[0] ?? 0),
+                                  height:
+                                    (block.bbox?.[3] ?? 0) -
+                                    (block.bbox?.[1] ?? 0),
+                                }}
+                                onClick={() => handleBlockClick(block, i)}
+                                title={block.text}
+                              />
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )
                 ) : (
                   <p className="text-muted-foreground text-sm">
                     No image available.

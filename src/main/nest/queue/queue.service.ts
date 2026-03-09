@@ -1,4 +1,4 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
 import { OcrService } from "../ocr/ocr.service";
 import { ContractExtractionService } from "../contract-extraction/contract-extraction.service";
 import { DocumentsGateway } from "../documents/documents.gateway";
@@ -21,6 +21,19 @@ export class QueueService {
     private readonly gateway: DocumentsGateway,
     private readonly prisma: PrismaService,
   ) {}
+
+  async onModuleInit(): Promise<void> {
+    // Recover from previous app crashes/restarts so rows are not stuck forever.
+    const recovered = await this.prisma.document.updateMany({
+      where: { status: { in: ["CANCELLING", "SCANNING", "PROCESSING"] } },
+      data: { status: "QUEUED" },
+    });
+    if (recovered.count > 0) {
+      this.logger.log(
+        `Recovered ${recovered.count} document(s) from transient statuses to QUEUED`,
+      );
+    }
+  }
 
   /** Add a document ID to the queue */
   add(documentId: string): void {
@@ -78,22 +91,44 @@ export class QueueService {
     this.queue = this.queue.filter((id) => !documentIds.includes(id));
 
     // Track active cancellation for anything currently running
+    const inFlightIds: string[] = [];
     if (this.processing && documentIds.includes(this.processing)) {
       this.cancelledDocs.add(this.processing);
+      inFlightIds.push(this.processing);
     }
 
-    // Immediately update visible status for active docs so UI does not look stuck
-    await this.prisma.document.updateMany({
-      where: {
-        id: { in: documentIds },
-        status: { in: ["SCANNING", "PROCESSING"] },
-      },
-      data: { status: "CANCELLING" },
-    });
+    const immediateResetIds = documentIds.filter(
+      (id) => !inFlightIds.includes(id),
+    );
+
+    // Active docs go CANCELLING while worker winds down.
+    if (inFlightIds.length > 0) {
+      await this.prisma.document.updateMany({
+        where: {
+          id: { in: inFlightIds },
+          status: { in: ["SCANNING", "PROCESSING"] },
+        },
+        data: { status: "CANCELLING" },
+      });
+    }
+
+    // Non-active docs should not remain in transient state.
+    if (immediateResetIds.length > 0) {
+      await this.prisma.document.updateMany({
+        where: {
+          id: { in: immediateResetIds },
+          status: { in: ["QUEUED", "SCANNING", "PROCESSING", "CANCELLING"] },
+        },
+        data: { status: "QUEUED" },
+      });
+    }
 
     const now = new Date().toISOString();
-    for (const id of documentIds) {
+    for (const id of inFlightIds) {
       this.gateway.sendDocumentStatus(id, "CANCELLING", now);
+    }
+    for (const id of immediateResetIds) {
+      this.gateway.sendDocumentStatus(id, "QUEUED", now);
     }
 
     this.gateway.sendQueueUpdate(this.queue.length, this.processing);
@@ -123,6 +158,10 @@ export class QueueService {
         0,
         isPdfExtract ? "Extracting contract data..." : "Starting OCR...",
       );
+      this.gateway.sendProcessingLog(
+        documentId,
+        `Starting processing for ${documentId}...`,
+      );
 
       const result = isPdfExtract
         ? await this.contractExtractionService.process(documentId)
@@ -142,6 +181,10 @@ export class QueueService {
           "QUEUED",
           new Date().toISOString(),
         );
+        this.gateway.sendProcessingLog(
+          documentId,
+          "Processing cancelled — reset to QUEUED",
+        );
         this.logger.log(
           `Document ${documentId} was cancelled — reset to QUEUED`,
         );
@@ -152,6 +195,10 @@ export class QueueService {
           new Date().toISOString(),
         );
         const time = (result as any).processingTime ?? 0;
+        this.gateway.sendProcessingLog(
+          documentId,
+          `Completed (conf: ${(result as any).avgConfidence ?? 0}%, time: ${time}s)`,
+        );
         this.logger.log(
           `Completed: ${documentId} [${sessionMode}] (time: ${time}s)`,
         );
@@ -185,6 +232,10 @@ export class QueueService {
         );
       } else {
         this.logger.error(`Failed to process document: ${documentId}`, err);
+        this.gateway.sendProcessingLog(
+          documentId,
+          `ERROR: ${err?.message ?? String(err)}`,
+        );
         this.gateway.sendDocumentStatus(
           documentId,
           "ERROR",

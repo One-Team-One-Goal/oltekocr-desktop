@@ -31,6 +31,7 @@ export interface SessionRecord {
   sourcePath: string;
   documentType: string;
   status: SessionStatus;
+  extractionModel: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -40,6 +41,7 @@ export interface SessionListItem {
   name: string;
   mode: SessionMode;
   status: SessionStatus;
+  extractionModel: string;
   documentCount: number;
   processedCount: number;
   createdAt: string;
@@ -60,6 +62,17 @@ export interface DuplicateSessionResult {
   session: SessionRecord;
   documents: DocumentListItem[];
 }
+
+// ─── Extraction Type ────────────────────────────────────
+export const ExtractionType = {
+  AUTO: "AUTO", // auto-detect at processing time
+  IMAGE: "IMAGE", // standalone image file (jpg, png, tiff…)
+  PDF_TEXT: "PDF_TEXT", // digital PDF with selectable text
+  PDF_IMAGE: "PDF_IMAGE", // scanned PDF — pages are rasterised images
+  EXCEL: "EXCEL", // spreadsheet
+} as const;
+export type ExtractionType =
+  (typeof ExtractionType)[keyof typeof ExtractionType];
 
 // ─── Document Status ─────────────────────────────────────
 export const DocumentStatus = {
@@ -144,6 +157,7 @@ export interface DocumentRecord {
   tags: string[];
   exported: boolean;
   exportPath: string;
+  extractionType: ExtractionType;
   quality: QualityCheck;
   ocrResult: OcrResult | null;
   userEdits: Record<string, unknown>;
@@ -164,6 +178,7 @@ export interface DocumentListItem {
   qualityValid: boolean;
   qualityIssueCount: number;
   sessionId: string | null;
+  extractionType: ExtractionType;
   /** Populated for TABLE_EXTRACT sessions after OCR — key=column.key, value={ answer, score } */
   extractedRow: Record<string, { answer: string; score: number }> | null;
 }
@@ -258,7 +273,16 @@ export interface WsProcessingProgress {
   data: { id: string; progress: number; message: string };
 }
 
-export type WsEvent = WsQueueUpdate | WsDocumentStatus | WsProcessingProgress;
+export interface WsProcessingLog {
+  event: "processing:log";
+  data: { id: string; line: string; timestamp: string };
+}
+
+export type WsEvent =
+  | WsQueueUpdate
+  | WsDocumentStatus
+  | WsProcessingProgress
+  | WsProcessingLog;
 
 // ─── IPC Channels ────────────────────────────────────────
 export const IpcChannel = {
