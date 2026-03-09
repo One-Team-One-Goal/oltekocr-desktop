@@ -226,6 +226,12 @@ export function SessionDetail() {
     );
   }
 
+  const modeToRoute: Record<string, string> = {
+    PDF_EXTRACT: "/",
+    OCR_EXTRACT: "/ocr-extract",
+    TABLE_EXTRACT: "/keyword-extract",
+  };
+
   return (
     <div className="flex flex-col h-full bg-background">
       {/* Header */}
@@ -235,7 +241,9 @@ export function SessionDetail() {
             variant="ghost"
             size="icon"
             className="shrink-0"
-            onClick={() => navigate("/")}
+            onClick={() =>
+              navigate(modeToRoute[session?.mode ?? "PDF_EXTRACT"] ?? "/")
+            }
           >
             <ArrowLeft className="h-4 w-4" />
           </Button>

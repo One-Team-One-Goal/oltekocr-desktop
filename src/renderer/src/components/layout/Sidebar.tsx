@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import {
-  LayoutDashboard,
-  ScanLine,
-  FileOutput,
+  FileText,
+  FileScan,
+  Table2,
   BookOpen,
   Palette,
   Check,
@@ -36,9 +36,13 @@ const drag = { WebkitAppRegion: "drag" } as React.CSSProperties;
 const noDrag = { WebkitAppRegion: "no-drag" } as React.CSSProperties;
 
 const navItems = [
-  { icon: LayoutDashboard, label: "Dashboard", path: "/" },
-  { icon: ScanLine, label: "Scanner", path: "/scanner" },
-  { icon: FileOutput, label: "Export", path: "/export" },
+  { icon: Table2, label: "Tables", path: "/" },
+  { icon: FileScan, label: "Images", path: "/ocr-extract" },
+  {
+    icon: FileText,
+    label: "Keywords",
+    path: "/keyword-extract",
+  },
 ];
 
 export function Sidebar() {
@@ -84,8 +88,15 @@ export function Sidebar() {
 
       {/* Nav items */}
       <nav className="flex-1 py-3 px-2 space-y-0.5">
+        <p className="px-2 py-1 text-[11px] font-semibold text-muted-foreground/60">
+          Extract
+        </p>
         {navItems.map((item) => {
-          const isActive = location.pathname === item.path;
+          const isActive =
+            item.path === "/"
+              ? location.pathname === "/" ||
+                location.pathname.startsWith("/pdf-extract")
+              : location.pathname.startsWith(item.path);
           const btn = (
             <Button
               key={item.path}
@@ -104,19 +115,6 @@ export function Sidebar() {
           );
           return btn;
         })}
-
-        {/* Settings */}
-        <Button
-          variant="ghost"
-          className={cn(
-            "w-full justify-start gap-2.5 h-9 text-sm",
-            "text-muted-foreground hover:text-foreground hover:bg-secondary/50",
-          )}
-          onClick={() => setSettingsOpen(true)}
-        >
-          <Settings className="h-4 w-4 shrink-0" />
-          <span>Settings</span>
-        </Button>
       </nav>
 
       {/* Bottom items */}
@@ -127,7 +125,7 @@ export function Sidebar() {
             <Button
               variant="ghost"
               className={cn(
-                "w-full justify-start gap-2.5 h-8 text-sm",
+                "w-full justify-start gap-2.5 h-9 text-sm",
                 "text-muted-foreground hover:text-foreground hover:bg-secondary/50",
               )}
             >
@@ -190,6 +188,19 @@ export function Sidebar() {
 
           return dropdown;
         })()}
+
+        {/* Settings */}
+        <Button
+          variant="ghost"
+          className={cn(
+            "w-full justify-start gap-2.5 h-9 text-sm",
+            "text-muted-foreground hover:text-foreground hover:bg-secondary/50",
+          )}
+          onClick={() => setSettingsOpen(true)}
+        >
+          <Settings className="h-4 w-4 shrink-0" />
+          <span>Settings</span>
+        </Button>
 
         {/* OltekOCR branding */}
         <div className="flex items-center gap-2 px-2 py-1.5 rounded-md pt-4">
