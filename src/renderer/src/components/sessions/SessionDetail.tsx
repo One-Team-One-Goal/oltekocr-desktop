@@ -6,6 +6,10 @@ import { SessionDataTable } from "./SessionDataTable";
 import { ReviewDialog } from "@/components/ReviewDialog";
 import { ContractReviewDialog } from "./ContractReviewDialog";
 import { EditColumnsDialog } from "./EditColumnsDialog";
+import { WindowControls } from "@/components/layout/SidebarContext";
+
+const drag = { WebkitAppRegion: "drag" } as React.CSSProperties;
+const noDrag = { WebkitAppRegion: "no-drag" } as React.CSSProperties;
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -235,8 +239,11 @@ export function SessionDetail() {
   return (
     <div className="flex flex-col h-full bg-background">
       {/* Header */}
-      <header className="flex items-center justify-between h-14 px-4 border-b shrink-0 gap-3">
-        <div className="flex items-center gap-3 min-w-0">
+      <header
+        className="flex items-stretch h-14 pl-4 border-b shrink-0"
+        style={drag}
+      >
+        <div className="flex items-center gap-3 min-w-0 flex-1" style={noDrag}>
           <Button
             variant="ghost"
             size="icon"
@@ -254,7 +261,7 @@ export function SessionDetail() {
             {modeBadge}
           </div>
         </div>
-        <div className="flex items-center gap-1.5 shrink-0">
+        <div className="flex items-center gap-1.5 shrink-0" style={noDrag}>
           {/* Play / Stop */}
           {(() => {
             const canStart =
@@ -327,6 +334,7 @@ export function SessionDetail() {
             </Button>
           )}
         </div>
+        <WindowControls />
       </header>
 
       {/* Stats + filter */}

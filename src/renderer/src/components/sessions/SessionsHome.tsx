@@ -22,6 +22,10 @@ import {
   Search,
 } from "lucide-react";
 import type { SessionListItem, SessionMode } from "@shared/types";
+import { WindowControls } from "@/components/layout/SidebarContext";
+
+const drag = { WebkitAppRegion: "drag" } as React.CSSProperties;
+const noDrag = { WebkitAppRegion: "no-drag" } as React.CSSProperties;
 
 const MODE_TITLES: Record<SessionMode, string> = {
   PDF_EXTRACT: "Documents to Table Extract",
@@ -149,9 +153,40 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
   return (
     <div className="flex flex-col h-full bg-background">
       {/* Header */}
-      <header className="flex items-center justify-between h-14 px-6 border-b shrink-0">
-        <h1 className="text-lg font-semibold">{MODE_TITLES[mode]}</h1>
-        <div className="flex items-center gap-2">
+      <header
+        className="flex items-stretch h-14 pl-6 border-b shrink-0 pt-0.5"
+        style={drag}
+      >
+        <div className="flex items-center gap-2 flex-1" style={noDrag}>
+          <h1 className="text-lg font-semibold">{MODE_TITLES[mode]}</h1>
+        </div>
+        <WindowControls />
+      </header>
+
+      {/* Search, filters, and actions */}
+      <div className="flex items-center gap-2 px-6 pt-4">
+        <div className="relative max-w-xs flex-1">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+          <Input
+            placeholder="Search sessions..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="pl-8 h-8 text-xs bg-card"
+          />
+        </div>
+        <Select value={statusFilter} onValueChange={setStatusFilter}>
+          <SelectTrigger className="w-32 h-8 text-xs bg-card">
+            <SelectValue placeholder="All Status" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Status</SelectItem>
+            <SelectItem value="PENDING">Pending</SelectItem>
+            <SelectItem value="PROCESSING">Processing</SelectItem>
+            <SelectItem value="DONE">Done</SelectItem>
+            <SelectItem value="ERROR">Error</SelectItem>
+          </SelectContent>
+        </Select>
+        <div className="flex items-center gap-2 ml-auto">
           {actionMode === "delete" ? (
             <>
               {selectedIds.size > 0 && (
@@ -218,40 +253,13 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
           <Button
             onClick={() => setDialogOpen(true)}
             variant="default"
-            size="xs"
+            size="sm"
           >
             <CirclePlus className="h-4 w-4" />
             New Session
           </Button>
         </div>
-      </header>
-
-      {/* Search and filters */}
-      {sessions.length > 0 && (
-        <div className="flex items-center gap-2 px-6 pt-4">
-          <div className="relative max-w-xs flex-1">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-            <Input
-              placeholder="Search sessions..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-8 h-8 text-xs bg-card"
-            />
-          </div>
-          <Select value={statusFilter} onValueChange={setStatusFilter}>
-            <SelectTrigger className="w-32 h-8 text-xs bg-card">
-              <SelectValue placeholder="All Status" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Status</SelectItem>
-              <SelectItem value="PENDING">Pending</SelectItem>
-              <SelectItem value="PROCESSING">Processing</SelectItem>
-              <SelectItem value="DONE">Done</SelectItem>
-              <SelectItem value="ERROR">Error</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-      )}
+      </div>
 
       {/* Content */}
       <div className="flex-1 overflow-auto p-6">
