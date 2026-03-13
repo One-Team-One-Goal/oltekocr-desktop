@@ -56,10 +56,22 @@ function formatRelativeDate(dateStr: string): string {
   if (diffHours < 24) return `${diffHours}h ago`;
   if (diffDays < 7) {
     const day = date.toLocaleDateString("en-US", { weekday: "short" });
-    const time = date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+    const time = date.toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+    });
     return `${day} at ${time}`;
   }
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  return date.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function getFileName(filePath: string): string {
+  const parts = filePath.split(/[/\\]/);
+  return parts[parts.length - 1] || filePath;
 }
 
 const PDF_NEW_CARDS = [
@@ -190,8 +202,15 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
       const result = await window.api.openFileDialog();
       if (result.canceled || result.filePaths.length === 0) return;
       setCreating(docType);
+      const selectedFile = result.filePaths[0];
       const allSessions = await sessionsApi.list();
-      const name = nextUnnamedName(allSessions.map((s: SessionListItem) => s.name));
+      const inferredName = getFileName(selectedFile);
+      const existingNames = new Set(
+        allSessions.map((s: SessionListItem) => s.name),
+      );
+      const name = existingNames.has(inferredName)
+        ? nextUnnamedName(allSessions.map((s: SessionListItem) => s.name))
+        : inferredName;
       const session = await sessionsApi.create({
         name,
         mode: "PDF_EXTRACT",
@@ -199,14 +218,15 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
         documentType: docType,
         columns: [],
       });
-      const docs = await sessionsApi.ingestFiles(session.id, result.filePaths);
+      // PDF mode is single-document per session.
+      const docs = await sessionsApi.ingestFiles(session.id, [selectedFile]);
       const docIds = docs.map((d: { id: string }) => d.id);
       if (docIds.length > 0) {
         await queueApi.add(docIds);
         await queueApi.resume();
       }
       markUnsaved(session.id);
-      navigate(`/sessions/${session.id}`);
+      navigate(`/pdf-sessions/${session.id}`);
     } catch (err) {
       console.error("Failed to create PDF session:", err);
     } finally {
@@ -281,34 +301,40 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
               New
             </h2>
             <div className="flex flex-wrap gap-3">
-              {PDF_NEW_CARDS.map(({ value, Icon, label, desc, placeholder }) => {
-                const isCreating = creating === value;
-                return (
-                  <button
-                    key={value}
-                    onClick={() => !creating && !placeholder && handleNewPdfSession(value)}
-                    disabled={creating !== null || placeholder}
-                    className="flex flex-col w-36 rounded-lg border bg-card hover:border-primary hover:shadow-md transition-all overflow-hidden text-left disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:hover:border-border disabled:hover:shadow-none"
-                  >
-                    <div className="relative flex items-center justify-center h-24 w-full bg-primary/10">
-                      {isCreating ? (
-                        <Loader2 className="h-8 w-8 text-primary animate-spin" />
-                      ) : (
-                        <Icon className="h-10 w-10 text-primary" />
-                      )}
-                      {placeholder && (
-                        <span className="absolute top-1.5 right-1.5 text-[9px] font-semibold uppercase tracking-wide bg-muted text-muted-foreground px-1.5 py-0.5 rounded-sm">
-                          Soon
-                        </span>
-                      )}
-                    </div>
-                    <div className="px-3 py-2 border-t">
-                      <p className="text-xs font-semibold">{label}</p>
-                      <p className="text-[10px] text-muted-foreground leading-snug mt-0.5">{desc}</p>
-                    </div>
-                  </button>
-                );
-              })}
+              {PDF_NEW_CARDS.map(
+                ({ value, Icon, label, desc, placeholder }) => {
+                  const isCreating = creating === value;
+                  return (
+                    <button
+                      key={value}
+                      onClick={() =>
+                        !creating && !placeholder && handleNewPdfSession(value)
+                      }
+                      disabled={creating !== null || placeholder}
+                      className="flex flex-col w-36 rounded-lg border bg-card hover:border-primary hover:shadow-md transition-all overflow-hidden text-left disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:hover:border-border disabled:hover:shadow-none"
+                    >
+                      <div className="relative flex items-center justify-center h-24 w-full bg-primary/10">
+                        {isCreating ? (
+                          <Loader2 className="h-8 w-8 text-primary animate-spin" />
+                        ) : (
+                          <Icon className="h-10 w-10 text-primary" />
+                        )}
+                        {placeholder && (
+                          <span className="absolute top-1.5 right-1.5 text-[9px] font-semibold uppercase tracking-wide bg-muted text-muted-foreground px-1.5 py-0.5 rounded-sm">
+                            Soon
+                          </span>
+                        )}
+                      </div>
+                      <div className="px-3 py-2 border-t">
+                        <p className="text-xs font-semibold">{label}</p>
+                        <p className="text-[10px] text-muted-foreground leading-snug mt-0.5">
+                          {desc}
+                        </p>
+                      </div>
+                    </button>
+                  );
+                },
+              )}
             </div>
           </section>
 
@@ -346,14 +372,17 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
                   <div
                     key={session.id}
                     className="group grid grid-cols-[1fr_140px_36px] items-center px-4 py-2.5 hover:bg-muted/50 cursor-pointer"
-                    onClick={() => navigate(`/sessions/${session.id}`)}
+                    onClick={() => navigate(`/pdf-sessions/${session.id}`)}
                   >
                     <div className="flex items-center gap-3 min-w-0">
                       <FileText className="h-4 w-4 text-primary shrink-0" />
                       <div className="min-w-0">
-                        <p className="text-sm font-medium truncate">{session.name}</p>
+                        <p className="text-sm font-medium truncate">
+                          {session.name}
+                        </p>
                         <p className="text-xs text-muted-foreground">
-                          {session.documentCount} document{session.documentCount !== 1 ? "s" : ""}
+                          {session.documentCount} document
+                          {session.documentCount !== 1 ? "s" : ""}
                         </p>
                       </div>
                     </div>

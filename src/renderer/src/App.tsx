@@ -4,6 +4,7 @@ import { Sidebar } from "@/components/layout/Sidebar";
 import { SidebarProvider } from "@/components/layout/SidebarContext";
 import { SessionsHome } from "@/components/sessions/SessionsHome";
 import { SessionDetail } from "@/components/sessions/SessionDetail";
+import { PdfSessionDetail } from "@/components/sessions/PdfSessionDetail";
 import { Toaster } from "@/components/ui/toaster";
 
 export default function App() {
@@ -23,6 +24,7 @@ export default function App() {
                 path="/keyword-extract"
                 element={<SessionsHome mode="TABLE_EXTRACT" />}
               />
+              <Route path="/pdf-sessions/:id" element={<PdfSessionDetail />} />
               <Route path="/sessions/:id" element={<SessionDetail />} />
               <Route path="*" element={<SessionsHome mode="PDF_EXTRACT" />} />
             </Routes>
