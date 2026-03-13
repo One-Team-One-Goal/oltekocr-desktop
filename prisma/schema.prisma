@@ -16,7 +16,7 @@ model Session {
   sourceType      String     @default("FILES") @map("source_type")
   sourcePath      String     @default("") @map("source_path")
   documentType    String     @default("") @map("document_type") // for PDF_EXTRACT: "INVOICE" | "CONTRACT" | etc.
-  extractionModel String     @default("docling") @map("extraction_model") // e.g. "docling" | "pdfplumber" | "pymupdf" | "unstructured"
+  extractionModel String     @default("pdfplumber") @map("extraction_model") // e.g. "pdfplumber" | "pymupdf" | "unstructured"
   status          String     @default("PENDING")       // "PENDING" | "PROCESSING" | "DONE" | "ERROR"
   createdAt       DateTime   @default(now()) @map("created_at")
   updatedAt       DateTime   @updatedAt @map("updated_at")

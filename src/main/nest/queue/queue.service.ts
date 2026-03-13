@@ -4,6 +4,14 @@ import { ContractExtractionService } from "../contract-extraction/contract-extra
 import { DocumentsGateway } from "../documents/documents.gateway";
 import { PrismaService } from "../prisma/prisma.service";
 
+interface ProcessingMeta {
+  scanTime: number;
+  llmTime: number;
+  totalTime: number;
+  scanModel: string;
+  llmModel: string | null;
+}
+
 /**
  * Processing queue — FIFO, sequential document processing.
  */
@@ -14,6 +22,15 @@ export class QueueService {
   private processing: string | null = null;
   private paused = false;
   private readonly cancelledDocs = new Set<string>();
+
+  private formatSeconds(value: number): string {
+    return Number(value ?? 0).toFixed(3);
+  }
+
+  private formatConfidenceValue(value: unknown): string {
+    const n = Number(value);
+    return Number.isFinite(n) ? `${n.toFixed(2)}%` : "n/a";
+  }
 
   constructor(
     private readonly ocrService: OcrService,
@@ -194,13 +211,29 @@ export class QueueService {
           "REVIEW",
           new Date().toISOString(),
         );
-        const time = (result as any).processingTime ?? 0;
+        const meta = ((result as any).processingMeta ??
+          null) as ProcessingMeta | null;
+        const scanTime = Number(
+          meta?.scanTime ?? (result as any).processingTime ?? 0,
+        );
+        const llmTime = Number(meta?.llmTime ?? 0);
+        const totalTime = Number(
+          meta?.totalTime ?? Number((scanTime + llmTime).toFixed(3)),
+        );
+        const scanModel =
+          meta?.scanModel ??
+          (isPdfExtract ? "pdf_contract_extract" : "rapidocr");
+        const llmModel = meta?.llmModel ?? null;
+        const modelsLabel = llmModel
+          ? `models: scan=${scanModel}, llm=${llmModel}`
+          : `models: scan=${scanModel}`;
+
         this.gateway.sendProcessingLog(
           documentId,
-          `Completed (conf: ${(result as any).avgConfidence ?? 0}%, time: ${time}s)`,
+          `Completed (conf: ${this.formatConfidenceValue((result as any).avgConfidence)}, time: ${this.formatSeconds(totalTime)}s, scan: ${this.formatSeconds(scanTime)}s, llm: ${this.formatSeconds(llmTime)}s, ${modelsLabel})`,
         );
         this.logger.log(
-          `Completed: ${documentId} [${sessionMode}] (time: ${time}s)`,
+          `Completed: ${documentId} [${sessionMode}] (total: ${this.formatSeconds(totalTime)}s, scan: ${this.formatSeconds(scanTime)}s, llm: ${this.formatSeconds(llmTime)}s, ${modelsLabel})`,
         );
       }
     } catch (err: any) {

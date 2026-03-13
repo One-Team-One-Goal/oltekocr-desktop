@@ -230,6 +230,10 @@ export function SessionDetail() {
     );
   }
 
+  const selectedReviewDocument = reviewDocId
+    ? (documents.find((d) => d.id === reviewDocId) ?? null)
+    : null;
+
   const modeToRoute: Record<string, string> = {
     PDF_EXTRACT: "/",
     OCR_EXTRACT: "/ocr-extract",
@@ -360,6 +364,8 @@ export function SessionDetail() {
           open={!!reviewDocId}
           onClose={() => setReviewDocId(null)}
           onRefresh={refresh}
+          session={session}
+          selectedDocument={selectedReviewDocument}
         />
       )}
 

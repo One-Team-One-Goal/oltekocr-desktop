@@ -4,6 +4,7 @@ import { Sidebar } from "@/components/layout/Sidebar";
 import { SidebarProvider } from "@/components/layout/SidebarContext";
 import { SessionsHome } from "@/components/sessions/SessionsHome";
 import { SessionDetail } from "@/components/sessions/SessionDetail";
+import { Toaster } from "@/components/ui/toaster";
 
 export default function App() {
   return (
@@ -27,6 +28,7 @@ export default function App() {
             </Routes>
           </main>
         </div>
+        <Toaster />
       </SidebarProvider>
     </TooltipProvider>
   );

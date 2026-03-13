@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { Download, Trash2, FileSearch, Loader2 } from "lucide-react";
 import { modelsApi, sessionsApi, type ModelStatus } from "@/api/client";
+import { toast } from "@/hooks/use-toast";
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -33,7 +34,7 @@ export function PdfModelDialog({
   onSelectionChange,
 }: PdfModelDialogProps) {
   const [models, setModels] = useState<ModelStatus[]>([]);
-  const [selectedId, setSelectedId] = useState(currentModel || "docling");
+  const [selectedId, setSelectedId] = useState(currentModel || "pdfplumber");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -70,19 +71,92 @@ export function PdfModelDialog({
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [downloading, setDownloading] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const cancelledInstallsRef = useRef<Set<string>>(new Set());
+
+  const cancelActiveDownload = async (modelId: string) => {
+    cancelledInstallsRef.current.add(modelId);
+    try {
+      await modelsApi.cancelInstall(modelId);
+    } catch {
+      // ignore: install call may already be resolving
+    }
+    toast({
+      title: "Cancelling PDF Model Install",
+      description: `${modelId} cancellation requested...`,
+      duration: 3000,
+    });
+    setDownloading((current) => (current === modelId ? null : current));
+  };
 
   const startDownload = async (modelId: string, selectAfter = false) => {
+    cancelledInstallsRef.current.delete(modelId);
     setDownloading(modelId);
+    const notice = toast({
+      title: "Installing PDF Model",
+      description: `${modelId} installation started...`,
+      duration: 0,
+      actionLabel: "Cancel",
+      onAction: () => {
+        void cancelActiveDownload(modelId);
+      },
+    });
     try {
-      await modelsApi.install(modelId);
+      const result = await modelsApi.install(modelId);
+      if (cancelledInstallsRef.current.has(modelId)) {
+        notice.update({
+          title: "PDF Model Install Cancelled",
+          description: `${modelId} was cancelled.`,
+          duration: 3000,
+          actionLabel: undefined,
+          onAction: undefined,
+        });
+        return;
+      }
+      if (!result.ok) {
+        notice.update({
+          title: "PDF Model Install Failed",
+          description: result.log || `Unable to install ${modelId}.`,
+          variant: "destructive",
+          duration: 6000,
+          actionLabel: undefined,
+          onAction: undefined,
+        });
+        return;
+      }
       setModels((prev) =>
         prev.map((m) => (m.id === modelId ? { ...m, downloaded: true } : m)),
       );
       if (selectAfter) setSelectedId(modelId);
+      notice.update({
+        title: "PDF Model Ready",
+        description: `${modelId} installed successfully.`,
+        duration: 3000,
+        actionLabel: undefined,
+        onAction: undefined,
+      });
     } catch (err) {
+      if (cancelledInstallsRef.current.has(modelId)) {
+        notice.update({
+          title: "PDF Model Install Cancelled",
+          description: `${modelId} was cancelled.`,
+          duration: 3000,
+          actionLabel: undefined,
+          onAction: undefined,
+        });
+        return;
+      }
       console.error("Model install failed:", err);
+      notice.update({
+        title: "PDF Model Install Failed",
+        description: `Unable to install ${modelId}.`,
+        variant: "destructive",
+        duration: 6000,
+        actionLabel: undefined,
+        onAction: undefined,
+      });
     } finally {
-      setDownloading(null);
+      cancelledInstallsRef.current.delete(modelId);
+      setDownloading((current) => (current === modelId ? null : current));
     }
   };
 
@@ -111,7 +185,7 @@ export function PdfModelDialog({
       setModels((prev) =>
         prev.map((m) => (m.id === id ? { ...m, downloaded: false } : m)),
       );
-      if (selectedId === id) setSelectedId("docling");
+      if (selectedId === id) setSelectedId("pdfplumber");
     } catch (err) {
       console.error("Model uninstall failed:", err);
     } finally {

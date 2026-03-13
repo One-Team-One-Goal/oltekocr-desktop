@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   Dialog,
   DialogContent,
@@ -33,13 +33,15 @@ import {
   FileText,
   Code2,
   Braces,
-  Loader2,
 } from "lucide-react";
 import type {
   DocumentRecord,
+  DocumentListItem,
   ExtractionType,
   OcrResult,
   QualityCheck,
+  SessionRecord,
+  TextBlock,
 } from "@shared/types";
 
 interface ReviewDialogProps {
@@ -47,6 +49,150 @@ interface ReviewDialogProps {
   open: boolean;
   onClose: () => void;
   onRefresh: () => void;
+  session?: SessionRecord | null;
+  selectedDocument?: DocumentListItem | null;
+}
+
+type FieldOverlayMatch = {
+  key: string;
+  label: string;
+  answer: string;
+  score: number;
+  bbox: [number, number, number, number];
+  blockIndexes: number[];
+  color: string;
+  borderColor: string;
+  fillColor: string;
+};
+
+const FIELD_OVERLAY_COLORS = [
+  {
+    color: "#3b82f6",
+    borderColor: "rgba(59, 130, 246, 0.95)",
+    fillColor: "rgba(59, 130, 246, 0.18)",
+  },
+  {
+    color: "#ef4444",
+    borderColor: "rgba(239, 68, 68, 0.95)",
+    fillColor: "rgba(239, 68, 68, 0.18)",
+  },
+  {
+    color: "#10b981",
+    borderColor: "rgba(16, 185, 129, 0.95)",
+    fillColor: "rgba(16, 185, 129, 0.18)",
+  },
+  {
+    color: "#f59e0b",
+    borderColor: "rgba(245, 158, 11, 0.95)",
+    fillColor: "rgba(245, 158, 11, 0.18)",
+  },
+  {
+    color: "#8b5cf6",
+    borderColor: "rgba(139, 92, 246, 0.95)",
+    fillColor: "rgba(139, 92, 246, 0.18)",
+  },
+  {
+    color: "#ec4899",
+    borderColor: "rgba(236, 72, 153, 0.95)",
+    fillColor: "rgba(236, 72, 153, 0.18)",
+  },
+  {
+    color: "#14b8a6",
+    borderColor: "rgba(20, 184, 166, 0.95)",
+    fillColor: "rgba(20, 184, 166, 0.18)",
+  },
+  {
+    color: "#f97316",
+    borderColor: "rgba(249, 115, 22, 0.95)",
+    fillColor: "rgba(249, 115, 22, 0.18)",
+  },
+];
+
+function normalizeText(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function normalizeLooseText(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function mergeBboxes(
+  blocks: Array<TextBlock & { matchIndex: number }>,
+): [number, number, number, number] | null {
+  const boxes = blocks.map((block) => block.bbox).filter(Boolean) as Array<
+    [number, number, number, number]
+  >;
+  if (boxes.length === 0) return null;
+  return [
+    Math.min(...boxes.map((box) => box[0])),
+    Math.min(...boxes.map((box) => box[1])),
+    Math.max(...boxes.map((box) => box[2])),
+    Math.max(...boxes.map((box) => box[3])),
+  ];
+}
+
+function findBestFieldMatch(
+  blocks: TextBlock[],
+  answer: string,
+): { bbox: [number, number, number, number]; blockIndexes: number[] } | null {
+  const trimmed = answer.trim();
+  if (!trimmed) return null;
+
+  const target = normalizeText(trimmed);
+  const targetLoose = normalizeLooseText(trimmed);
+  if (!targetLoose) return null;
+
+  let bestMatch: {
+    bbox: [number, number, number, number];
+    blockIndexes: number[];
+    score: number;
+  } | null = null;
+
+  for (let start = 0; start < blocks.length; start += 1) {
+    const startBlock = blocks[start];
+    if (!startBlock?.bbox) continue;
+
+    const candidateBlocks: Array<TextBlock & { matchIndex: number }> = [];
+    for (let end = start; end < Math.min(blocks.length, start + 6); end += 1) {
+      const block = blocks[end];
+      if (block.page !== startBlock.page) break;
+      candidateBlocks.push({ ...block, matchIndex: end });
+
+      const mergedBox = mergeBboxes(candidateBlocks);
+      if (!mergedBox) continue;
+
+      const combinedText = candidateBlocks.map((item) => item.text).join(" ");
+      const normalized = normalizeText(combinedText);
+      const normalizedLoose = normalizeLooseText(combinedText);
+
+      let score = -1;
+      if (normalizedLoose === targetLoose || normalized === target) {
+        score = 1000 - candidateBlocks.length;
+      } else if (
+        normalizedLoose.includes(targetLoose) ||
+        normalized.includes(target)
+      ) {
+        score = 850 - candidateBlocks.length;
+      } else if (
+        targetLoose.includes(normalizedLoose) &&
+        normalizedLoose.length >= Math.min(10, targetLoose.length)
+      ) {
+        score = 700 - candidateBlocks.length;
+      }
+
+      if (score > (bestMatch?.score ?? -1)) {
+        bestMatch = {
+          bbox: mergedBox,
+          blockIndexes: candidateBlocks.map((item) => item.matchIndex),
+          score,
+        };
+      }
+    }
+  }
+
+  return bestMatch
+    ? { bbox: bestMatch.bbox, blockIndexes: bestMatch.blockIndexes }
+    : null;
 }
 
 /** True when extraction type is a PDF pipeline */
@@ -64,26 +210,25 @@ export function ReviewDialog({
   open,
   onClose,
   onRefresh,
+  session,
+  selectedDocument,
 }: ReviewDialogProps) {
   const [doc, setDoc] = useState<DocumentRecord | null>(null);
   const [loading, setLoading] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [rotation, setRotation] = useState(0);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
   const [showOverlays, setShowOverlays] = useState(true);
   const [activeTab, setActiveTab] = useState("formatted");
-  const imageRef = useRef<HTMLDivElement>(null);
-
-  // Lazy-load flags for image-scanned docs (Formatted / Raw / Tables)
-  const [formattedLoaded, setFormattedLoaded] = useState(false);
-  const [rawLoaded, setRawLoaded] = useState(false);
-  const [tablesLoaded, setTablesLoaded] = useState(false);
+  const [activeFieldKey, setActiveFieldKey] = useState<string | null>(null);
+  const viewerRef = useRef<HTMLDivElement>(null);
+  const imageElRef = useRef<HTMLImageElement>(null);
+  const panStartRef = useRef<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
     if (documentId && open) {
       setLoading(true);
-      setFormattedLoaded(false);
-      setRawLoaded(false);
-      setTablesLoaded(false);
       documentsApi
         .get(documentId)
         .then((d) => {
@@ -99,6 +244,8 @@ export function ReviewDialog({
         .finally(() => setLoading(false));
       setZoom(1);
       setRotation(0);
+      setPan({ x: 0, y: 0 });
+      setActiveFieldKey(null);
     }
   }, [documentId, open]);
 
@@ -127,9 +274,62 @@ export function ReviewDialog({
   const zoomIn = () => setZoom((z) => Math.min(z + 0.25, 5));
   const zoomOut = () => setZoom((z) => Math.max(z - 0.25, 0.25));
   const rotate = () => setRotation((r) => (r + 90) % 360);
-  const fitToView = () => {
-    setZoom(1);
+  const fitToView = useCallback(() => {
+    const viewer = viewerRef.current;
+    const image = imageElRef.current;
+    if (!viewer || !image) {
+      setZoom(1);
+      setRotation(0);
+      setPan({ x: 0, y: 0 });
+      return;
+    }
+
+    const viewerPadding = 24;
+    const availableWidth = Math.max(viewer.clientWidth - viewerPadding, 1);
+    const availableHeight = Math.max(viewer.clientHeight - viewerPadding, 1);
+    const naturalWidth = Math.max(image.naturalWidth, 1);
+    const naturalHeight = Math.max(image.naturalHeight, 1);
+    const fitZoom = Math.min(
+      availableWidth / naturalWidth,
+      availableHeight / naturalHeight,
+      5,
+    );
+
+    setZoom(Math.max(fitZoom, 0.1));
     setRotation(0);
+    setPan({ x: 0, y: 0 });
+  }, []);
+
+  const onImageLoad = useCallback(() => {
+    fitToView();
+  }, [fitToView]);
+
+  const startPanning = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.button !== 2) return;
+    e.preventDefault();
+    setIsPanning(true);
+    panStartRef.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
+  };
+
+  const onPanMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isPanning || !panStartRef.current) return;
+    e.preventDefault();
+    setPan({
+      x: e.clientX - panStartRef.current.x,
+      y: e.clientY - panStartRef.current.y,
+    });
+  };
+
+  const stopPanning = () => {
+    setIsPanning(false);
+    panStartRef.current = null;
+  };
+
+  const onViewerWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    if (!isImage) return;
+    e.preventDefault();
+    const delta = e.deltaY < 0 ? 0.1 : -0.1;
+    setZoom((z) => Math.max(0.1, Math.min(5, z + delta)));
   };
 
   const ocr: OcrResult | null = doc?.ocrResult ?? null;
@@ -137,13 +337,96 @@ export function ReviewDialog({
   const extType = doc?.extractionType;
   const isPdf = isPdfType(extType);
   const isImage = isImageType(extType);
+  const extractedRow = selectedDocument?.extractedRow ?? null;
 
-  // For image-scanned docs, tabs are lazy — for PDFs (Docling) they auto-load
-  const shouldLazy = isImage && !isPdf;
+  const fieldMatches = useMemo<FieldOverlayMatch[]>(() => {
+    if (
+      !isImage ||
+      !ocr?.textBlocks ||
+      !session?.columns?.length ||
+      !extractedRow
+    ) {
+      return [];
+    }
+
+    return session.columns
+      .map((column, index) => {
+        const extracted = extractedRow[column.key];
+        const answer = extracted?.answer?.trim();
+        if (!answer) return null;
+
+        const match = findBestFieldMatch(ocr.textBlocks, answer);
+        if (!match) return null;
+
+        const palette =
+          FIELD_OVERLAY_COLORS[index % FIELD_OVERLAY_COLORS.length];
+        return {
+          key: column.key,
+          label: column.label,
+          answer,
+          score: extracted.score,
+          bbox: match.bbox,
+          blockIndexes: match.blockIndexes,
+          color: palette.color,
+          borderColor: palette.borderColor,
+          fillColor: palette.fillColor,
+        };
+      })
+      .filter((match): match is FieldOverlayMatch => match !== null);
+  }, [extractedRow, isImage, ocr?.textBlocks, session?.columns]);
+
+  const blockFieldLookup = useMemo(() => {
+    const lookup = new Map<number, FieldOverlayMatch>();
+    fieldMatches.forEach((match) => {
+      match.blockIndexes.forEach((blockIndex) => {
+        if (!lookup.has(blockIndex)) {
+          lookup.set(blockIndex, match);
+        }
+      });
+    });
+    return lookup;
+  }, [fieldMatches]);
+
+  useEffect(() => {
+    if (fieldMatches.length === 0) {
+      setActiveFieldKey(null);
+      return;
+    }
+    setActiveFieldKey((current) =>
+      current && fieldMatches.some((match) => match.key === current)
+        ? current
+        : fieldMatches[0].key,
+    );
+  }, [fieldMatches]);
 
   const imageUrl = doc
     ? `http://localhost:3847/api/documents/${doc.id}/image`
     : "";
+
+  const focusFieldMatch = useCallback(
+    (match: FieldOverlayMatch) => {
+      const image = imageElRef.current;
+      if (!image) return;
+
+      const centerX = (match.bbox[0] + match.bbox[2]) / 2;
+      const centerY = (match.bbox[1] + match.bbox[3]) / 2;
+      const offsetX = centerX - image.naturalWidth / 2;
+      const offsetY = centerY - image.naturalHeight / 2;
+      const radians = (rotation * Math.PI) / 180;
+      const rotatedX =
+        offsetX * Math.cos(radians) - offsetY * Math.sin(radians);
+      const rotatedY =
+        offsetX * Math.sin(radians) + offsetY * Math.cos(radians);
+
+      setActiveFieldKey(match.key);
+      setShowOverlays(true);
+      setPan({
+        x: -rotatedX * zoom,
+        y: -rotatedY * zoom,
+      });
+    },
+    [rotation, zoom],
+  );
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
@@ -260,60 +543,145 @@ export function ReviewDialog({
                     </span>
                   </div>
                   <div
-                    ref={imageRef}
-                    className="flex-1 overflow-auto bg-background/50 flex items-center justify-center"
+                    ref={viewerRef}
+                    className={cn(
+                      "relative flex-1 overflow-hidden bg-background/50",
+                      isPanning ? "cursor-grabbing" : "cursor-default",
+                    )}
+                    onMouseDown={startPanning}
+                    onMouseMove={onPanMove}
+                    onMouseUp={stopPanning}
+                    onMouseLeave={stopPanning}
+                    onContextMenu={(e) => {
+                      if (isPanning) {
+                        e.preventDefault();
+                      }
+                    }}
+                    onWheel={onViewerWheel}
                   >
+                    {fieldMatches.length > 0 && (
+                      <div className="absolute left-3 top-3 z-10 max-h-[calc(100%-1.5rem)] overflow-auto">
+                        <div className="space-y-1">
+                          {fieldMatches.map((match) => {
+                            const isActive = match.key === activeFieldKey;
+                            return (
+                              <button
+                                key={match.key}
+                                type="button"
+                                className={cn(
+                                  "flex w-full items-start gap-2 rounded-lg p-1 text-left transition-colors",
+                                  isActive
+                                    ? "text-foreground"
+                                    : "hover:bg-muted/60 text-muted-foreground hover:text-foreground",
+                                )}
+                                onClick={() => focusFieldMatch(match)}
+                              >
+                                <span
+                                  className="mt-1 h-3 w-3 shrink-0 rounded-full"
+                                  style={{ backgroundColor: match.color }}
+                                />
+                                <span className="min-w-0 truncate text-xs font-medium">
+                                  {match.label}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
                     {doc && (
-                      <div className="relative inline-block">
-                        <img
-                          src={imageUrl}
-                          alt={doc.filename}
-                          className="max-w-none"
+                      <div className="absolute inset-0 overflow-hidden select-none">
+                        <div
+                          className="absolute left-1/2 top-1/2"
                           style={{
-                            transform: `scale(${zoom}) rotate(${rotation}deg)`,
-                            transformOrigin: "center center",
-                            transition: "transform 0.2s ease",
+                            transform: `translate(${pan.x}px, ${pan.y}px)`,
+                            transition: isPanning
+                              ? "none"
+                              : "transform 0.15s ease-out",
                           }}
-                          draggable={false}
-                        />
-                        {showOverlays && ocr?.textBlocks && (
+                        >
                           <div
-                            className="absolute inset-0 pointer-events-none"
+                            className="relative"
                             style={{
-                              transform: `scale(${zoom}) rotate(${rotation}deg)`,
+                              transform: `translate(-50%, -50%) scale(${zoom}) rotate(${rotation}deg)`,
                               transformOrigin: "center center",
+                              transition: isPanning
+                                ? "none"
+                                : "transform 0.2s ease",
                             }}
                           >
-                            {ocr.textBlocks.map((block, i) => (
-                              <div
-                                key={i}
-                                className="absolute border"
-                                style={{
-                                  left: block.bbox?.[0] ?? 0,
-                                  top: block.bbox?.[1] ?? 0,
-                                  width:
-                                    (block.bbox?.[2] ?? 0) -
-                                    (block.bbox?.[0] ?? 0),
-                                  height:
-                                    (block.bbox?.[3] ?? 0) -
-                                    (block.bbox?.[1] ?? 0),
-                                  borderColor:
-                                    block.confidence >= 90
-                                      ? "rgba(34, 197, 94, 0.6)"
-                                      : block.confidence >= 70
-                                        ? "rgba(234, 179, 8, 0.6)"
-                                        : "rgba(239, 68, 68, 0.6)",
-                                  backgroundColor:
-                                    block.confidence >= 90
-                                      ? "rgba(34, 197, 94, 0.05)"
-                                      : block.confidence >= 70
-                                        ? "rgba(234, 179, 8, 0.05)"
-                                        : "rgba(239, 68, 68, 0.05)",
-                                }}
-                              />
-                            ))}
+                            <img
+                              ref={imageElRef}
+                              src={imageUrl}
+                              alt={doc.filename}
+                              className="max-w-none"
+                              onLoad={onImageLoad}
+                              draggable={false}
+                            />
+                            {showOverlays && ocr?.textBlocks && (
+                              <div className="absolute inset-0 pointer-events-none">
+                                {ocr.textBlocks.map((block, i) => (
+                                  <div
+                                    key={i}
+                                    className="absolute border"
+                                    data-block-index={i}
+                                    style={{
+                                      left: block.bbox?.[0] ?? 0,
+                                      top: block.bbox?.[1] ?? 0,
+                                      width:
+                                        (block.bbox?.[2] ?? 0) -
+                                        (block.bbox?.[0] ?? 0),
+                                      height:
+                                        (block.bbox?.[3] ?? 0) -
+                                        (block.bbox?.[1] ?? 0),
+                                      borderColor: blockFieldLookup.has(i)
+                                        ? blockFieldLookup.get(i)?.borderColor
+                                        : block.confidence >= 90
+                                          ? "rgba(34, 197, 94, 0.35)"
+                                          : block.confidence >= 70
+                                            ? "rgba(234, 179, 8, 0.35)"
+                                            : "rgba(239, 68, 68, 0.35)",
+                                      backgroundColor: blockFieldLookup.has(i)
+                                        ? blockFieldLookup.get(i)?.fillColor
+                                        : block.confidence >= 90
+                                          ? "rgba(34, 197, 94, 0.03)"
+                                          : block.confidence >= 70
+                                            ? "rgba(234, 179, 8, 0.03)"
+                                            : "rgba(239, 68, 68, 0.03)",
+                                    }}
+                                  />
+                                ))}
+                                {fieldMatches.map((match) => {
+                                  const isActive = match.key === activeFieldKey;
+                                  return (
+                                    <div
+                                      key={match.key}
+                                      className="absolute rounded-md border-2"
+                                      style={{
+                                        left: match.bbox[0],
+                                        top: match.bbox[1],
+                                        width: match.bbox[2] - match.bbox[0],
+                                        height: match.bbox[3] - match.bbox[1],
+                                        borderColor: match.borderColor,
+                                        backgroundColor: match.fillColor,
+                                        boxShadow: isActive
+                                          ? `0 0 0 2px ${match.fillColor}, 0 0 18px ${match.fillColor}`
+                                          : undefined,
+                                      }}
+                                    >
+                                      <div
+                                        className="absolute -top-6 left-0 rounded-md px-2 py-0.5 text-[10px] font-medium text-white shadow-sm"
+                                        style={{ backgroundColor: match.color }}
+                                      >
+                                        {match.label}
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
                           </div>
-                        )}
+                        </div>
                       </div>
                     )}
                   </div>
@@ -393,39 +761,39 @@ export function ReviewDialog({
                   value="formatted"
                   className="flex-1 mt-0 p-0 overflow-hidden min-h-0"
                 >
-                  {shouldLazy && !formattedLoaded ? (
-                    <LazyTabPlaceholder
-                      label="Generate Formatted Text"
-                      description="Parse OCR blocks into readable formatted text."
-                      onLoad={() => setFormattedLoaded(true)}
-                    />
-                  ) : (
-                    <div className="h-full overflow-auto p-4">
-                      {ocr?.textBlocks && ocr.textBlocks.length > 0 ? (
-                        <div className="space-y-2 text-sm whitespace-pre-wrap">
-                          {ocr.textBlocks.map((block, i) => (
-                            <p key={i}>
-                              <span
-                                className={cn(
-                                  block.confidence < 70 &&
-                                    "text-red-400 underline decoration-dotted",
-                                  block.confidence < 90 &&
-                                    block.confidence >= 70 &&
-                                    "text-amber-400",
-                                )}
-                              >
-                                {block.text}
-                              </span>
-                            </p>
-                          ))}
-                        </div>
-                      ) : (
-                        <p className="text-muted-foreground">
-                          No OCR text available.
-                        </p>
-                      )}
-                    </div>
-                  )}
+                  <div className="h-full overflow-auto p-4">
+                    {ocr?.textBlocks && ocr.textBlocks.length > 0 ? (
+                      <div className="space-y-2 text-sm whitespace-pre-wrap">
+                        {ocr.textBlocks.map((block, i) => (
+                          <p key={i}>
+                            <span
+                              className={cn(
+                                blockFieldLookup.has(i) && "font-medium",
+                                block.confidence < 70 &&
+                                  "text-red-400 underline decoration-dotted",
+                                block.confidence < 90 &&
+                                  block.confidence >= 70 &&
+                                  "text-amber-400",
+                              )}
+                              style={
+                                blockFieldLookup.has(i)
+                                  ? {
+                                      color: blockFieldLookup.get(i)?.color,
+                                    }
+                                  : undefined
+                              }
+                            >
+                              {block.text}
+                            </span>
+                          </p>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-muted-foreground">
+                        No OCR text available.
+                      </p>
+                    )}
+                  </div>
                 </TabsContent>
 
                 {/* ── Raw Tab ──────────────────────────────── */}
@@ -433,20 +801,12 @@ export function ReviewDialog({
                   value="raw"
                   className="flex-1 mt-0 p-0 overflow-hidden min-h-0"
                 >
-                  {shouldLazy && !rawLoaded ? (
-                    <LazyTabPlaceholder
-                      label="Generate Raw Text"
-                      description="Show the unformatted OCR output."
-                      onLoad={() => setRawLoaded(true)}
-                    />
-                  ) : (
-                    <div className="h-full overflow-auto p-4">
-                      <pre className="text-xs font-mono whitespace-pre-wrap text-muted-foreground">
-                        {ocr?.textBlocks?.map((b) => b.text).join("\n") ||
-                          "No OCR text available."}
-                      </pre>
-                    </div>
-                  )}
+                  <div className="h-full overflow-auto p-4">
+                    <pre className="text-xs font-mono whitespace-pre-wrap text-muted-foreground">
+                      {ocr?.textBlocks?.map((b) => b.text).join("\n") ||
+                        "No OCR text available."}
+                    </pre>
+                  </div>
                 </TabsContent>
 
                 {/* ── Tables Tab ───────────────────────────── */}
@@ -454,59 +814,51 @@ export function ReviewDialog({
                   value="tables"
                   className="flex-1 mt-0 p-0 overflow-hidden min-h-0"
                 >
-                  {shouldLazy && !tablesLoaded ? (
-                    <LazyTabPlaceholder
-                      label="Load Tables"
-                      description="Render detected tables from the OCR output."
-                      onLoad={() => setTablesLoaded(true)}
-                    />
-                  ) : (
-                    <div className="h-full overflow-auto p-4">
-                      {ocr?.tables && ocr.tables.length > 0 ? (
-                        <div className="space-y-6">
-                          {ocr.tables.map((table, ti) => (
-                            <div key={ti} className="space-y-2">
-                              <h4 className="text-sm font-medium">
-                                Table {ti + 1}
-                              </h4>
-                              <div className="overflow-auto rounded-md border">
-                                <table className="text-xs w-full">
-                                  <tbody>
-                                    {Array.from({ length: table.rows }).map(
-                                      (_, ri) => (
-                                        <tr
-                                          key={ri}
-                                          className="border-b last:border-0"
-                                        >
-                                          {table.cells
-                                            .filter((c) => c.row === ri)
-                                            .sort((a, b) => a.col - b.col)
-                                            .map((cell, ci) => (
-                                              <td
-                                                key={ci}
-                                                className="p-1.5 border-r last:border-0"
-                                                colSpan={cell.colSpan || 1}
-                                                rowSpan={cell.rowSpan || 1}
-                                              >
-                                                {cell.text}
-                                              </td>
-                                            ))}
-                                        </tr>
-                                      ),
-                                    )}
-                                  </tbody>
-                                </table>
-                              </div>
+                  <div className="h-full overflow-auto p-4">
+                    {ocr?.tables && ocr.tables.length > 0 ? (
+                      <div className="space-y-6">
+                        {ocr.tables.map((table, ti) => (
+                          <div key={ti} className="space-y-2">
+                            <h4 className="text-sm font-medium">
+                              Table {ti + 1}
+                            </h4>
+                            <div className="overflow-auto rounded-md border">
+                              <table className="text-xs w-full">
+                                <tbody>
+                                  {Array.from({ length: table.rows }).map(
+                                    (_, ri) => (
+                                      <tr
+                                        key={ri}
+                                        className="border-b last:border-0"
+                                      >
+                                        {table.cells
+                                          .filter((c) => c.row === ri)
+                                          .sort((a, b) => a.col - b.col)
+                                          .map((cell, ci) => (
+                                            <td
+                                              key={ci}
+                                              className="p-1.5 border-r last:border-0"
+                                              colSpan={cell.colSpan || 1}
+                                              rowSpan={cell.rowSpan || 1}
+                                            >
+                                              {cell.text}
+                                            </td>
+                                          ))}
+                                      </tr>
+                                    ),
+                                  )}
+                                </tbody>
+                              </table>
                             </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <p className="text-muted-foreground">
-                          No tables detected.
-                        </p>
-                      )}
-                    </div>
-                  )}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-muted-foreground">
+                        No tables detected.
+                      </p>
+                    )}
+                  </div>
                 </TabsContent>
 
                 {/* ── Quality Tab ──────────────────────────── */}
@@ -653,28 +1005,6 @@ export function ReviewDialog({
         </div>
       </DialogContent>
     </Dialog>
-  );
-}
-
-// ─── Lazy Tab Placeholder ─────────────────────────────────────────────────────
-
-function LazyTabPlaceholder({
-  label,
-  description,
-  onLoad,
-}: {
-  label: string;
-  description: string;
-  onLoad: () => void;
-}) {
-  return (
-    <div className="flex-1 flex flex-col items-center justify-center gap-3 p-8 text-center">
-      <p className="text-sm text-muted-foreground">{description}</p>
-      <Button variant="outline" size="sm" onClick={onLoad}>
-        <Loader2 className="h-3.5 w-3.5 mr-1.5" />
-        {label}
-      </Button>
-    </div>
   );
 }
 

@@ -84,7 +84,7 @@ export function Sidebar() {
           // When expanded: logo + name on left, collapse button on right
           <>
             <img src={logo} alt="Logo" className="w-6 h-6 shrink-0 ml-1" />
-            <span className="ml-1 font-extrabold text-lg tracking-tight text-foreground flex-1 truncate pt-1">
+            <span className="ml-1 font-extrabold text-lg tracking-tight text-foreground flex-1 truncate pt-0.5">
               TRDNT
             </span>
             <Button

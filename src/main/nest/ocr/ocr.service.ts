@@ -9,11 +9,18 @@ import { DocumentsGateway } from "../documents/documents.gateway";
 import { SettingsService } from "../settings/settings.service";
 import type { OcrResult, SessionColumn } from "@shared/types";
 
+interface ProcessingMeta {
+  scanTime: number;
+  llmTime: number;
+  totalTime: number;
+  scanModel: string;
+  llmModel: string | null;
+}
+
 @Injectable()
 export class OcrService {
   private readonly logger = new Logger(OcrService.name);
   private readonly allowedPdfModels = new Set([
-    "docling",
     "pdfplumber",
     "pymupdf",
     "unstructured",
@@ -33,11 +40,6 @@ export class OcrService {
   /** Return the absolute path to the Python OCR script */
   private get scriptPath(): string {
     return join(process.cwd(), "src", "main", "python", "ocr_rapidocr.py");
-  }
-
-  /** Return the absolute path to the Docling PDF sidecar script */
-  private get doclingScriptPath(): string {
-    return join(process.cwd(), "src", "main", "python", "pdf_docling.py");
   }
 
   /** Return the absolute path to the unified extraction sidecar */
@@ -60,6 +62,7 @@ export class OcrService {
 
   /** Process a document via the RapidOCR Python sidecar */
   async process(documentId: string): Promise<OcrResult> {
+    const startedAt = Date.now();
     const doc = await this.prisma.document.findUnique({
       where: { id: documentId },
     });
@@ -106,8 +109,8 @@ export class OcrService {
     });
     const resolvedType = freshDoc?.extractionType ?? "IMAGE";
 
-    // Look up the session's chosen extraction model (defaults to "docling")
-    let extractionModel = "docling";
+    // Look up the session's chosen extraction model (defaults to "pdfplumber")
+    let extractionModel = "pdfplumber";
     if (freshDoc?.sessionId) {
       const sess = await this.prisma.session.findUnique({
         where: { id: freshDoc.sessionId },
@@ -118,16 +121,18 @@ export class OcrService {
 
     if (!this.allowedPdfModels.has(extractionModel)) {
       this.logger.warn(
-        `Unsupported extractionModel=${extractionModel}; falling back to docling`,
+        `Unsupported extractionModel=${extractionModel}; falling back to pdfplumber`,
       );
-      extractionModel = "docling";
+      extractionModel = "pdfplumber";
     }
 
     let ocrResult: OcrResult;
+    let scanModel = "rapidocr";
     this.activeDocId = documentId;
     try {
       if (resolvedType === "PDF_TEXT" || resolvedType === "PDF_IMAGE") {
         const mode = resolvedType === "PDF_IMAGE" ? "ocr" : "text";
+        scanModel = extractionModel;
         ocrResult = await this.runPdfExtractor(
           doc.imagePath,
           extractionModel,
@@ -169,7 +174,47 @@ export class OcrService {
     });
 
     // Run field extraction for TABLE_EXTRACT sessions
-    await this.runFieldExtraction(documentId, ocrResult.fullText);
+    // Use the markdown representation which has properly formatted tables
+    const llmMeta = await this.runFieldExtraction(
+      documentId,
+      ocrResult.markdown || ocrResult.fullText,
+    );
+
+    const scanTime = Number(ocrResult.processingTime ?? 0);
+    const llmTime = Number(llmMeta.durationSec ?? 0);
+    const totalTime = Number((scanTime + llmTime).toFixed(3));
+
+    // Persist the row/display time as total processing time (scan + llm).
+    await this.prisma.document.updateMany({
+      where: { id: documentId },
+      data: { ocrProcessingTime: totalTime },
+    });
+
+    ocrResult.processingTime = totalTime;
+
+    (
+      ocrResult as OcrResult & { processingMeta?: ProcessingMeta }
+    ).processingMeta = {
+      scanTime: Number(scanTime.toFixed(3)),
+      llmTime: Number(llmTime.toFixed(3)),
+      totalTime,
+      scanModel,
+      llmModel: llmMeta.model,
+    };
+
+    // Fallback: if sidecar time is unavailable, use wall-clock processing time.
+    if (!scanTime && !llmTime) {
+      const wallClockSec = Number(((Date.now() - startedAt) / 1000).toFixed(3));
+      (
+        ocrResult as OcrResult & { processingMeta?: ProcessingMeta }
+      ).processingMeta = {
+        scanTime: 0,
+        llmTime: 0,
+        totalTime: wallClockSec,
+        scanModel,
+        llmModel: llmMeta.model,
+      };
+    }
 
     return ocrResult;
   }
@@ -448,150 +493,22 @@ export class OcrService {
   }
 
   /**
-   * Spawn the Docling PDF sidecar and resolve with the parsed OcrResult.
-   */
-  private runDoclingPdf(
-    pdfPath: string,
-    mode: "text" | "ocr",
-  ): Promise<OcrResult> {
-    const cfg = this.settings.getAll().ocr;
-    const pythonExe = this.resolvePythonExe(cfg.pythonPath || "python");
-    const script = this.doclingScriptPath;
-
-    // Dynamic timeout: base 120s + 10s per MB of PDF size
-    let fileSizeMb = 0;
-    try {
-      fileSizeMb = statSync(pdfPath).size / (1024 * 1024);
-    } catch {}
-    const baseTimeout = cfg.timeout ?? 600;
-    // Chunked processing: each 25-page chunk ~40s, up to 20 chunks for a
-    // 500-page doc. Give generous per-MB headroom on top.
-    const dynamicTimeout = Math.max(
-      baseTimeout,
-      120 + Math.ceil(fileSizeMb * 30),
-    );
-    const timeoutMs = dynamicTimeout * 1000;
-
-    if (!existsSync(script)) {
-      return Promise.reject(new Error(`Docling script not found: ${script}`));
-    }
-
-    return new Promise((resolve, reject) => {
-      const args = [
-        script,
-        "--input",
-        pdfPath,
-        "--chunk-size",
-        "25",
-        "--mode",
-        mode,
-      ];
-      this.emitLog(
-        `Spawning Docling PDF sidecar (timeout: ${dynamicTimeout}s)...`,
-      );
-      this.emitLog(`Docling args: ${args.join(" ")}`);
-      this.logger.log(`Spawning Docling: ${pythonExe} ${args.join(" ")}`);
-
-      const child = spawn(pythonExe, args, {
-        windowsHide: true,
-      });
-
-      let stdout = "";
-      let stderrBuf = "";
-      let stderrAll = "";
-      let lastActivityAt = Date.now();
-
-      const markActivity = () => {
-        lastActivityAt = Date.now();
-      };
-
-      child.stdout.on("data", (chunk: Buffer) => {
-        markActivity();
-        stdout += chunk.toString();
-      });
-      child.stderr.on("data", (chunk: Buffer) => {
-        markActivity();
-        const text = chunk.toString();
-        stderrAll += text;
-        stderrBuf += text;
-        stderrBuf = this.flushStderrLines(stderrBuf);
-      });
-
-      const timer = setTimeout(() => {
-        child.kill();
-        this.emitLog(`ERROR: Docling timed out after ${dynamicTimeout}s`);
-        reject(new Error(`Docling timed out after ${dynamicTimeout}s`));
-      }, timeoutMs);
-
-      const idleWatchdog = setInterval(() => {
-        const idleForMs = Date.now() - lastActivityAt;
-        // Allow up to 60s idle: GC between chunks can take a few seconds
-        if (idleForMs > 60_000) {
-          this.emitLog("ERROR: Docling produced no output for 60s; aborting.");
-          this.logger.error(
-            `Docling stalled with no output for ${Math.round(idleForMs / 1000)}s`,
-          );
-          child.kill();
-        }
-      }, 5_000);
-
-      child.on("close", (code) => {
-        clearTimeout(timer);
-        clearInterval(idleWatchdog);
-        this.emitLog(`Docling process closed (code=${code})`);
-        if (stderrBuf.trim()) this.emitLog(stderrBuf.trim());
-        if (stderrAll)
-          this.logger.warn(`[docling-sidecar stderr] ${stderrAll.trim()}`);
-
-        try {
-          const parsed = JSON.parse(stdout.trim());
-          if (parsed.error) {
-            this.emitLog(`ERROR: ${parsed.error}`);
-            reject(new Error(parsed.error));
-          } else {
-            this.emitLog("Docling completed successfully");
-            resolve(parsed as OcrResult);
-          }
-        } catch {
-          this.emitLog(`ERROR: Docling sidecar exited with code ${code}`);
-          reject(
-            new Error(
-              `Docling sidecar exited with code ${code}. stderr: ${stderrAll.slice(0, 300)}`,
-            ),
-          );
-        }
-      });
-
-      child.on("error", (err) => {
-        clearTimeout(timer);
-        clearInterval(idleWatchdog);
-        this.emitLog(`ERROR: Failed to start Python — ${err.message}`);
-        reject(new Error(`Failed to start Python: ${err.message}`));
-      });
-
-      child.on("exit", (code, signal) => {
-        this.emitLog(
-          `Docling process exit observed (code=${code ?? "null"}, signal=${signal ?? "null"})`,
-        );
-      });
-    });
-  }
-
-  /**
    * If the document belongs to a TABLE_EXTRACT session, run local QA extraction
    * over all session columns and persist the results in extractedRow.
    */
   private async runFieldExtraction(
     documentId: string,
     ocrText: string,
-  ): Promise<void> {
+  ): Promise<{ durationSec: number; model: string | null }> {
     try {
       const doc = await this.prisma.document.findUnique({
         where: { id: documentId },
         include: { session: true },
       });
 
-      if (!doc?.session || doc.session.mode !== "TABLE_EXTRACT") return;
+      if (!doc?.session || doc.session.mode !== "TABLE_EXTRACT") {
+        return { durationSec: 0, model: null };
+      }
 
       const columns: SessionColumn[] = JSON.parse(doc.session.columns || "[]");
       if (columns.length === 0) return;
@@ -599,9 +516,14 @@ export class OcrService {
       this.logger.log(
         `Running TABLE_EXTRACT for "${doc.filename}" (${columns.length} fields)`,
       );
+      const selectedModel = this.extractionService.getSelectedModelId();
+      const llmStartedAt = Date.now();
       const results = await this.extractionService.extractFields(
         columns,
         ocrText,
+      );
+      const llmDurationSec = Number(
+        ((Date.now() - llmStartedAt) / 1000).toFixed(3),
       );
 
       await this.prisma.document.update({
@@ -610,6 +532,7 @@ export class OcrService {
       });
 
       this.logger.log(`Field extraction complete for "${doc.filename}"`);
+      return { durationSec: llmDurationSec, model: selectedModel };
     } catch (err) {
       const message =
         err instanceof Error
@@ -646,6 +569,11 @@ export class OcrService {
           `Failed to persist TABLE_EXTRACT warning for ${documentId}: ${String(warningErr)}`,
         );
       }
+
+      return {
+        durationSec: 0,
+        model: this.extractionService.getSelectedModelId(),
+      };
     }
   }
 }

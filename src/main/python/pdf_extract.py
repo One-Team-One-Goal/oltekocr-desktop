@@ -26,6 +26,46 @@ def log(msg: str) -> None:
     sys.stderr.buffer.flush()
 
 
+# ── Markdown helpers ─────────────────────────────────────────────────────────
+
+def _render_table_as_markdown(table: dict) -> str:
+    """Convert a table dict to a markdown table string."""
+    rows = table.get("rows", 0)
+    cols = table.get("cols", 0)
+    cells = table.get("cells", [])
+    if not rows or not cols or not cells:
+        return ""
+    grid: list[list[str]] = [[""] * cols for _ in range(rows)]
+    for cell in cells:
+        r, c = cell.get("row", 0), cell.get("col", 0)
+        if r < rows and c < cols:
+            grid[r][c] = str(cell.get("text", "")).replace("|", "\\|").replace("\n", " ")
+    lines: list[str] = []
+    for i, row in enumerate(grid):
+        lines.append("| " + " | ".join(row) + " |")
+        if i == 0:
+            lines.append("|" + "|".join(" --- " for _ in row) + "|")
+    return "\n".join(lines)
+
+
+def build_markdown(blocks: list, tables: list) -> str:
+    """Build formatted markdown from text blocks and tables."""
+    parts: list[str] = []
+    for block in blocks:
+        text = block.get("text", "").strip()
+        if not text:
+            continue
+        if block.get("blockType") == "heading":
+            parts.append(f"## {text}")
+        else:
+            parts.append(text)
+    for table in tables:
+        md = _render_table_as_markdown(table)
+        if md:
+            parts.append(md)
+    return "\n\n".join(parts)
+
+
 # ── pdfplumber extraction ────────────────────────────────────────────────────
 
 def extract_pdfplumber(pdf_path: str) -> dict:
@@ -66,9 +106,7 @@ def extract_pdfplumber(pdf_path: str) -> dict:
                             continue
                         all_blocks.append({
                             "text": para,
-                            "confidence": 95.0,
                             "blockType": "paragraph",
-                            "bbox": [0, 0, int(page.width or 0), int(page.height or 0)],
                             "page": page_num,
                         })
                         text_parts.append(para)
@@ -90,9 +128,6 @@ def extract_pdfplumber(pdf_path: str) -> dict:
                                     "row": r_idx,
                                     "col": c_idx,
                                     "text": cell_text,
-                                    "confidence": 95.0,
-                                    "rowSpan": 1,
-                                    "colSpan": 1,
                                 })
                                 if cell_text:
                                     table_texts.append(cell_text)
@@ -101,8 +136,6 @@ def extract_pdfplumber(pdf_path: str) -> dict:
                             "rows": rows,
                             "cols": cols,
                             "cells": cells,
-                            "caption": "",
-                            "bbox": [0, 0, int(page.width or 0), int(page.height or 0)],
                         })
                         if table_texts:
                             text_parts.append(" | ".join(table_texts))
@@ -121,7 +154,7 @@ def extract_pdfplumber(pdf_path: str) -> dict:
 
     return {
         "fullText": full_text,
-        "markdown": full_text,
+        "markdown": build_markdown(all_blocks, all_tables),
         "textBlocks": all_blocks,
         "tables": all_tables,
         "avgConfidence": 95.0,
@@ -187,9 +220,7 @@ def extract_pymupdf(pdf_path: str) -> dict:
                     bbox_raw = block.get("bbox", [0, 0, 0, 0])
                     all_blocks.append({
                         "text": text,
-                        "confidence": 95.0,
                         "blockType": "paragraph",
-                        "bbox": [int(bbox_raw[0]), int(bbox_raw[1]), int(bbox_raw[2]), int(bbox_raw[3])],
                         "page": page_num,
                     })
                     text_parts.append(text)
@@ -213,9 +244,6 @@ def extract_pymupdf(pdf_path: str) -> dict:
                                         "row": r_idx,
                                         "col": c_idx,
                                         "text": cell_text,
-                                        "confidence": 95.0,
-                                        "rowSpan": 1,
-                                        "colSpan": 1,
                                     })
                                     if cell_text:
                                         table_texts.append(cell_text)
@@ -224,8 +252,6 @@ def extract_pymupdf(pdf_path: str) -> dict:
                                 "rows": rows,
                                 "cols": cols,
                                 "cells": cells,
-                                "caption": "",
-                                "bbox": [0, 0, 0, 0],
                             })
                             if table_texts:
                                 text_parts.append(" | ".join(table_texts))
@@ -250,7 +276,7 @@ def extract_pymupdf(pdf_path: str) -> dict:
 
     return {
         "fullText": full_text,
-        "markdown": full_text,
+        "markdown": build_markdown(all_blocks, all_tables),
         "textBlocks": all_blocks,
         "tables": all_tables,
         "avgConfidence": 95.0,
@@ -331,15 +357,13 @@ def extract_unstructured(pdf_path: str) -> dict:
                 if html:
                     n_rows, n_cols, cells = _parse_html_table(html)
                 else:
-                    cells = [{"row": 0, "col": 0, "text": text, "confidence": 90.0, "rowSpan": 1, "colSpan": 1}]
+                    cells = [{"row": 0, "col": 0, "text": text}]
 
                 all_tables.append({
                     "tableId": str(uuid.uuid4())[:8],
                     "rows": n_rows,
                     "cols": n_cols,
                     "cells": cells,
-                    "caption": "",
-                    "bbox": [0, 0, 0, 0],
                 })
                 text_parts.append(text)
             else:
@@ -354,9 +378,7 @@ def extract_unstructured(pdf_path: str) -> dict:
 
                 all_blocks.append({
                     "text": text,
-                    "confidence": 90.0,
                     "blockType": block_type,
-                    "bbox": [0, 0, 0, 0],
                     "page": page,
                 })
                 text_parts.append(text)
@@ -377,7 +399,7 @@ def extract_unstructured(pdf_path: str) -> dict:
 
     return {
         "fullText": full_text,
-        "markdown": full_text,
+        "markdown": build_markdown(all_blocks, all_tables),
         "textBlocks": all_blocks,
         "tables": all_tables,
         "avgConfidence": 90.0,
@@ -430,13 +452,10 @@ def _parse_html_table(html: str) -> tuple[int, int, list[dict]]:
                     "row": r_idx,
                     "col": c_idx,
                     "text": cell_text,
-                    "confidence": 90.0,
-                    "rowSpan": 1,
-                    "colSpan": 1,
                 })
         return n_rows, n_cols, cells
     except Exception:
-        return 1, 1, [{"row": 0, "col": 0, "text": html, "confidence": 90.0, "rowSpan": 1, "colSpan": 1}]
+        return 1, 1, [{"row": 0, "col": 0, "text": html}]
 
 
 # ── Docling (delegates to pdf_docling.py logic) ──────────────────────────────
@@ -507,9 +526,7 @@ def extract_marker(pdf_path: str) -> dict:
             continue
         all_blocks.append({
             "text": para,
-            "confidence": 95.0,
             "blockType": "heading" if para.startswith("#") else "paragraph",
-            "bbox": [0, 0, 0, 0],
             "page": 1,
         })
         text_parts.append(para)
@@ -547,7 +564,7 @@ def main() -> None:
     parser.add_argument(
         "--model",
         choices=list(EXTRACTORS.keys()),
-        default="docling",
+        default="pdfplumber",
         help="Extraction model to use",
     )
     parser.add_argument(
