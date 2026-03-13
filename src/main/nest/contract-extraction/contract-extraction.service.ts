@@ -17,6 +17,7 @@ export interface ContractExtractionResult {
   rates: Record<string, string>[];
   originArbs: Record<string, string>[];
   destArbs: Record<string, string>[];
+  rawPages: { page: number; text: string }[];
   pageCount: number;
   processingTime: number;
   warnings: string[];
@@ -108,6 +109,7 @@ export class ContractExtractionService {
           rates: result.rates,
           originArbs: result.originArbs,
           destArbs: result.destArbs,
+          rawPages: result.rawPages ?? [],
         }),
       },
     });
@@ -119,7 +121,10 @@ export class ContractExtractionService {
     const pythonExe = this.resolvePythonExe();
     const script = this.scriptPath;
     const cfg = this.settings.getAll().ocr;
-    const timeoutMs = (cfg.timeout ?? 180) * 1000;
+    // Contract PDFs can be 100+ pages of dense tables; use a dedicated
+    // minimum of 600 s regardless of the OCR timeout setting.
+    const CONTRACT_TIMEOUT_S = Math.max(cfg.timeout ?? 180, 600);
+    const timeoutMs = CONTRACT_TIMEOUT_S * 1000;
 
     if (!existsSync(script)) {
       return Promise.reject(
@@ -149,7 +154,7 @@ export class ContractExtractionService {
 
       const timer = setTimeout(() => {
         child.kill();
-        reject(new Error(`Contract extraction timed out after ${cfg.timeout ?? 180}s`));
+        reject(new Error(`Contract extraction timed out after ${CONTRACT_TIMEOUT_S}s`));
       }, timeoutMs);
 
       child.on("close", (code) => {
@@ -189,6 +194,7 @@ export class ContractExtractionService {
       rates: [],
       originArbs: [],
       destArbs: [],
+      rawPages: [],
       pageCount: 0,
       processingTime: 0,
       warnings: [],

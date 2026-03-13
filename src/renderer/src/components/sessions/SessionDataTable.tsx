@@ -148,6 +148,9 @@ interface SessionDataTableProps {
   session: SessionRecord | null;
   onReview: (id: string) => void;
   onRefresh: () => void;
+  /** Currently selected document (highlighted row, drives extraction panel) */
+  selectedDocId?: string;
+  onSelectDoc?: (id: string) => void;
 }
 
 const DEFAULT_PAGE_SIZE = 10;
@@ -455,6 +458,8 @@ export function SessionDataTable({
   session,
   onReview,
   onRefresh,
+  selectedDocId,
+  onSelectDoc,
 }: SessionDataTableProps) {
   const isTableMode = session?.mode === "TABLE_EXTRACT";
   const sessionColumns = session?.columns ?? [];
@@ -686,6 +691,17 @@ export function SessionDataTable({
             {row.original.ocrPageCount || "—"}
           </span>
         ),
+      },
+      {
+        accessorKey: "ocrProcessingTime",
+        header: ({ column }) => <SortHeader column={column} label="Time" />,
+        size: 72,
+        cell: ({ row }) => {
+          const t = row.original.ocrProcessingTime;
+          if (!t || t === 0) return <span className="font-mono text-xs text-muted-foreground">—</span>;
+          const display = t < 60 ? `${t.toFixed(1)}s` : `${Math.floor(t / 60)}m ${Math.round(t % 60)}s`;
+          return <span className="font-mono text-xs">{display}</span>;
+        },
       },
       {
         id: "extractionType",
@@ -1024,7 +1040,12 @@ export function SessionDataTable({
                   <ContextMenuTrigger asChild>
                     <TableRow
                       data-state={row.getIsSelected() && "selected"}
-                      className="cursor-pointer"
+                      className={cn(
+                        "cursor-pointer",
+                        row.original.id === selectedDocId &&
+                          "bg-accent/40 hover:bg-accent/50",
+                      )}
+                      onClick={() => onSelectDoc?.(row.original.id)}
                       onDoubleClick={() => onReview(row.original.id)}
                     >
                       {row.getVisibleCells().map((cell) => (

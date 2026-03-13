@@ -7,6 +7,8 @@ import { ReviewDialog } from "@/components/ReviewDialog";
 import { ContractReviewDialog } from "./ContractReviewDialog";
 import { EditColumnsDialog } from "./EditColumnsDialog";
 import { WindowControls } from "@/components/layout/SidebarContext";
+import { ExtractionView } from "./ExtractionPanel";
+import { checkUnsaved, markSaved } from "@/lib/unsaved-sessions";
 
 const drag = { WebkitAppRegion: "drag" } as React.CSSProperties;
 const noDrag = { WebkitAppRegion: "no-drag" } as React.CSSProperties;
@@ -98,6 +100,9 @@ export function SessionDetail() {
   const [reviewDocId, setReviewDocId] = useState<string | null>(null);
   const [editColumnsOpen, setEditColumnsOpen] = useState(false);
   const [isStopPending, setIsStopPending] = useState(false);
+  const [isUnsaved, setIsUnsaved] = useState(false);
+  const [saveName, setSaveName] = useState("");
+  const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
   // Derived — true while any doc is actively running (not counting CANCELLING, so
   // pressing Stop flips the button to Play immediately even if Python is still finishing up)
   const isRunning = documents.some(
@@ -128,6 +133,12 @@ export function SessionDetail() {
       setSession(sessionData);
       setDocuments(docsData);
       setStats(statsData);
+      // Check unsaved status once session name is loaded
+      if (id) {
+        const unsaved = checkUnsaved(id);
+        setIsUnsaved(unsaved);
+        if (unsaved) setSaveName(sessionData.name);
+      }
     } catch (err) {
       console.error("Failed to fetch session:", err);
     } finally {
@@ -163,6 +174,28 @@ export function SessionDetail() {
     [refresh],
   );
   useWebSocket(handleWsEvent);
+
+  // ── Save / back (unsaved sessions) ────────────────────
+  const modeToRoute: Record<string, string> = {
+    PDF_EXTRACT: "/",
+    OCR_EXTRACT: "/ocr-extract",
+    TABLE_EXTRACT: "/keyword-extract",
+  };
+
+  const handleSave = async () => {
+    if (!id || !saveName.trim()) return;
+    await sessionsApi.rename(id, saveName.trim());
+    markSaved(id);
+    setIsUnsaved(false);
+    setSession((prev) => (prev ? { ...prev, name: saveName.trim() } : prev));
+  };
+
+  const handleBack = () => {
+    if (id && isUnsaved) {
+      markSaved(id); // accept the auto-generated "Unnamed N" name
+    }
+    navigate(modeToRoute[session?.mode ?? "PDF_EXTRACT"] ?? "/");
+  };
 
   // ── Add files ──────────────────────────────────────────
   const handleAddFiles = async () => {
@@ -233,13 +266,6 @@ export function SessionDetail() {
   const selectedReviewDocument = reviewDocId
     ? (documents.find((d) => d.id === reviewDocId) ?? null)
     : null;
-
-  const modeToRoute: Record<string, string> = {
-    PDF_EXTRACT: "/",
-    OCR_EXTRACT: "/ocr-extract",
-    TABLE_EXTRACT: "/keyword-extract",
-  };
-
   return (
     <div className="flex flex-col h-full bg-background">
       {/* Header */}
@@ -252,9 +278,7 @@ export function SessionDetail() {
             variant="ghost"
             size="icon"
             className="shrink-0"
-            onClick={() =>
-              navigate(modeToRoute[session?.mode ?? "PDF_EXTRACT"] ?? "/")
-            }
+            onClick={handleBack}
           >
             <ArrowLeft className="h-4 w-4" />
           </Button>
@@ -341,21 +365,55 @@ export function SessionDetail() {
         <WindowControls />
       </header>
 
+      {/* Inline save bar — shown for newly created unsaved sessions */}
+      {isUnsaved && (
+        <div className="flex items-center gap-3 px-4 py-2 bg-amber-500/10 border-b border-amber-500/25 shrink-0">
+          <span className="text-xs font-medium text-amber-600 dark:text-amber-400 shrink-0">
+            Unsaved session
+          </span>
+          <Input
+            value={saveName}
+            onChange={(e) => setSaveName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleSave()}
+            placeholder="Session name…"
+            className="h-7 max-w-xs text-xs"
+          />
+          <Button
+            size="sm"
+            className="h-7 text-xs"
+            onClick={handleSave}
+            disabled={!saveName.trim()}
+          >
+            Save
+          </Button>
+        </div>
+      )}
+
       {/* Stats + filter */}
       <div className="px-4 pt-4 pb-3 space-y-3 shrink-0">
         <SessionStatsStrip stats={stats} />
       </div>
 
-      {/* Unified data table */}
-      <div className="flex-1 min-h-0 overflow-auto px-4 pb-4">
-        <SessionDataTable
-          documents={filteredDocs}
-          loading={loading}
-          session={session}
-          onReview={setReviewDocId}
+      {/* Content area — PDF_EXTRACT with a selected doc: full-area extraction view */}
+      {session?.mode === "PDF_EXTRACT" && selectedDocId ? (
+        <ExtractionView
+          documentId={selectedDocId}
+          onClose={() => setSelectedDocId(null)}
           onRefresh={refresh}
         />
-      </div>
+      ) : (
+        <div className="flex-1 min-h-0 overflow-auto px-4 pb-4">
+          <SessionDataTable
+            documents={filteredDocs}
+            loading={loading}
+            session={session}
+            onReview={setReviewDocId}
+            onRefresh={refresh}
+            selectedDocId={selectedDocId ?? undefined}
+            onSelectDoc={setSelectedDocId}
+          />
+        </div>
+      )}
 
       {/* Review Dialog — OCR/TABLE sessions */}
       {reviewDocId && session?.mode !== "PDF_EXTRACT" && (
