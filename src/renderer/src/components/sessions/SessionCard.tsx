@@ -1,14 +1,8 @@
 import { Check, Pencil } from "lucide-react";
-import {
-  FileText,
-  Table2,
-  FileScan,
-  FolderOpen,
-  ChevronRight,
-} from "lucide-react";
+import { FolderOpen, ChevronRight } from "lucide-react";
 import { useState, useRef, useEffect } from "react";
 import { Input } from "@/components/ui/input";
-import type { SessionListItem, SessionMode } from "@shared/types";
+import type { SessionListItem } from "@shared/types";
 import { formatDate } from "@/lib/utils";
 
 interface SessionCardProps {
@@ -20,46 +14,6 @@ interface SessionCardProps {
   onSelect?: () => void;
   onRename?: (id: string, name: string) => void;
 }
-
-const modeConfig: Record<
-  SessionMode,
-  {
-    label: string;
-    icon: typeof FileText;
-    bg: string;
-    text: string;
-    border: string;
-  }
-> = {
-  OCR_EXTRACT: {
-    label: "OCR Extract",
-    icon: FileText,
-    bg: "bg-blue-50",
-    text: "text-blue-700",
-    border: "border-blue-200",
-  },
-  TABLE_EXTRACT: {
-    label: "Keyword to Column Extract",
-    icon: Table2,
-    bg: "bg-violet-50",
-    text: "text-violet-700",
-    border: "border-violet-200",
-  },
-  PDF_EXTRACT: {
-    label: "PDF to Table Extract",
-    icon: FileScan,
-    bg: "bg-emerald-50",
-    text: "text-emerald-700",
-    border: "border-emerald-200",
-  },
-  JSON_EXTRACT: {
-    label: "JSON Extract",
-    icon: FileText,
-    bg: "bg-amber-50",
-    text: "text-amber-700",
-    border: "border-amber-200",
-  },
-};
 
 const sessionStatusDot: Record<string, string> = {
   PENDING: "bg-gray-400",
@@ -77,8 +31,6 @@ export function SessionCard({
   onSelect,
   onRename,
 }: SessionCardProps) {
-  const mode = modeConfig[session.mode] ?? modeConfig.OCR_EXTRACT;
-  const Icon = mode.icon;
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState(session.name);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -117,21 +69,6 @@ export function SessionCard({
       }`}
       onClick={selectMode ? onSelect : onOpen}
     >
-      {/* Header */}
-      <div className="flex items-start justify-between">
-        <div className="flex items-center min-w-0 text-sm text-primary/80">
-          {mode.label}
-        </div>
-        <div className="flex items-center gap-1.5 shrink-0">
-          <span
-            className={`inline-block h-2 w-2 rounded-full ${sessionStatusDot[session.status] ?? "bg-gray-400"}`}
-          />
-          <span className="text-xs text-muted-foreground capitalize">
-            {session.status.toLowerCase()}
-          </span>
-        </div>
-      </div>
-
       {/* Name */}
       <div>
         {editing ? (
@@ -181,7 +118,12 @@ export function SessionCard({
           <span>
             {session.processedCount} / {session.documentCount} documents
           </span>
-          <span>{progress}%</span>
+
+          <div className="space-x-2">
+            <span className="text-xs text-muted-foreground capitalize">
+              {session.status.toLowerCase()}
+            </span>
+          </div>
         </div>
       </div>
     </div>

@@ -21,6 +21,7 @@ interface ProcessingMeta {
 export class OcrService {
   private readonly logger = new Logger(OcrService.name);
   private readonly allowedPdfModels = new Set([
+    "docling",
     "pdfplumber",
     "pymupdf",
     "unstructured",
@@ -511,7 +512,9 @@ export class OcrService {
       }
 
       const columns: SessionColumn[] = JSON.parse(doc.session.columns || "[]");
-      if (columns.length === 0) return;
+      if (columns.length === 0) {
+        return { durationSec: 0, model: null };
+      }
 
       this.logger.log(
         `Running TABLE_EXTRACT for "${doc.filename}" (${columns.length} fields)`,

@@ -23,8 +23,6 @@ import {
 } from "@/components/ui/select";
 import {
   ArrowLeft,
-  FilePlus,
-  FolderOpen,
   RefreshCw,
   FileOutput,
   Search,
@@ -151,6 +149,12 @@ export function SessionDetail() {
     refresh();
   }, [refresh]);
 
+  useEffect(() => {
+    if (session?.mode === "PDF_EXTRACT" && id) {
+      navigate(`/pdf-sessions/${id}`, { replace: true });
+    }
+  }, [session?.mode, id, navigate]);
+
   // ── Apply filters ──────────────────────────────────────
   useEffect(() => {
     let result = documents;
@@ -163,6 +167,15 @@ export function SessionDetail() {
     }
     setFilteredDocs(result);
   }, [documents, statusFilter, searchQuery]);
+
+  // PDF mode is single-document per session; open that document immediately.
+  useEffect(() => {
+    if (session?.mode !== "PDF_EXTRACT") return;
+    if (selectedDocId) return;
+    if (documents.length > 0) {
+      setSelectedDocId(documents[0].id);
+    }
+  }, [session?.mode, documents, selectedDocId]);
 
   // ── WebSocket ──────────────────────────────────────────
   const handleWsEvent = useCallback(
@@ -195,23 +208,6 @@ export function SessionDetail() {
       markSaved(id); // accept the auto-generated "Unnamed N" name
     }
     navigate(modeToRoute[session?.mode ?? "PDF_EXTRACT"] ?? "/");
-  };
-
-  // ── Add files ──────────────────────────────────────────
-  const handleAddFiles = async () => {
-    const result = await window.api.openFileDialog();
-    if (!result.canceled && result.filePaths.length > 0) {
-      await sessionsApi.ingestFiles(id!, result.filePaths);
-      refresh();
-    }
-  };
-
-  const handleAddFolder = async () => {
-    const result = await window.api.openFolderDialog();
-    if (!result.canceled && result.filePaths.length > 0) {
-      await sessionsApi.ingestFolder(id!, result.filePaths[0]);
-      refresh();
-    }
   };
 
   // ── Play / Stop ──────────────────────────────────────────
@@ -316,36 +312,15 @@ export function SessionDetail() {
             );
           })()}
 
-          {/* Add / Export button group */}
-          <div className="flex">
-            <Button
-              variant="outline"
-              size="sm"
-              className="gap-1.5 text-xs rounded-r-none border-r-0"
-              onClick={handleAddFiles}
-            >
-              <FilePlus className="h-3.5 w-3.5" />
-              Add Files
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="gap-1.5 text-xs rounded-none border-r-0"
-              onClick={handleAddFolder}
-            >
-              <FolderOpen className="h-3.5 w-3.5" />
-              Add Folder
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="gap-1.5 text-xs rounded-l-none"
-              onClick={handleExport}
-            >
-              <FileOutput className="h-3.5 w-3.5" />
-              Export
-            </Button>
-          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1.5 text-xs"
+            onClick={handleExport}
+          >
+            <FileOutput className="h-3.5 w-3.5" />
+            Export
+          </Button>
 
           <Button variant="ghost" size="icon" onClick={refresh}>
             <RefreshCw className="h-4 w-4" />
@@ -391,7 +366,22 @@ export function SessionDetail() {
 
       {/* Stats + filter */}
       <div className="px-4 pt-4 pb-3 space-y-3 shrink-0">
-        <SessionStatsStrip stats={stats} />
+        {session?.mode === "PDF_EXTRACT" ? (
+          <div className="rounded-md border bg-card px-4 py-2">
+            <div className="grid grid-cols-[1.8fr_1fr_1fr_0.8fr_0.8fr_0.6fr_0.8fr_1fr] gap-3 text-[11px] font-medium text-muted-foreground">
+              <span>Filename</span>
+              <span>Status</span>
+              <span>Scanned</span>
+              <span>Time</span>
+              <span>Conf.</span>
+              <span>Pg</span>
+              <span>Time</span>
+              <span>Ext. Type</span>
+            </div>
+          </div>
+        ) : (
+          <SessionStatsStrip stats={stats} />
+        )}
       </div>
 
       {/* Content area — PDF_EXTRACT with a selected doc: full-area extraction view */}

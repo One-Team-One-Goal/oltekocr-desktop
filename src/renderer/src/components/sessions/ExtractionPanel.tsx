@@ -1,10 +1,15 @@
 import { useState, useEffect, useMemo } from "react";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Dialog,
   DialogContent,
@@ -20,9 +25,12 @@ import {
   AlertTriangle,
   Loader2,
   X,
-  ChevronRight,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   FileText,
+  Filter as Funnel,
+  ListFilter,
 } from "lucide-react";
 import type { DocumentRecord } from "@shared/types";
 
@@ -54,42 +62,94 @@ interface DocTypeRenderer {
   sections: SectionDef[];
 }
 
+type FilterLogic = "AND" | "OR";
+type FilterOp =
+  | "contains"
+  | "equals"
+  | "startsWith"
+  | "gt"
+  | "lt"
+  | "between"
+  | "in";
+
+interface FilterClause {
+  id: string;
+  field: string;
+  op: FilterOp;
+  value: string;
+  valueTo?: string;
+  enabled: boolean;
+}
+
+interface HeaderColumnFilter {
+  op: Extract<
+    FilterOp,
+    "contains" | "equals" | "startsWith" | "gt" | "lt" | "between"
+  >;
+  value: string;
+  valueTo?: string;
+}
+
+interface QuickFilters {
+  usdOnly: boolean;
+  hasOrigin: boolean;
+  hasViaCity: boolean;
+  directCallOnly: boolean;
+  hasDestination: boolean;
+}
+
+interface SavedFilterView {
+  id: string;
+  name: string;
+  activeTab: string;
+  searchText: string;
+  quickFilters: QuickFilters;
+  logic: FilterLogic;
+  clauses: FilterClause[];
+  headerFilters: Record<string, HeaderColumnFilter>;
+  sortKey: string;
+  sortDir: "asc" | "desc";
+}
+
 // ─── Dynamic column derivation ────────────────────────────────────────────────
 // Known canonical key → display label + preferred width.
 // Any key not listed here gets an auto-humanised label.
 
 const KNOWN_COL_META: Record<string, { label: string; width?: string }> = {
-  destinationCity:    { label: "Destination",   width: "160px" },
-  destinationViaCity: { label: "Via City",       width: "130px" },
-  originCity:         { label: "Origin",         width: "160px" },
-  originViaCity:      { label: "Via City",       width: "130px" },
-  baseRate20:         { label: "20'",            width: "60px"  },
-  baseRate40:         { label: "40'",            width: "60px"  },
-  baseRate40H:        { label: "40HC",           width: "60px"  },
-  baseRate45:         { label: "45'",            width: "60px"  },
-  agw20:              { label: "AGW 20'",        width: "65px"  },
-  agw40:              { label: "AGW 40'",        width: "65px"  },
-  agw45:              { label: "AGW 45'",        width: "65px"  },
-  agw:                { label: "AGW",            width: "55px"  },
-  amsChina:           { label: "AMS (CN/JP)",    width: "85px"  },
-  heaHeavySurcharge:  { label: "HEA Heavy",      width: "75px"  },
-  redSeaDiversion:    { label: "Red Sea Div.",   width: "80px"  },
-  commodity:          { label: "Commodity",      width: "110px" },
-  service:            { label: "Service",        width: "80px"  },
-  remarks:            { label: "Remarks",        width: "130px" },
-  scope:              { label: "Scope",          width: "80px"  },
+  destinationCity: { label: "Destination", width: "160px" },
+  destinationViaCity: { label: "Via City", width: "130px" },
+  originCity: { label: "Origin", width: "160px" },
+  originViaCity: { label: "Via City", width: "130px" },
+  baseRate20: { label: "20'", width: "60px" },
+  baseRate40: { label: "40'", width: "60px" },
+  baseRate40H: { label: "40HC", width: "60px" },
+  baseRate45: { label: "45'", width: "60px" },
+  agw20: { label: "AGW 20'", width: "65px" },
+  agw40: { label: "AGW 40'", width: "65px" },
+  agw45: { label: "AGW 45'", width: "65px" },
+  agw: { label: "AGW", width: "55px" },
+  amsChina: { label: "AMS (CN/JP)", width: "85px" },
+  heaHeavySurcharge: { label: "HEA Heavy", width: "75px" },
+  redSeaDiversion: { label: "Red Sea Div.", width: "80px" },
+  commodity: { label: "Commodity", width: "110px" },
+  service: { label: "Service", width: "80px" },
+  remarks: { label: "Remarks", width: "130px" },
+  scope: { label: "Scope", width: "80px" },
   // origin context stamped from ORIGIN/ORIGIN VIA labels above each rate table
-  origin:             { label: "Origin",         width: "220px" },
-  originVia:          { label: "Origin Via",     width: "190px" },
+  origin: { label: "Origin", width: "220px" },
+  originVia: { label: "Origin Via", width: "190px" },
   // short-form contract columns
-  directCall:         { label: "Direct Call",    width: "75px"  },
-  cntry:              { label: "Cntry",          width: "50px"  },
-  cntry_2:            { label: "Via Cntry",      width: "50px"  },
+  directCall: { label: "Direct Call", width: "75px" },
+  cntry: { label: "Cntry", width: "50px" },
+  cntry_2: { label: "Via Cntry", width: "50px" },
 };
 
 /** Keys stamped on every row by the extractor — skip from column display. */
 const SKIP_COL_KEYS = new Set([
-  "carrier", "contractId", "effectiveDate", "expirationDate",
+  "carrier",
+  "contractId",
+  "effectiveDate",
+  "expirationDate",
 ]);
 
 /**
@@ -166,9 +226,13 @@ const DOC_TYPE_RENDERERS: Record<string, DocTypeRenderer> = {
 function SectionTable({
   rows,
   cols,
+  headerFilters,
+  onHeaderFilterChange,
 }: {
   rows: Record<string, string>[];
   cols: ColDef[];
+  headerFilters?: Record<string, HeaderColumnFilter>;
+  onHeaderFilterChange?: (key: string, next: HeaderColumnFilter | null) => void;
 }) {
   if (cols.length === 0) {
     return (
@@ -187,38 +251,134 @@ function SectionTable({
   }
 
   return (
-    <table className="w-full text-xs border-collapse">
-      <thead className="sticky top-0 bg-muted z-10 shadow-[0_1px_0_hsl(var(--border))]">
-        <tr>
-          {cols.map((col) => (
-            <th
-              key={col.key}
-              className="px-2 py-1.5 text-left font-semibold border-b border-border whitespace-nowrap"
-              style={{ minWidth: col.width }}
-            >
-              {col.label}
-            </th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((row, i) => (
-          <tr
-            key={i}
-            className="odd:bg-background even:bg-muted/20 hover:bg-accent/20 transition-colors"
-          >
-            {cols.map((col) => (
-              <td
-                key={col.key}
-                className="px-2 py-1 border-b border-border/40 whitespace-nowrap align-top text-[11px]"
-              >
-                {row[col.key] ?? ""}
-              </td>
-            ))}
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <div
+      className="h-full min-h-0 overflow-x-auto [&::-webkit-scrollbar]:h-1 hover:[&::-webkit-scrollbar]:h-3 [&::-webkit-scrollbar-track]:bg-muted/30 [&::-webkit-scrollbar-thumb]:bg-border [&::-webkit-scrollbar-thumb]:rounded-full"
+      style={{ contain: "strict", willChange: "transform" }}
+    >
+      <div className="min-w-max h-full min-h-0 flex flex-col">
+        <table className="w-full text-xs border-collapse shrink-0">
+          <thead className="bg-muted shadow-[0_1px_0_hsl(var(--border))]">
+            <tr>
+              {cols.map((col) => (
+                <th
+                  key={col.key}
+                  className="group relative px-2 pr-7 py-1.5 text-left font-semibold border-b border-border whitespace-nowrap"
+                  style={{ minWidth: col.width }}
+                >
+                  {col.label}
+                  {onHeaderFilterChange && (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <button
+                          aria-label={`Filter ${col.label} column`}
+                          className={`absolute right-1 top-1/2 -translate-y-1/2 h-5 w-5 inline-flex items-center justify-center rounded-sm hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-opacity ${
+                            headerFilters?.[col.key]
+                              ? "opacity-100 text-primary"
+                              : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 text-muted-foreground"
+                          }`}
+                        >
+                          <Funnel className="h-3.5 w-3.5" />
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-56 p-2">
+                        <div
+                          className="space-y-2"
+                          onKeyDown={(e) => e.stopPropagation()}
+                        >
+                          <p className="text-xs font-semibold text-muted-foreground">
+                            Filter: {col.label}
+                          </p>
+                          <select
+                            className="h-7 w-full rounded border bg-background px-2 text-xs"
+                            value={headerFilters?.[col.key]?.op ?? "contains"}
+                            onChange={(e) =>
+                              onHeaderFilterChange(col.key, {
+                                op: e.target.value as HeaderColumnFilter["op"],
+                                value: headerFilters?.[col.key]?.value ?? "",
+                                valueTo: headerFilters?.[col.key]?.valueTo,
+                              })
+                            }
+                          >
+                            <option value="contains">contains</option>
+                            <option value="equals">equals</option>
+                            <option value="startsWith">startsWith</option>
+                            <option value="gt">&gt;</option>
+                            <option value="lt">&lt;</option>
+                            <option value="between">between</option>
+                          </select>
+                          <Input
+                            value={headerFilters?.[col.key]?.value ?? ""}
+                            onChange={(e) =>
+                              onHeaderFilterChange(col.key, {
+                                op: headerFilters?.[col.key]?.op ?? "contains",
+                                value: e.target.value,
+                                valueTo: headerFilters?.[col.key]?.valueTo,
+                              })
+                            }
+                            className="h-7 text-xs"
+                            placeholder="Value"
+                          />
+                          {(headerFilters?.[col.key]?.op ?? "contains") ===
+                            "between" && (
+                            <Input
+                              value={headerFilters?.[col.key]?.valueTo ?? ""}
+                              onChange={(e) =>
+                                onHeaderFilterChange(col.key, {
+                                  op: headerFilters?.[col.key]?.op ?? "between",
+                                  value: headerFilters?.[col.key]?.value ?? "",
+                                  valueTo: e.target.value,
+                                })
+                              }
+                              className="h-7 text-xs"
+                              placeholder="Value to"
+                            />
+                          )}
+                          <div className="flex justify-end">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 px-2 text-xs"
+                              onClick={() =>
+                                onHeaderFilterChange(col.key, null)
+                              }
+                            >
+                              Clear
+                            </Button>
+                          </div>
+                        </div>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  )}
+                </th>
+              ))}
+            </tr>
+          </thead>
+        </table>
+
+        <div className="flex-1 min-h-0 overflow-y-auto [&::-webkit-scrollbar]:w-1 hover:[&::-webkit-scrollbar]:w-3 [&::-webkit-scrollbar-track]:bg-muted/30 [&::-webkit-scrollbar-thumb]:bg-border [&::-webkit-scrollbar-thumb]:rounded-full">
+          <table className="w-full text-xs border-collapse">
+            <tbody>
+              {rows.map((row, i) => (
+                <tr
+                  key={i}
+                  className="odd:bg-background even:bg-muted/20 hover:bg-accent/20 transition-colors"
+                >
+                  {cols.map((col) => (
+                    <td
+                      key={col.key}
+                      className="px-2 py-1 border-b border-border/40 whitespace-nowrap align-top text-[11px]"
+                      style={{ minWidth: col.width }}
+                    >
+                      {row[col.key] ?? ""}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -228,6 +388,12 @@ interface ExtractionViewProps {
   documentId: string;
   onClose: () => void;
   onRefresh?: () => void;
+  onReprocess?: (doc: DocumentRecord) => Promise<void>;
+  hideTopBar?: boolean;
+  rawOpen?: boolean;
+  onRawOpenChange?: (open: boolean) => void;
+  tablesOpen?: boolean;
+  onTablesOpenChange?: (open: boolean) => void;
 }
 
 // ─── ExtractionView ───────────────────────────────────────────────────────────
@@ -236,6 +402,12 @@ export function ExtractionView({
   documentId,
   onClose,
   onRefresh,
+  onReprocess,
+  hideTopBar,
+  rawOpen: rawOpenProp,
+  onRawOpenChange,
+  tablesOpen: tablesOpenProp,
+  onTablesOpenChange,
 }: ExtractionViewProps) {
   const [doc, setDoc] = useState<DocumentRecord | null>(null);
   const [loading, setLoading] = useState(false);
@@ -246,10 +418,43 @@ export function ExtractionView({
   // sectionOpen[sectionKey] = expanded?
   const [sectionOpen, setSectionOpen] = useState<Record<string, boolean>>({});
   const [activeTab, setActiveTab] = useState<string>("");
-  const [rawOpen, setRawOpen] = useState(false);
+  const [isRightPanelCollapsed, setIsRightPanelCollapsed] = useState(false);
+  const [isColumnsCollapsed, setIsColumnsCollapsed] = useState(false);
+  const [isFiltersCollapsed, setIsFiltersCollapsed] = useState(false);
+  const [searchText, setSearchText] = useState("");
+  const [quickFilters, setQuickFilters] = useState<QuickFilters>({
+    usdOnly: false,
+    hasOrigin: false,
+    hasViaCity: false,
+    directCallOnly: false,
+    hasDestination: false,
+  });
+  const [logic, setLogic] = useState<FilterLogic>("AND");
+  const [clauses, setClauses] = useState<FilterClause[]>([]);
+  const [headerFilters, setHeaderFilters] = useState<
+    Record<string, HeaderColumnFilter>
+  >({});
+  const [sortKey, setSortKey] = useState("");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [savedViews, setSavedViews] = useState<SavedFilterView[]>([]);
+  const [viewName, setViewName] = useState("");
+  const [rawOpenInternal, setRawOpenInternal] = useState(false);
   const [rawTab, setRawTab] = useState<"text" | "json">("text");
-  const [tablesOpen, setTablesOpen] = useState(false);
+  const [tablesOpenInternal, setTablesOpenInternal] = useState(false);
   const [tablesSection, setTablesSection] = useState("");
+
+  const effectiveRawOpen =
+    rawOpenProp !== undefined ? rawOpenProp : rawOpenInternal;
+  const setEffectiveRawOpen = (v: boolean) => {
+    setRawOpenInternal(v);
+    onRawOpenChange?.(v);
+  };
+  const effectiveTablesOpen =
+    tablesOpenProp !== undefined ? tablesOpenProp : tablesOpenInternal;
+  const setEffectiveTablesOpen = (v: boolean) => {
+    setTablesOpenInternal(v);
+    onTablesOpenChange?.(v);
+  };
   // sectionCols[sectionKey] = derived ColDef[] from actual extracted rows
   const [sectionCols, setSectionCols] = useState<Record<string, ColDef[]>>({});
 
@@ -294,6 +499,16 @@ export function ExtractionView({
     setActiveTab(renderer.sections[0]?.key ?? "");
   }, [doc?.id]);
 
+  // Init tablesSection when the dialog is opened externally (hideTopBar mode)
+  useEffect(() => {
+    if (effectiveTablesOpen && !tablesSection) {
+      const data = doc?.extractedJson as Record<string, unknown> | undefined;
+      const type = data?.type as string | undefined;
+      const r = type ? DOC_TYPE_RENDERERS[type] : null;
+      if (r) setTablesSection(r.sections[0]?.key ?? "");
+    }
+  }, [effectiveTablesOpen, tablesSection, doc]);
+
   // ── Actions ───────────────────────────────────────────────────────────────
   const handleApprove = async () => {
     if (!doc) return;
@@ -312,7 +527,11 @@ export function ExtractionView({
 
   const handleReprocess = async () => {
     if (!doc) return;
-    await documentsApi.reprocess(doc.id);
+    if (onReprocess) {
+      await onReprocess(doc);
+    } else {
+      await documentsApi.reprocess(doc.id);
+    }
     onRefresh?.();
     documentsApi.get(doc.id).then(setDoc).catch(console.error);
   };
@@ -328,7 +547,8 @@ export function ExtractionView({
   const canReject = doc?.status === "REVIEW" || doc?.status === "APPROVED";
 
   const totalCheckedSlots = useMemo(
-    () => Object.values(sectionCols).reduce((acc, cols) => acc + cols.length, 0),
+    () =>
+      Object.values(sectionCols).reduce((acc, cols) => acc + cols.length, 0),
     [sectionCols],
   );
 
@@ -348,7 +568,11 @@ export function ExtractionView({
       [sectionKey]: { ...prev[sectionKey], [colKey]: visible },
     }));
 
-  const toggleSectionAll = (sectionKey: string, visible: boolean, cols: ColDef[]) => {
+  const toggleSectionAll = (
+    sectionKey: string,
+    visible: boolean,
+    cols: ColDef[],
+  ) => {
     const next: Record<string, boolean> = {};
     for (const col of cols) next[col.key] = visible;
     setColVisibility((prev) => ({ ...prev, [sectionKey]: next }));
@@ -366,92 +590,350 @@ export function ExtractionView({
   const toggleSectionOpen = (key: string) =>
     setSectionOpen((prev) => ({ ...prev, [key]: !prev[key] }));
 
-  return (
-    <div className="flex flex-1 min-h-0 overflow-hidden">
-      {/* ── Main table area ──────────────────────────────────────────────── */}
-      <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+  const activeSection =
+    renderer?.sections.find((s) => s.key === activeTab) ??
+    renderer?.sections[0] ??
+    null;
+  const activeSectionRows = activeSection
+    ? activeSection.getRows(extractedData ?? {})
+    : [];
+  const activeSectionCols = activeSection
+    ? (sectionCols[activeSection.key] ??
+      activeSection.getColumns(activeSectionRows))
+    : [];
+  const visibleCols = activeSection
+    ? activeSectionCols.filter(
+        (c) => colVisibility[activeSection.key]?.[c.key] !== false,
+      )
+    : [];
 
-        {/* Top bar: filename + status + actions */}
-        <div className="flex items-center justify-between gap-3 px-4 py-2 border-b shrink-0">
-          <div className="flex items-center gap-2 min-w-0">
-            <p className="text-sm font-medium truncate" title={doc?.filename ?? ""}>
-              {doc?.filename ?? "—"}
-            </p>
-            {doc && (
-              <Badge
-                className={`text-[10px] px-1.5 py-0 h-4 shrink-0 ${statusBadgeColor(doc.status)}`}
-                variant="outline"
+  const getCell = (row: Record<string, string>, key: string) =>
+    String(row[key] ?? "").trim();
+
+  const evaluateClause = (
+    row: Record<string, string>,
+    clause: FilterClause,
+  ): boolean => {
+    if (!clause.enabled || !clause.field) return true;
+    const raw = getCell(row, clause.field);
+    const lhs = raw.toLowerCase();
+    const rhs = clause.value.toLowerCase();
+    switch (clause.op) {
+      case "contains":
+        return lhs.includes(rhs);
+      case "equals":
+        return lhs === rhs;
+      case "startsWith":
+        return lhs.startsWith(rhs);
+      case "gt": {
+        const a = Number(raw);
+        const b = Number(clause.value);
+        return Number.isFinite(a) && Number.isFinite(b) ? a > b : false;
+      }
+      case "lt": {
+        const a = Number(raw);
+        const b = Number(clause.value);
+        return Number.isFinite(a) && Number.isFinite(b) ? a < b : false;
+      }
+      case "between": {
+        const a = Number(raw);
+        const b = Number(clause.value);
+        const c = Number(clause.valueTo ?? "");
+        return Number.isFinite(a) && Number.isFinite(b) && Number.isFinite(c)
+          ? a >= Math.min(b, c) && a <= Math.max(b, c)
+          : false;
+      }
+      case "in": {
+        const items = clause.value
+          .split(",")
+          .map((s) => s.trim().toLowerCase())
+          .filter(Boolean);
+        return items.length === 0 ? true : items.includes(lhs);
+      }
+      default:
+        return true;
+    }
+  };
+
+  const evaluateHeaderFilter = (
+    row: Record<string, string>,
+    key: string,
+    filter: HeaderColumnFilter,
+  ): boolean => {
+    const raw = getCell(row, key);
+    const lhs = raw.toLowerCase();
+    const rhs = (filter.value ?? "").toLowerCase();
+    switch (filter.op) {
+      case "contains":
+        return lhs.includes(rhs);
+      case "equals":
+        return lhs === rhs;
+      case "startsWith":
+        return lhs.startsWith(rhs);
+      case "gt": {
+        const a = Number(raw);
+        const b = Number(filter.value);
+        return Number.isFinite(a) && Number.isFinite(b) ? a > b : false;
+      }
+      case "lt": {
+        const a = Number(raw);
+        const b = Number(filter.value);
+        return Number.isFinite(a) && Number.isFinite(b) ? a < b : false;
+      }
+      case "between": {
+        const a = Number(raw);
+        const b = Number(filter.value);
+        const c = Number(filter.valueTo ?? "");
+        return Number.isFinite(a) && Number.isFinite(b) && Number.isFinite(c)
+          ? a >= Math.min(b, c) && a <= Math.max(b, c)
+          : false;
+      }
+      default:
+        return true;
+    }
+  };
+
+  const filteredRows = useMemo(() => {
+    const quickCheck = (row: Record<string, string>) => {
+      if (quickFilters.usdOnly && getCell(row, "cur").toUpperCase() !== "USD")
+        return false;
+      if (quickFilters.hasOrigin && !getCell(row, "origin")) return false;
+      if (quickFilters.hasViaCity && !getCell(row, "destinationViaCity"))
+        return false;
+      if (
+        quickFilters.directCallOnly &&
+        getCell(row, "directCall").toUpperCase() !== "Y"
+      )
+        return false;
+      if (quickFilters.hasDestination && !getCell(row, "destinationCity"))
+        return false;
+      return true;
+    };
+
+    const searchCheck = (row: Record<string, string>) => {
+      const q = searchText.trim().toLowerCase();
+      if (!q) return true;
+      return Object.values(row).some((v) =>
+        String(v ?? "")
+          .toLowerCase()
+          .includes(q),
+      );
+    };
+
+    const clauseCheck = (row: Record<string, string>) => {
+      const enabled = clauses.filter((c) => c.enabled && c.field);
+      if (enabled.length === 0) return true;
+      return logic === "AND"
+        ? enabled.every((c) => evaluateClause(row, c))
+        : enabled.some((c) => evaluateClause(row, c));
+    };
+
+    const headerCheck = (row: Record<string, string>) => {
+      const entries = Object.entries(headerFilters).filter(
+        ([, f]) => (f.value ?? "").trim().length > 0,
+      );
+      if (entries.length === 0) return true;
+      return entries.every(([k, f]) => evaluateHeaderFilter(row, k, f));
+    };
+
+    const out = activeSectionRows
+      .filter(quickCheck)
+      .filter(searchCheck)
+      .filter(clauseCheck)
+      .filter(headerCheck);
+
+    if (!sortKey) return out;
+    const sorted = [...out].sort((a, b) => {
+      const av = getCell(a, sortKey);
+      const bv = getCell(b, sortKey);
+      const an = Number(av);
+      const bn = Number(bv);
+      const numeric = Number.isFinite(an) && Number.isFinite(bn);
+      const cmp = numeric
+        ? an - bn
+        : av.localeCompare(bv, undefined, { sensitivity: "base" });
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+    return sorted;
+  }, [
+    activeSectionRows,
+    quickFilters,
+    searchText,
+    clauses,
+    headerFilters,
+    logic,
+    sortKey,
+    sortDir,
+  ]);
+
+  const storageKey = `extraction-filter-views-${documentId}-${activeTab}`;
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(storageKey);
+      const parsed = raw ? (JSON.parse(raw) as SavedFilterView[]) : [];
+      setSavedViews(Array.isArray(parsed) ? parsed : []);
+    } catch {
+      setSavedViews([]);
+    }
+  }, [storageKey]);
+
+  const persistViews = (views: SavedFilterView[]) => {
+    setSavedViews(views);
+    localStorage.setItem(storageKey, JSON.stringify(views));
+  };
+
+  const addClause = () => {
+    const fallback = activeSectionCols[0]?.key ?? "";
+    setClauses((prev) => [
+      ...prev,
+      {
+        id: Math.random().toString(36).slice(2),
+        field: fallback,
+        op: "contains",
+        value: "",
+        enabled: true,
+      },
+    ]);
+  };
+
+  const saveCurrentView = () => {
+    const name = viewName.trim();
+    if (!name) return;
+    const view: SavedFilterView = {
+      id: Math.random().toString(36).slice(2),
+      name,
+      activeTab,
+      searchText,
+      quickFilters,
+      logic,
+      clauses,
+      headerFilters,
+      sortKey,
+      sortDir,
+    };
+    persistViews([...savedViews, view]);
+    setViewName("");
+  };
+
+  const loadView = (view: SavedFilterView) => {
+    setSearchText(view.searchText);
+    setQuickFilters(view.quickFilters);
+    setLogic(view.logic);
+    setClauses(view.clauses);
+    setHeaderFilters(view.headerFilters ?? {});
+    setSortKey(view.sortKey);
+    setSortDir(view.sortDir);
+  };
+
+  const clearFilters = () => {
+    setSearchText("");
+    setQuickFilters({
+      usdOnly: false,
+      hasOrigin: false,
+      hasViaCity: false,
+      directCallOnly: false,
+      hasDestination: false,
+    });
+    setClauses([]);
+    setHeaderFilters({});
+    setSortKey("");
+    setSortDir("asc");
+  };
+
+  return (
+    <div className="flex h-full min-h-0 overflow-hidden">
+      {/* ── Main table area ──────────────────────────────────────────────── */}
+      <div className="flex flex-col flex-1 min-h-0 overflow-hidden pt-5 pr-3">
+        {!hideTopBar && (
+          <div className="flex items-center justify-between gap-3 px-4 py-2 border-b shrink-0">
+            <div className="flex items-center gap-2 min-w-0">
+              <p
+                className="text-sm font-medium truncate"
+                title={doc?.filename ?? ""}
               >
-                {statusLabel(doc.status)}
-              </Badge>
-            )}
+                {doc?.filename ?? "—"}
+              </p>
+              {doc && (
+                <Badge
+                  className={`text-[10px] px-1.5 py-0 h-4 shrink-0 ${statusBadgeColor(doc.status)}`}
+                  variant="outline"
+                >
+                  {statusLabel(doc.status)}
+                </Badge>
+              )}
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs gap-1"
+                onClick={() => {
+                  setRawTab("text");
+                  setEffectiveRawOpen(true);
+                }}
+                title="Preview raw PyMuPDF output"
+              >
+                <FileText className="h-3 w-3" />
+                Raw
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs gap-1"
+                onClick={() => {
+                  if (renderer)
+                    setTablesSection(renderer.sections[0]?.key ?? "");
+                  setEffectiveTablesOpen(true);
+                }}
+                title="Preview extracted tables per section"
+                disabled={!renderer}
+              >
+                <FileText className="h-3 w-3" />
+                Tables
+              </Button>
+              <Separator orientation="vertical" className="h-5" />
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs gap-1"
+                onClick={handleReprocess}
+              >
+                <RotateCcw className="h-3 w-3" />
+                Reprocess
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 text-xs gap-1 text-destructive hover:text-destructive"
+                onClick={handleReject}
+                disabled={!canReject}
+              >
+                <XCircle className="h-3 w-3" />
+                Reject
+              </Button>
+              <Button
+                size="sm"
+                className="h-7 text-xs gap-1 bg-green-600 hover:bg-green-700 text-white"
+                onClick={handleApprove}
+                disabled={!canApprove}
+              >
+                <CheckCircle2 className="h-3 w-3" />
+                Approve
+              </Button>
+              <Separator orientation="vertical" className="h-5" />
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                title="Back to document list"
+                onClick={onClose}
+              >
+                <X className="h-3.5 w-3.5" />
+              </Button>
+            </div>
           </div>
-          <div className="flex items-center gap-1.5 shrink-0">
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7 text-xs gap-1"
-              onClick={() => { setRawTab("text"); setRawOpen(true); }}
-              title="Preview raw PyMuPDF output"
-            >
-              <FileText className="h-3 w-3" />
-              Raw
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7 text-xs gap-1"
-              onClick={() => {
-                if (renderer) setTablesSection(renderer.sections[0]?.key ?? "");
-                setTablesOpen(true);
-              }}
-              title="Preview extracted tables per section"
-              disabled={!renderer}
-            >
-              <FileText className="h-3 w-3" />
-              Tables
-            </Button>
-            <Separator orientation="vertical" className="h-5" />
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7 text-xs gap-1"
-              onClick={handleReprocess}
-            >
-              <RotateCcw className="h-3 w-3" />
-              Reprocess
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7 text-xs gap-1 text-destructive hover:text-destructive"
-              onClick={handleReject}
-              disabled={!canReject}
-            >
-              <XCircle className="h-3 w-3" />
-              Reject
-            </Button>
-            <Button
-              size="sm"
-              className="h-7 text-xs gap-1 bg-green-600 hover:bg-green-700 text-white"
-              onClick={handleApprove}
-              disabled={!canApprove}
-            >
-              <CheckCircle2 className="h-3 w-3" />
-              Approve
-            </Button>
-            <Separator orientation="vertical" className="h-5" />
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7"
-              title="Back to document list"
-              onClick={onClose}
-            >
-              <X className="h-3.5 w-3.5" />
-            </Button>
-          </div>
-        </div>
+        )}
 
         {/* Table content */}
         {loading ? (
@@ -473,117 +955,659 @@ export function ExtractionView({
             </span>
           </div>
         ) : (
-          <Tabs
-            value={activeTab}
-            onValueChange={setActiveTab}
-            className="flex flex-col flex-1 min-h-0"
-          >
-            <TabsList className="mx-4 mt-2 mb-0 justify-start shrink-0 h-8">
-              {renderer.sections.map((s) => {
-                const rowCount = s.getRows(extractedData!).length;
-                return (
-                  <TabsTrigger key={s.key} value={s.key} className="text-xs h-7">
-                    {s.label}
-                    <span className="ml-1.5 text-[10px] text-muted-foreground">
-                      ({rowCount})
-                    </span>
-                  </TabsTrigger>
-                );
-              })}
-            </TabsList>
-            {renderer.sections.map((s) => {
-              const rows = s.getRows(extractedData!);
-              const visibleCols = (sectionCols[s.key] ?? s.getColumns(rows)).filter(
-                (c) => colVisibility[s.key]?.[c.key] !== false,
-              );
-              return (
-                <TabsContent
-                  key={s.key}
-                  value={s.key}
-                  className="flex-1 mt-2 overflow-hidden px-4 pb-4"
-                >
-                  <div className="overflow-x-scroll overflow-y-scroll h-full rounded-md border [&::-webkit-scrollbar]:h-3 [&::-webkit-scrollbar]:w-3 [&::-webkit-scrollbar-track]:bg-muted/30 [&::-webkit-scrollbar-thumb]:bg-border [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-corner]:bg-muted/30">
-                    <SectionTable rows={rows} cols={visibleCols} />
+          <div className="flex flex-col flex-1 min-h-0">
+            <div className="mx-4 mt-2 mb-0 shrink-0 flex items-center justify-between gap-2 pb-2">
+              <div className="inline-flex items-stretch rounded-md border overflow-x-auto w-max max-w-full bg-background">
+                {renderer.sections.map((s) => {
+                  const rowCount = s.getRows(extractedData!).length;
+                  const active = s.key === activeTab;
+                  return (
+                    <Button
+                      key={s.key}
+                      variant={active ? "secondary" : "ghost"}
+                      size="sm"
+                      className="h-8 text-xs whitespace-nowrap rounded-none border-r last:border-r-0 px-3"
+                      onClick={() => setActiveTab(s.key)}
+                    >
+                      {s.label}
+                      <span className="ml-1.5 text-[10px] text-muted-foreground">
+                        ({rowCount})
+                      </span>
+                    </Button>
+                  );
+                })}
+              </div>
+
+              {hideTopBar && (
+                <div className="flex items-center gap-2 shrink-0 ml-auto">
+                  <div className="inline-flex items-stretch rounded-md border bg-background">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 text-xs rounded-none border-r px-3"
+                      onClick={() => {
+                        setRawTab("text");
+                        setEffectiveRawOpen(true);
+                      }}
+                      disabled={!doc}
+                    >
+                      <FileText className="h-3 w-3 mr-1.5" />
+                      Raw
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 text-xs rounded-none px-3"
+                      onClick={() => {
+                        if (renderer)
+                          setTablesSection(renderer.sections[0]?.key ?? "");
+                        setEffectiveTablesOpen(true);
+                      }}
+                      disabled={!renderer}
+                    >
+                      <FileText className="h-3 w-3 mr-1.5" />
+                      Tables
+                    </Button>
                   </div>
-                </TabsContent>
-              );
-            })}
-          </Tabs>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 text-xs gap-1"
+                    onClick={handleReprocess}
+                    disabled={!doc}
+                  >
+                    <RotateCcw className="h-3 w-3" />
+                    Reprocess
+                  </Button>
+                </div>
+              )}
+
+              <Button
+                variant="outline"
+                size="icon"
+                className="h-8 w-8 shrink-0"
+                onClick={() => setIsRightPanelCollapsed((prev) => !prev)}
+                title={
+                  isRightPanelCollapsed
+                    ? "Show right panel"
+                    : "Hide right panel"
+                }
+              >
+                {isRightPanelCollapsed ? (
+                  <ListFilter />
+                ) : (
+                  <ChevronRight className="h-4 w-4" />
+                )}
+              </Button>
+            </div>
+            <div className="flex flex-col flex-1 min-h-0 mt-2 px-4 pb-4">
+              <div className="flex-1 min-h-0 rounded-md border overflow-hidden">
+                <SectionTable
+                  rows={filteredRows}
+                  cols={visibleCols}
+                  headerFilters={headerFilters}
+                  onHeaderFilterChange={(key, next) => {
+                    setHeaderFilters((prev) => {
+                      const copy = { ...prev };
+                      if (!next || !(next.value ?? "").trim()) {
+                        delete copy[key];
+                        return copy;
+                      }
+                      copy[key] = next;
+                      return copy;
+                    });
+                  }}
+                />
+              </div>
+            </div>
+          </div>
         )}
       </div>
 
       {/* ── Right: column checkbox panel ─────────────────────────────────── */}
-      <div className="w-52 shrink-0 border-l flex flex-col bg-card">
-        {/* Contract header info */}
-        {renderer && extractedData && (
-          <div className="px-3 pt-3 pb-2.5 border-b space-y-2">
-            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
-              {renderer.label} Info
-            </p>
-            {renderer.getHeaderFields(extractedData).map((f) => (
-              <div key={f.label} className="flex flex-col min-w-0">
-                <span className="text-[10px] text-muted-foreground uppercase tracking-wide leading-tight">
-                  {f.label}
-                </span>
-                <span className="text-xs font-medium truncate" title={f.value}>
-                  {f.value}
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Column visibility checkboxes — only for the active tab */}
-        <ScrollArea className="flex-1">
-          <div className="py-1">
-            {renderer && activeTab ? (() => {
-              const section = renderer.sections.find((s) => s.key === activeTab);
-              const cols = section ? (sectionCols[activeTab] ?? []) : [];
-              const sectionVis = colVisibility[activeTab] ?? {};
-              const checkedCount = cols.filter((c) => sectionVis[c.key] !== false).length;
-              const allChecked = checkedCount === cols.length;
-              return (
-                <div>
-                  <div className="flex items-center justify-between px-3 pt-2 pb-1.5">
-                    <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
-                      Columns
-                    </p>
-                    <button
-                      className="text-[10px] text-muted-foreground hover:text-foreground underline underline-offset-2"
-                      onClick={() => toggleSectionAll(activeTab, !allChecked, cols)}
-                    >
-                      {allChecked ? "Deselect all" : "Select all"}
-                    </button>
-                  </div>
-                  <div className="px-3 pb-2 space-y-1.5">
-                    {cols.map((col) => (
-                      <label
-                        key={col.key}
-                        className="flex items-center gap-2 text-xs cursor-pointer select-none"
-                      >
-                        <Checkbox
-                          checked={sectionVis[col.key] !== false}
-                          onCheckedChange={(v) => toggleCol(activeTab, col.key, !!v)}
-                          className="h-3.5 w-3.5"
-                        />
-                        {col.label}
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              );
-            })() : !loading && (
-              <p className="text-xs text-muted-foreground italic px-3 pt-2">
-                No data loaded
+      {!isRightPanelCollapsed && (
+        <div className="w-72 shrink-0 border-l flex flex-col bg-card">
+          {/* Contract header info */}
+          {renderer && extractedData && (
+            <div className="pt-3 border-b space-y-2 px-4 my-1 pb-4">
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                {renderer.label} Info
               </p>
-            )}
-          </div>
-        </ScrollArea>
-      </div>
+              {renderer.getHeaderFields(extractedData).map((f) => (
+                <div key={f.label} className="flex flex-col min-w-0">
+                  <span className="text-xs text-muted-foreground uppercase tracking-wide leading-tight">
+                    {f.label}
+                  </span>
+                  <span
+                    className="text-sm font-medium truncate"
+                    title={f.value}
+                  >
+                    {f.value}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Column visibility checkboxes — only for the active tab */}
+          <ScrollArea className="flex-1">
+            <div className="py-1">
+              {renderer && activeTab
+                ? (() => {
+                    const section = renderer.sections.find(
+                      (s) => s.key === activeTab,
+                    );
+                    const cols = section ? (sectionCols[activeTab] ?? []) : [];
+                    const sectionVis = colVisibility[activeTab] ?? {};
+                    const checkedCount = cols.filter(
+                      (c) => sectionVis[c.key] !== false,
+                    ).length;
+                    const allChecked = checkedCount === cols.length;
+                    const parentChecked =
+                      checkedCount === 0
+                        ? false
+                        : checkedCount === cols.length
+                          ? true
+                          : "indeterminate";
+                    return (
+                      <div>
+                        <div className="flex items-center justify-between px-3 pt-2 pb-1.5">
+                          <button
+                            className="inline-flex items-center gap-1.5 pb-1 text-xs font-semibold text-muted-foreground uppercase tracking-wide hover:text-foreground"
+                            onClick={() =>
+                              setIsColumnsCollapsed((prev) => !prev)
+                            }
+                          >
+                            {isColumnsCollapsed ? (
+                              <ChevronRight className="h-3 w-3" />
+                            ) : (
+                              <ChevronDown className="h-3 w-3" />
+                            )}
+                            Columns
+                          </button>
+                        </div>
+                        {!isColumnsCollapsed && (
+                          <div className="pb-2 space-y-2 text-sm px-5">
+                            <label className="flex items-center gap-2 cursor-pointer select-none">
+                              <Checkbox
+                                checked={
+                                  parentChecked as boolean | "indeterminate"
+                                }
+                                onCheckedChange={(v) =>
+                                  toggleSectionAll(activeTab, !!v, cols)
+                                }
+                                className="h-3.5 w-3.5 [&_svg]:h-3 [&_svg]:w-3"
+                              />
+                              Select all
+                            </label>
+                            <div className="pl-5 space-y-2">
+                              {cols.map((col) => (
+                                <label
+                                  key={col.key}
+                                  className="flex items-center gap-2 text-sm cursor-pointer select-none"
+                                >
+                                  <Checkbox
+                                    checked={sectionVis[col.key] !== false}
+                                    onCheckedChange={(v) =>
+                                      toggleCol(activeTab, col.key, !!v)
+                                    }
+                                    className="h-3.5 w-3.5 [&_svg]:h-3 [&_svg]:w-3"
+                                  />
+                                  {col.label}
+                                </label>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="mt-2">
+                          <div className="flex items-center justify-between px-3 pb-1.5">
+                            <button
+                              className="inline-flex items-center gap-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wide hover:text-foreground"
+                              onClick={() =>
+                                setIsFiltersCollapsed((prev) => !prev)
+                              }
+                            >
+                              {isFiltersCollapsed ? (
+                                <ChevronRight className="h-3 w-3" />
+                              ) : (
+                                <ChevronDown className="h-3 w-3" />
+                              )}
+                              Filters
+                            </button>
+                            <span className="text-xs text-muted-foreground pr-2">
+                              {filteredRows.length}/{activeSectionRows.length}
+                            </span>
+                          </div>
+
+                          {!isFiltersCollapsed && (
+                            <div className="pb-3 space-y-3 text-sm pt-1 px-5">
+                              <Input
+                                value={searchText}
+                                onChange={(e) => setSearchText(e.target.value)}
+                                placeholder="Search all visible values"
+                                className="h-8 text-sm"
+                              />
+
+                              <div className="flex flex-wrap gap-1">
+                                {(
+                                  [
+                                    ["usdOnly", "USD"],
+                                    ["hasOrigin", "Has Origin"],
+                                    ["hasViaCity", "Has Via"],
+                                    ["directCallOnly", "Direct Call"],
+                                    ["hasDestination", "Has Dest"],
+                                  ] as const
+                                ).map(([key, label]) => (
+                                  <Button
+                                    key={key}
+                                    type="button"
+                                    size="sm"
+                                    variant={
+                                      quickFilters[key]
+                                        ? "secondary"
+                                        : "outline"
+                                    }
+                                    className="h-7 px-3 text-xs"
+                                    onClick={() =>
+                                      setQuickFilters((prev) => ({
+                                        ...prev,
+                                        [key]: !prev[key],
+                                      }))
+                                    }
+                                  >
+                                    {label}
+                                  </Button>
+                                ))}
+                              </div>
+
+                              <div className="rounded-md border p-2 space-y-2">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                                    Logic
+                                  </span>
+                                  <div className="inline-flex rounded-md border overflow-hidden">
+                                    <Button
+                                      size="sm"
+                                      variant={
+                                        logic === "AND" ? "secondary" : "ghost"
+                                      }
+                                      className="h-7 px-3 text-xs rounded-none"
+                                      onClick={() => setLogic("AND")}
+                                    >
+                                      AND
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant={
+                                        logic === "OR" ? "secondary" : "ghost"
+                                      }
+                                      className="h-7 px-3 text-xs rounded-none border-l"
+                                      onClick={() => setLogic("OR")}
+                                    >
+                                      OR
+                                    </Button>
+                                  </div>
+                                </div>
+
+                                {clauses.map((clause) => (
+                                  <div
+                                    key={clause.id}
+                                    className="space-y-1 rounded border p-1.5"
+                                  >
+                                    <div className="flex items-center gap-1">
+                                      <select
+                                        className="h-7 flex-1 rounded border bg-background px-2 text-xs"
+                                        value={clause.field}
+                                        onChange={(e) =>
+                                          setClauses((prev) =>
+                                            prev.map((c) =>
+                                              c.id === clause.id
+                                                ? {
+                                                    ...c,
+                                                    field: e.target.value,
+                                                  }
+                                                : c,
+                                            ),
+                                          )
+                                        }
+                                      >
+                                        {activeSectionCols.map((c) => (
+                                          <option key={c.key} value={c.key}>
+                                            {c.label}
+                                          </option>
+                                        ))}
+                                      </select>
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        className="h-7 px-2 text-xs"
+                                        onClick={() =>
+                                          setClauses((prev) =>
+                                            prev.filter(
+                                              (c) => c.id !== clause.id,
+                                            ),
+                                          )
+                                        }
+                                      >
+                                        ✕
+                                      </Button>
+                                    </div>
+                                    <div className="flex items-center gap-1">
+                                      <select
+                                        className="h-7 w-28 rounded border bg-background px-2 text-xs"
+                                        value={clause.op}
+                                        onChange={(e) =>
+                                          setClauses((prev) =>
+                                            prev.map((c) =>
+                                              c.id === clause.id
+                                                ? {
+                                                    ...c,
+                                                    op: e.target
+                                                      .value as FilterOp,
+                                                  }
+                                                : c,
+                                            ),
+                                          )
+                                        }
+                                      >
+                                        <option value="contains">
+                                          contains
+                                        </option>
+                                        <option value="equals">equals</option>
+                                        <option value="startsWith">
+                                          startsWith
+                                        </option>
+                                        <option value="gt">&gt;</option>
+                                        <option value="lt">&lt;</option>
+                                        <option value="between">between</option>
+                                        <option value="in">in (csv)</option>
+                                      </select>
+                                      <Input
+                                        value={clause.value}
+                                        onChange={(e) =>
+                                          setClauses((prev) =>
+                                            prev.map((c) =>
+                                              c.id === clause.id
+                                                ? {
+                                                    ...c,
+                                                    value: e.target.value,
+                                                  }
+                                                : c,
+                                            ),
+                                          )
+                                        }
+                                        className="h-7 text-xs"
+                                      />
+                                      {clause.op === "between" && (
+                                        <Input
+                                          value={clause.valueTo ?? ""}
+                                          onChange={(e) =>
+                                            setClauses((prev) =>
+                                              prev.map((c) =>
+                                                c.id === clause.id
+                                                  ? {
+                                                      ...c,
+                                                      valueTo: e.target.value,
+                                                    }
+                                                  : c,
+                                              ),
+                                            )
+                                          }
+                                          className="h-7 text-xs"
+                                          placeholder="to"
+                                        />
+                                      )}
+                                    </div>
+                                  </div>
+                                ))}
+
+                                <div className="flex gap-1">
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 px-3 text-xs"
+                                    onClick={addClause}
+                                  >
+                                    + Clause
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 px-3 text-xs"
+                                    onClick={clearFilters}
+                                  >
+                                    Clear
+                                  </Button>
+                                </div>
+                              </div>
+
+                              <div className="rounded-md border p-2 space-y-2">
+                                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                                  Sort
+                                </span>
+                                <div className="flex gap-1">
+                                  <select
+                                    className="h-7 flex-1 rounded border bg-background px-2 text-xs"
+                                    value={sortKey}
+                                    onChange={(e) => setSortKey(e.target.value)}
+                                  >
+                                    <option value="">No sort</option>
+                                    {activeSectionCols.map((c) => (
+                                      <option key={c.key} value={c.key}>
+                                        {c.label}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 px-3 text-xs"
+                                    onClick={() =>
+                                      setSortDir((d) =>
+                                        d === "asc" ? "desc" : "asc",
+                                      )
+                                    }
+                                  >
+                                    {sortDir.toUpperCase()}
+                                  </Button>
+                                </div>
+                              </div>
+
+                              <div className="rounded-md border p-2 space-y-2">
+                                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                                  Header Filters
+                                </span>
+                                {activeSectionCols.length === 0 ? (
+                                  <p className="text-xs text-muted-foreground">
+                                    No columns available.
+                                  </p>
+                                ) : (
+                                  <div className="space-y-2">
+                                    {activeSectionCols.map((col) => {
+                                      const hf = headerFilters[col.key];
+                                      return (
+                                        <div
+                                          key={col.key}
+                                          className="space-y-1 rounded border p-1.5"
+                                        >
+                                          <div className="flex items-center justify-between">
+                                            <span className="text-xs font-medium truncate">
+                                              {col.label}
+                                            </span>
+                                            <Button
+                                              size="sm"
+                                              variant={
+                                                hf ? "secondary" : "ghost"
+                                              }
+                                              className="h-6 px-2 text-[10px]"
+                                              onClick={() =>
+                                                setHeaderFilters((prev) => {
+                                                  const copy = { ...prev };
+                                                  if (copy[col.key]) {
+                                                    delete copy[col.key];
+                                                  } else {
+                                                    copy[col.key] = {
+                                                      op: "contains",
+                                                      value: "",
+                                                    };
+                                                  }
+                                                  return copy;
+                                                })
+                                              }
+                                            >
+                                              {hf ? "On" : "Off"}
+                                            </Button>
+                                          </div>
+
+                                          {hf && (
+                                            <div className="flex items-center gap-1">
+                                              <select
+                                                className="h-7 w-24 rounded border bg-background px-2 text-xs"
+                                                value={hf.op}
+                                                onChange={(e) =>
+                                                  setHeaderFilters((prev) => ({
+                                                    ...prev,
+                                                    [col.key]: {
+                                                      ...prev[col.key],
+                                                      op: e.target
+                                                        .value as HeaderColumnFilter["op"],
+                                                    },
+                                                  }))
+                                                }
+                                              >
+                                                <option value="contains">
+                                                  contains
+                                                </option>
+                                                <option value="equals">
+                                                  equals
+                                                </option>
+                                                <option value="startsWith">
+                                                  startsWith
+                                                </option>
+                                                <option value="gt">&gt;</option>
+                                                <option value="lt">&lt;</option>
+                                                <option value="between">
+                                                  between
+                                                </option>
+                                              </select>
+                                              <Input
+                                                value={hf.value}
+                                                onChange={(e) =>
+                                                  setHeaderFilters((prev) => ({
+                                                    ...prev,
+                                                    [col.key]: {
+                                                      ...prev[col.key],
+                                                      value: e.target.value,
+                                                    },
+                                                  }))
+                                                }
+                                                className="h-7 text-xs"
+                                              />
+                                              {hf.op === "between" && (
+                                                <Input
+                                                  value={hf.valueTo ?? ""}
+                                                  onChange={(e) =>
+                                                    setHeaderFilters(
+                                                      (prev) => ({
+                                                        ...prev,
+                                                        [col.key]: {
+                                                          ...prev[col.key],
+                                                          valueTo:
+                                                            e.target.value,
+                                                        },
+                                                      }),
+                                                    )
+                                                  }
+                                                  className="h-7 text-xs"
+                                                  placeholder="to"
+                                                />
+                                              )}
+                                            </div>
+                                          )}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+
+                              <div className="rounded-md border p-2 space-y-2">
+                                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                                  Saved Views
+                                </span>
+                                <div className="flex gap-1">
+                                  <Input
+                                    value={viewName}
+                                    onChange={(e) =>
+                                      setViewName(e.target.value)
+                                    }
+                                    placeholder="View name"
+                                    className="h-7 text-xs"
+                                  />
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 px-3 text-xs"
+                                    onClick={saveCurrentView}
+                                  >
+                                    Save
+                                  </Button>
+                                </div>
+                                <div className="max-h-28 overflow-y-auto space-y-1">
+                                  {savedViews.map((view) => (
+                                    <div
+                                      key={view.id}
+                                      className="flex items-center gap-1"
+                                    >
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        className="h-7 flex-1 justify-start px-2 text-xs"
+                                        onClick={() => loadView(view)}
+                                      >
+                                        {view.name}
+                                      </Button>
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        className="h-7 px-2 text-xs"
+                                        onClick={() =>
+                                          persistViews(
+                                            savedViews.filter(
+                                              (v) => v.id !== view.id,
+                                            ),
+                                          )
+                                        }
+                                      >
+                                        ✕
+                                      </Button>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()
+                : !loading && (
+                    <p className="text-xs text-muted-foreground italic px-3 pt-2">
+                      No data loaded
+                    </p>
+                  )}
+            </div>
+          </ScrollArea>
+        </div>
+      )}
 
       {/* ── Tables preview dialog ─────────────────────────────────────────── */}
       {renderer && (
-        <Dialog open={tablesOpen} onOpenChange={setTablesOpen}>
+        <Dialog
+          open={effectiveTablesOpen}
+          onOpenChange={setEffectiveTablesOpen}
+        >
           <DialogContent className="max-w-5xl w-full h-[80vh] flex flex-col p-0 gap-0">
             <DialogHeader className="px-4 pt-4 pb-0 shrink-0">
               <DialogTitle className="text-sm font-semibold">
@@ -609,7 +1633,9 @@ export function ExtractionView({
                     }`}
                   >
                     {s.label}
-                    <span className="ml-1.5 text-[10px] opacity-60">({count})</span>
+                    <span className="ml-1.5 text-[10px] opacity-60">
+                      ({count})
+                    </span>
                   </button>
                 );
               })}
@@ -626,11 +1652,15 @@ export function ExtractionView({
                       <div key={s.key}>
                         {rows.length === 0 ? (
                           <p className="text-xs text-muted-foreground italic py-4 text-center">
-                            No rows extracted for this section. Reprocess the document if expected.
+                            No rows extracted for this section. Reprocess the
+                            document if expected.
                           </p>
                         ) : (
                           <div className="overflow-x-scroll rounded-md border [&::-webkit-scrollbar]:h-3 [&::-webkit-scrollbar-track]:bg-muted/30 [&::-webkit-scrollbar-thumb]:bg-border [&::-webkit-scrollbar-thumb]:rounded-full">
-                            <SectionTable rows={rows} cols={sectionCols[s.key] ?? s.getColumns(rows)} />
+                            <SectionTable
+                              rows={rows}
+                              cols={sectionCols[s.key] ?? s.getColumns(rows)}
+                            />
                           </div>
                         )}
                       </div>
@@ -643,7 +1673,7 @@ export function ExtractionView({
       )}
 
       {/* ── Raw preview dialog ────────────────────────────────────────────── */}
-      <Dialog open={rawOpen} onOpenChange={setRawOpen}>
+      <Dialog open={effectiveRawOpen} onOpenChange={setEffectiveRawOpen}>
         <DialogContent className="max-w-4xl w-full h-[80vh] flex flex-col p-0 gap-0">
           <DialogHeader className="px-4 pt-4 pb-0 shrink-0">
             <DialogTitle className="text-sm font-semibold">
