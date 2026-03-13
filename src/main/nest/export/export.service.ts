@@ -142,10 +142,125 @@ export class ExportService {
     return exportPath;
   }
 
+  private async exportContractExcel(
+    documents: any[],
+    timestamp: string,
+  ): Promise<string> {
+    const exportPath = getDataPath("exports", `contract_export_${timestamp}.xlsx`);
+
+    try {
+      const ExcelJS = require("exceljs");
+      const workbook = new ExcelJS.Workbook();
+
+      // Collect rows across all documents
+      const allRates: Record<string, string>[] = [];
+      const allOriginArbs: Record<string, string>[] = [];
+      const allDestArbs: Record<string, string>[] = [];
+
+      for (const doc of documents) {
+        const parsed = JSON.parse(doc.extractedJson || "{}");
+        if (parsed.type !== "CONTRACT") continue;
+        allRates.push(...(parsed.rates || []));
+        allOriginArbs.push(...(parsed.originArbs || []));
+        allDestArbs.push(...(parsed.destArbs || []));
+      }
+
+      const HEADER_STYLE = {
+        font: { bold: true, color: { argb: "FFFFFFFF" } },
+        fill: { type: "pattern", pattern: "solid", fgColor: { argb: "FF1E293B" } } as any,
+      };
+
+      const buildSheet = (
+        name: string,
+        rows: Record<string, string>[],
+        columnOrder: string[],
+      ) => {
+        if (rows.length === 0) return;
+        const sheet = workbook.addWorksheet(name);
+
+        // Collect all keys present in the data, respecting preferred order
+        const allKeys = new Set<string>();
+        columnOrder.forEach((k) => allKeys.add(k));
+        rows.forEach((r) => Object.keys(r).forEach((k) => allKeys.add(k)));
+        const keys = Array.from(allKeys);
+
+        sheet.columns = keys.map((k) => ({
+          header: k,
+          key: k,
+          width: Math.max(k.length + 2, 14),
+        }));
+
+        for (const row of rows) {
+          sheet.addRow(keys.map((k) => row[k] ?? ""));
+        }
+
+        // Style header row
+        const headerRow = sheet.getRow(1);
+        headerRow.eachCell((cell: any) => {
+          cell.font = HEADER_STYLE.font;
+          cell.fill = HEADER_STYLE.fill;
+        });
+        headerRow.commit();
+
+        // Auto-filter
+        sheet.autoFilter = {
+          from: { row: 1, column: 1 },
+          to: { row: 1, column: keys.length },
+        };
+      };
+
+      const RATES_COLS = [
+        "carrier", "contractId", "effectiveDate", "expirationDate",
+        "commodity", "destinationCity", "destinationViaCity",
+        "service", "remarks", "scope",
+        "baseRate20", "baseRate40", "baseRate40H", "baseRate45",
+      ];
+
+      const ORIGIN_ARB_COLS = [
+        "carrier", "contractId", "effectiveDate", "expirationDate",
+        "commodity", "originCity", "originViaCity",
+        "service", "remarks", "scope",
+        "baseRate20", "baseRate40", "baseRate40H", "baseRate45",
+        "agw20", "agw40", "agw45",
+      ];
+
+      const DEST_ARB_COLS = [
+        "carrier", "contractId", "effectiveDate", "expirationDate",
+        "commodity", "originCity", "originViaCity", "destinationCity", "destinationViaCity",
+        "service", "remarks", "scope",
+        "baseRate20", "baseRate40", "baseRate40H", "baseRate45",
+        "amsChina", "heaHeavySurcharge", "agw", "redSeaDiversion",
+      ];
+
+      buildSheet("Rates", allRates, RATES_COLS);
+      buildSheet("Origin Arbitraries", allOriginArbs, ORIGIN_ARB_COLS);
+      buildSheet("Destination Arbitraries", allDestArbs, DEST_ARB_COLS);
+
+      await workbook.xlsx.writeFile(exportPath);
+    } catch (err) {
+      this.logger.error("Contract Excel export failed, falling back to JSON", err);
+      return this.exportJson(documents, timestamp);
+    }
+
+    return exportPath;
+  }
+
   private async exportExcel(
     documents: any[],
     timestamp: string,
   ): Promise<string> {
+    // If all selected documents are PDF_EXTRACT contracts, use the contract-specific exporter
+    const allAreContracts = documents.every((doc) => {
+      try {
+        return JSON.parse(doc.extractedJson || "{}").type === "CONTRACT";
+      } catch {
+        return false;
+      }
+    });
+    if (allAreContracts && documents.length > 0) {
+      return this.exportContractExcel(documents, timestamp);
+    }
+
     const exportPath = getDataPath("exports", `export_${timestamp}.xlsx`);
 
     try {

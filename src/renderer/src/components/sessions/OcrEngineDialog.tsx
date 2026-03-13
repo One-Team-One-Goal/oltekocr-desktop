@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { Download, Trash2, Cpu, Loader2 } from "lucide-react";
+import { toast } from "@/hooks/use-toast";
 
 // ─── Data ─────────────────────────────────────────────────────────────────────
 
@@ -94,16 +95,57 @@ export function OcrEngineDialog({
   );
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [downloading, setDownloading] = useState<string | null>(null);
+  const downloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const cancelActiveDownload = (
+    engineId: string,
+    engineName: string,
+    notice: { update: (patch: any) => void },
+  ) => {
+    if (downloadTimerRef.current) {
+      clearTimeout(downloadTimerRef.current);
+      downloadTimerRef.current = null;
+    }
+    setDownloading((current) => (current === engineId ? null : current));
+    notice.update({
+      title: "OCR Download Cancelled",
+      description: `${engineName} was cancelled.`,
+      duration: 3000,
+      actionLabel: undefined,
+      onAction: undefined,
+    });
+  };
 
   const startDownload = (engineId: string, selectAfter = false) => {
     setDownloading(engineId);
+    const engineName =
+      engines.find((engine) => engine.id === engineId)?.name ?? engineId;
+    let noticeRef: { update: (patch: any) => void } | null = null;
+    const notice = toast({
+      title: "Downloading OCR Engine",
+      description: `${engineName} download started...`,
+      duration: 0,
+      actionLabel: "Cancel",
+      onAction: () => {
+        if (noticeRef) cancelActiveDownload(engineId, engineName, noticeRef);
+      },
+    });
+    noticeRef = notice;
     // Mock download — replace with real API call when available
-    setTimeout(() => {
+    downloadTimerRef.current = setTimeout(() => {
       setEngines((prev) =>
         prev.map((e) => (e.id === engineId ? { ...e, downloaded: true } : e)),
       );
       if (selectAfter) setSelectedId(engineId);
-      setDownloading(null);
+      setDownloading((current) => (current === engineId ? null : current));
+      downloadTimerRef.current = null;
+      notice.update({
+        title: "OCR Engine Ready",
+        description: `${engineName} download complete.`,
+        duration: 3000,
+        actionLabel: undefined,
+        onAction: undefined,
+      });
     }, 2000);
   };
 
@@ -198,7 +240,7 @@ export function OcrEngineDialog({
                       {engine.recommended && (
                         <Badge
                           variant="secondary"
-                          className="text-[10px] px-1.5 py-0 h-4 bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400"
+                          className="text-[10px] px-1.5 py-0 h-4 bg-green-100 text-green-700"
                         >
                           Recommended
                         </Badge>

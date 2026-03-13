@@ -4,7 +4,12 @@ import { sessionsApi, queueApi, exportApi } from "@/api/client";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { SessionDataTable } from "./SessionDataTable";
 import { ReviewDialog } from "@/components/ReviewDialog";
+import { ContractReviewDialog } from "./ContractReviewDialog";
 import { EditColumnsDialog } from "./EditColumnsDialog";
+import { WindowControls } from "@/components/layout/SidebarContext";
+
+const drag = { WebkitAppRegion: "drag" } as React.CSSProperties;
+const noDrag = { WebkitAppRegion: "no-drag" } as React.CSSProperties;
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -225,16 +230,31 @@ export function SessionDetail() {
     );
   }
 
+  const selectedReviewDocument = reviewDocId
+    ? (documents.find((d) => d.id === reviewDocId) ?? null)
+    : null;
+
+  const modeToRoute: Record<string, string> = {
+    PDF_EXTRACT: "/",
+    OCR_EXTRACT: "/ocr-extract",
+    TABLE_EXTRACT: "/keyword-extract",
+  };
+
   return (
     <div className="flex flex-col h-full bg-background">
       {/* Header */}
-      <header className="flex items-center justify-between h-14 px-4 border-b shrink-0 gap-3">
-        <div className="flex items-center gap-3 min-w-0">
+      <header
+        className="flex items-stretch h-14 pl-4 border-b shrink-0"
+        style={drag}
+      >
+        <div className="flex items-center gap-3 min-w-0 flex-1" style={noDrag}>
           <Button
             variant="ghost"
             size="icon"
             className="shrink-0"
-            onClick={() => navigate("/")}
+            onClick={() =>
+              navigate(modeToRoute[session?.mode ?? "PDF_EXTRACT"] ?? "/")
+            }
           >
             <ArrowLeft className="h-4 w-4" />
           </Button>
@@ -245,7 +265,7 @@ export function SessionDetail() {
             {modeBadge}
           </div>
         </div>
-        <div className="flex items-center gap-1.5 shrink-0">
+        <div className="flex items-center gap-1.5 shrink-0" style={noDrag}>
           {/* Play / Stop */}
           {(() => {
             const canStart =
@@ -318,6 +338,7 @@ export function SessionDetail() {
             </Button>
           )}
         </div>
+        <WindowControls />
       </header>
 
       {/* Stats + filter */}
@@ -336,9 +357,21 @@ export function SessionDetail() {
         />
       </div>
 
-      {/* Review Dialog */}
-      {reviewDocId && (
+      {/* Review Dialog — OCR/TABLE sessions */}
+      {reviewDocId && session?.mode !== "PDF_EXTRACT" && (
         <ReviewDialog
+          documentId={reviewDocId}
+          open={!!reviewDocId}
+          onClose={() => setReviewDocId(null)}
+          onRefresh={refresh}
+          session={session}
+          selectedDocument={selectedReviewDocument}
+        />
+      )}
+
+      {/* Contract Review Dialog — PDF_EXTRACT sessions */}
+      {reviewDocId && session?.mode === "PDF_EXTRACT" && (
+        <ContractReviewDialog
           documentId={reviewDocId}
           open={!!reviewDocId}
           onClose={() => setReviewDocId(null)}

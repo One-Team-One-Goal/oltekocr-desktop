@@ -53,6 +53,14 @@ export class DocumentsGateway
     });
   }
 
+  /** Broadcast a single processing log line */
+  sendProcessingLog(id: string, line: string): void {
+    this.broadcast({
+      event: "processing:log",
+      data: { id, line, timestamp: new Date().toISOString() },
+    });
+  }
+
   private broadcast(payload: unknown): void {
     if (!this.server) return;
     const data = JSON.stringify(payload);

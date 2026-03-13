@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   Dialog,
   DialogContent,
@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import { Badge } from "@/components/ui/badge";
 import {
   Select,
   SelectContent,
@@ -17,7 +18,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { settingsApi } from "@/api/client";
+import { settingsApi, modelsApi } from "@/api/client";
+import type { ModelStatus } from "@/api/client";
 import {
   Save,
   RotateCcw,
@@ -25,6 +27,11 @@ import {
   FileText,
   Database,
   FileOutput,
+  Package,
+  Download,
+  Trash2,
+  CheckCircle2,
+  Loader2,
 } from "lucide-react";
 import type { AppSettings } from "@shared/types";
 
@@ -40,6 +47,23 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
 
+  // Models tab state
+  const [models, setModels] = useState<ModelStatus[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [installing, setInstalling] = useState<
+    Record<string, "installing" | "uninstalling">
+  >({});
+  const [modelLogs, setModelLogs] = useState<Record<string, string>>({});
+
+  const refreshModels = useCallback(() => {
+    setModelsLoading(true);
+    modelsApi
+      .list()
+      .then(setModels)
+      .catch(console.error)
+      .finally(() => setModelsLoading(false));
+  }, []);
+
   useEffect(() => {
     if (open) {
       setLoading(true);
@@ -51,8 +75,45 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
         })
         .catch(console.error)
         .finally(() => setLoading(false));
+      refreshModels();
     }
-  }, [open]);
+  }, [open, refreshModels]);
+
+  const handleInstall = async (id: string) => {
+    setInstalling((p) => ({ ...p, [id]: "installing" }));
+    setModelLogs((p) => ({ ...p, [id]: "" }));
+    try {
+      const result = await modelsApi.install(id);
+      setModelLogs((p) => ({ ...p, [id]: result.log }));
+    } catch (err: any) {
+      setModelLogs((p) => ({ ...p, [id]: err.message ?? String(err) }));
+    } finally {
+      setInstalling((p) => {
+        const n = { ...p };
+        delete n[id];
+        return n;
+      });
+      refreshModels();
+    }
+  };
+
+  const handleUninstall = async (id: string) => {
+    setInstalling((p) => ({ ...p, [id]: "uninstalling" }));
+    setModelLogs((p) => ({ ...p, [id]: "" }));
+    try {
+      const result = await modelsApi.uninstall(id);
+      setModelLogs((p) => ({ ...p, [id]: result.log }));
+    } catch (err: any) {
+      setModelLogs((p) => ({ ...p, [id]: err.message ?? String(err) }));
+    } finally {
+      setInstalling((p) => {
+        const n = { ...p };
+        delete n[id];
+        return n;
+      });
+      refreshModels();
+    }
+  };
 
   const update = <K extends keyof AppSettings>(
     section: K,
@@ -122,6 +183,9 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
               </TabsTrigger>
               <TabsTrigger value="export" className="text-xs gap-1">
                 <FileOutput className="h-3 w-3" /> Export
+              </TabsTrigger>
+              <TabsTrigger value="models" className="text-xs gap-1">
+                <Package className="h-3 w-3" /> Models
               </TabsTrigger>
             </TabsList>
 
@@ -393,6 +457,124 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
                       </SelectContent>
                     </Select>
                   </SettingGroup>
+                </div>
+              </ScrollArea>
+            </TabsContent>
+            {/* Models Tab */}
+            <TabsContent value="models" className="flex-1 mt-0 overflow-hidden">
+              <ScrollArea className="h-full">
+                <div className="p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-muted-foreground">
+                      Install or remove extraction model packages. Large models
+                      may take several minutes to download.
+                    </p>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-xs shrink-0"
+                      onClick={refreshModels}
+                      disabled={modelsLoading}
+                    >
+                      {modelsLoading ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <RotateCcw className="h-3 w-3" />
+                      )}
+                    </Button>
+                  </div>
+
+                  {modelsLoading && models.length === 0 ? (
+                    <div className="flex items-center justify-center py-8 text-muted-foreground text-sm">
+                      <Loader2 className="h-4 w-4 animate-spin mr-2" /> Checking
+                      installed packages...
+                    </div>
+                  ) : (
+                    models.map((model) => {
+                      const state = installing[model.id];
+                      const log = modelLogs[model.id];
+                      return (
+                        <div
+                          key={model.id}
+                          className="border rounded-lg p-3 space-y-2"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-sm font-medium">
+                                  {model.name}
+                                </span>
+                                {model.recommended && (
+                                  <Badge
+                                    variant="secondary"
+                                    className="text-xs px-1.5 py-0"
+                                  >
+                                    Recommended
+                                  </Badge>
+                                )}
+                                {model.downloaded ? (
+                                  <Badge className="text-xs px-1.5 py-0 bg-green-500/15 text-green-600 border-green-200 hover:bg-green-500/15">
+                                    <CheckCircle2 className="h-3 w-3 mr-1" />{" "}
+                                    Installed
+                                  </Badge>
+                                ) : (
+                                  <Badge
+                                    variant="outline"
+                                    className="text-xs px-1.5 py-0 text-muted-foreground"
+                                  >
+                                    Not installed
+                                  </Badge>
+                                )}
+                                <span className="text-xs text-muted-foreground">
+                                  {model.size}
+                                </span>
+                              </div>
+                              <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
+                                {model.description}
+                              </p>
+                            </div>
+                            <div className="shrink-0">
+                              {state ? (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="text-xs"
+                                  disabled
+                                >
+                                  <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                                  {state === "installing"
+                                    ? "Installing..."
+                                    : "Removing..."}
+                                </Button>
+                              ) : model.downloaded ? (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="text-xs text-destructive hover:text-destructive"
+                                  onClick={() => handleUninstall(model.id)}
+                                >
+                                  <Trash2 className="h-3 w-3 mr-1" /> Remove
+                                </Button>
+                              ) : (
+                                <Button
+                                  size="sm"
+                                  className="text-xs"
+                                  onClick={() => handleInstall(model.id)}
+                                >
+                                  <Download className="h-3 w-3 mr-1" /> Install
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+                          {log && (
+                            <pre className="text-xs bg-muted rounded p-2 max-h-32 overflow-auto whitespace-pre-wrap break-all font-mono">
+                              {log}
+                            </pre>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
                 </div>
               </ScrollArea>
             </TabsContent>

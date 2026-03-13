@@ -70,6 +70,11 @@ export class DocumentsController {
     if (!doc.imagePath || !existsSync(doc.imagePath)) {
       throw new NotFoundException("Image file not found");
     }
+    // For PDFs, set explicit headers so Electron's PDF viewer renders inline
+    if (doc.imagePath.toLowerCase().endsWith(".pdf")) {
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", "inline");
+    }
     res.sendFile(doc.imagePath);
   }
 

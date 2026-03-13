@@ -29,7 +29,9 @@ export interface SessionRecord {
   columns: SessionColumn[];
   sourceType: "FILES" | "FOLDER";
   sourcePath: string;
+  documentType: string;
   status: SessionStatus;
+  extractionModel: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -39,6 +41,7 @@ export interface SessionListItem {
   name: string;
   mode: SessionMode;
   status: SessionStatus;
+  extractionModel: string;
   documentCount: number;
   processedCount: number;
   createdAt: string;
@@ -103,9 +106,9 @@ export interface QualityCheck {
 // ─── OCR Types ───────────────────────────────────────────
 export interface TextBlock {
   text: string;
-  confidence: number;
+  confidence?: number;
   blockType: "paragraph" | "heading" | "list" | "footer" | "header";
-  bbox: [number, number, number, number]; // x1, y1, x2, y2
+  bbox?: [number, number, number, number]; // x1, y1, x2, y2
   page: number;
 }
 
@@ -113,9 +116,9 @@ export interface TableCell {
   row: number;
   col: number;
   text: string;
-  confidence: number;
-  rowSpan: number;
-  colSpan: number;
+  confidence?: number;
+  rowSpan?: number;
+  colSpan?: number;
 }
 
 export interface ExtractedTable {
@@ -123,8 +126,8 @@ export interface ExtractedTable {
   rows: number;
   cols: number;
   cells: TableCell[];
-  caption: string;
-  bbox: [number, number, number, number];
+  caption?: string;
+  bbox?: [number, number, number, number];
 }
 
 export interface OcrResult {
@@ -154,6 +157,7 @@ export interface DocumentRecord {
   tags: string[];
   exported: boolean;
   exportPath: string;
+  extractionType: ExtractionType;
   quality: QualityCheck;
   ocrResult: OcrResult | null;
   userEdits: Record<string, unknown>;
@@ -269,7 +273,16 @@ export interface WsProcessingProgress {
   data: { id: string; progress: number; message: string };
 }
 
-export type WsEvent = WsQueueUpdate | WsDocumentStatus | WsProcessingProgress;
+export interface WsProcessingLog {
+  event: "processing:log";
+  data: { id: string; line: string; timestamp: string };
+}
+
+export type WsEvent =
+  | WsQueueUpdate
+  | WsDocumentStatus
+  | WsProcessingProgress
+  | WsProcessingLog;
 
 // ─── IPC Channels ────────────────────────────────────────
 export const IpcChannel = {

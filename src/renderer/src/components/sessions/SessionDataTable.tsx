@@ -1,6 +1,14 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { OcrEngineDialog } from "./OcrEngineDialog";
 import { LlmDialog } from "./LlmDialog";
+import { PdfModelDialog } from "./PdfModelDialog";
+import { ProcessingLogSheet } from "./ProcessingLogSheet";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   type ColumnDef,
   type ColumnFiltersState,
@@ -21,6 +29,7 @@ import {
   DialogHeader,
   DialogTitle,
   DialogFooter,
+  DialogDescription,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -62,8 +71,9 @@ import {
   statusColor,
   formatConfidence,
   formatShortDateTime,
+  formatTime,
 } from "@/lib/utils";
-import { documentsApi, exportApi, queueApi } from "@/api/client";
+import { documentsApi, exportApi, queueApi, settingsApi } from "@/api/client";
 import {
   Eye,
   RotateCcw,
@@ -99,6 +109,12 @@ import type {
   TextBlock,
 } from "@shared/types";
 import { ExtractionType } from "@shared/types";
+
+const MODEL_DISPLAY_NAMES: Record<string, string> = {
+  pdfplumber: "pdfplumber",
+  pymupdf: "PyMuPDF (fitz)",
+  unstructured: "Unstructured.io",
+};
 
 const EXTRACTION_TYPE_OPTIONS: {
   value: ExtractionType;
@@ -137,9 +153,20 @@ interface SessionDataTableProps {
 const DEFAULT_PAGE_SIZE = 10;
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 
+function compactFilename(filename: string): string {
+  if (filename.length <= 16) return filename;
+  return `${filename.slice(0, 5)}...${filename.slice(-8)}`;
+}
+
 // ─── Status Badge ─────────────────────────────────────────────────────────────
 
-function StatusBadge({ status }: { status: string }) {
+function StatusBadge({
+  status,
+  onShowLogs,
+}: {
+  status: string;
+  onShowLogs?: () => void;
+}) {
   const icons: Record<string, React.ReactNode> = {
     QUEUED: <Clock className="h-3 w-3" />,
     SCANNING: <ScanLine className="h-3 w-3" />,
@@ -151,12 +178,24 @@ function StatusBadge({ status }: { status: string }) {
     EXPORTED: <FileOutput className="h-3 w-3" />,
     ERROR: <AlertCircle className="h-3 w-3" />,
   };
+  const isClickable = !!onShowLogs;
   return (
     <span
       className={cn(
         "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium",
         statusColor(status),
+        isClickable &&
+          "cursor-pointer border hover:border-border/50 focus:ring-0",
       )}
+      onClick={
+        isClickable
+          ? (e) => {
+              e.stopPropagation();
+              onShowLogs?.();
+            }
+          : undefined
+      }
+      title={isClickable ? "Open logs" : undefined}
     >
       {icons[status] ?? null}
       {statusLabel(status)}
@@ -304,6 +343,7 @@ function BatchToolbar({
   const [batchType, setBatchType] = useState<ExtractionType>(
     ExtractionType.AUTO,
   );
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   return (
     <>
@@ -334,6 +374,46 @@ function BatchToolbar({
       >
         <Square className="h-3.5 w-3.5 text-red-500" />
       </Button>
+      <Button
+        variant="outline"
+        size="sm"
+        className="gap-1.5 text-xs h-8 text-destructive hover:text-destructive hover:bg-destructive/10 border-destructive/30"
+        onClick={() => setConfirmDelete(true)}
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+      </Button>
+      <Dialog
+        open={confirmDelete}
+        onOpenChange={(v) => !v && setConfirmDelete(false)}
+      >
+        <DialogContent className="sm:max-w-[380px]">
+          <DialogHeader>
+            <DialogTitle>
+              Delete {count} document{count !== 1 ? "s" : ""}?
+            </DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            This will permanently delete the selected document
+            {count !== 1 ? "s" : ""} and cannot be undone.
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmDelete(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={async () => {
+                setConfirmDelete(false);
+                await Promise.all(ids.map((id) => documentsApi.delete(id)));
+                onClear();
+                onRefresh();
+              }}
+            >
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <div className="flex items-center gap-1 border-l pl-2">
         <Layers className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
         <Select
@@ -392,17 +472,71 @@ export function SessionDataTable({
   const [statusFilter, setStatusFilter] = useState("all");
   const [ocrEngineOpen, setOcrEngineOpen] = useState(false);
   const [llmOpen, setLlmOpen] = useState(false);
+  const [pdfModelOpen, setPdfModelOpen] = useState(false);
   const [selectedOcrName, setSelectedOcrName] = useState("RapidOCR");
-  const [selectedLlmName, setSelectedLlmName] = useState("GPT-4o");
+  const [selectedLlmName, setSelectedLlmName] = useState("qwen2.5:3b");
+  const [selectedPdfModelName, setSelectedPdfModelName] = useState(
+    () =>
+      MODEL_DISPLAY_NAMES[session?.extractionModel ?? "pdfplumber"] ??
+      "pdfplumber",
+  );
+  const [pendingDeleteDocId, setPendingDeleteDocId] = useState<string | null>(
+    null,
+  );
+  const [logSheetOpen, setLogSheetOpen] = useState(false);
+  const [logSheetDocId, setLogSheetDocId] = useState<string | null>(null);
   const [pagination, setPagination] = useState<PaginationState>({
     pageIndex: 0,
     pageSize: DEFAULT_PAGE_SIZE,
   });
 
+  // Disable model selectors that are irrelevant to the current document set.
+  // AUTO rows are treated as unknown, so they don't force a disable.
+  const onlyImages = useMemo(
+    () =>
+      documents.length > 0 &&
+      documents.every(
+        (d) =>
+          d.extractionType === ExtractionType.IMAGE ||
+          d.extractionType === ExtractionType.EXCEL,
+      ),
+    [documents],
+  );
+  const onlyPdfs = useMemo(
+    () =>
+      documents.length > 0 &&
+      documents.every(
+        (d) =>
+          d.extractionType === ExtractionType.PDF_TEXT ||
+          d.extractionType === ExtractionType.PDF_IMAGE,
+      ),
+    [documents],
+  );
+
   const isPending = (doc: DocumentListItem) =>
     doc.status === "QUEUED" ||
     doc.status === "SCANNING" ||
     doc.status === "PROCESSING";
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void settingsApi
+      .get()
+      .then((settings) => {
+        if (cancelled) return;
+        if (settings?.llm?.defaultModel) {
+          setSelectedLlmName(settings.llm.defaultModel);
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to load selected LLM model:", err);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // ── Shared doc action handler ─────────────────────────────────────
   const runDocAction = useCallback(
@@ -435,10 +569,7 @@ export function SessionDataTable({
             onRefresh();
             break;
           case "delete":
-            if (confirm("Delete this document? This cannot be undone.")) {
-              await documentsApi.delete(docId);
-              onRefresh();
-            }
+            setPendingDeleteDocId(docId);
             break;
         }
       } catch (err) {
@@ -490,14 +621,14 @@ export function SessionDataTable({
             <ArrowUpDown className="h-3 w-3" />
           </Button>
         ),
-        size: 120,
+        size: 95,
         cell: ({ row }) => (
           <div className="flex items-center gap-1.5 min-w-0">
             <span
               className="truncate text-xs font-medium"
               title={row.original.filename}
             >
-              {row.original.filename}
+              {compactFilename(row.original.filename)}
             </span>
           </div>
         ),
@@ -506,7 +637,15 @@ export function SessionDataTable({
         accessorKey: "status",
         header: ({ column }) => <SortHeader column={column} label="Status" />,
         size: 130,
-        cell: ({ row }) => <StatusBadge status={row.original.status} />,
+        cell: ({ row }) => (
+          <StatusBadge
+            status={row.original.status}
+            onShowLogs={() => {
+              setLogSheetDocId(row.original.id);
+              setLogSheetOpen(true);
+            }}
+          />
+        ),
       },
       {
         accessorKey: "createdAt",
@@ -515,6 +654,16 @@ export function SessionDataTable({
         cell: ({ row }) => (
           <span className="font-mono text-xs text-muted-foreground">
             {formatShortDateTime(row.original.createdAt)}
+          </span>
+        ),
+      },
+      {
+        accessorKey: "ocrProcessingTime",
+        header: ({ column }) => <SortHeader column={column} label="Time" />,
+        size: 80,
+        cell: ({ row }) => (
+          <span className="font-mono text-xs text-muted-foreground">
+            {formatTime(row.original.ocrProcessingTime)}
           </span>
         ),
       },
@@ -782,24 +931,70 @@ export function SessionDataTable({
           </DropdownMenuContent>
         </DropdownMenu>
         <div className="ml-auto flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="gap-1.5 text-xs"
-            onClick={() => setOcrEngineOpen(true)}
-          >
-            {selectedOcrName}
-            <ChevronsUpDown className="h-3.5 w-3.5" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="gap-1.5 text-xs"
-            onClick={() => setLlmOpen(true)}
-          >
-            {selectedLlmName}
-            <ChevronsUpDown className="h-3.5 w-3.5" />
-          </Button>
+          <TooltipProvider delayDuration={300}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="gap-1.5 text-xs"
+                    disabled={onlyImages}
+                    onClick={() => setPdfModelOpen(true)}
+                  >
+                    {selectedPdfModelName}
+                    <ChevronsUpDown className="h-3.5 w-3.5" />
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>
+                {onlyImages
+                  ? "Not used — session contains image files only."
+                  : "For extracting text inside of a PDF / Word."}
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+          <TooltipProvider delayDuration={300}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="gap-1.5 text-xs"
+                    disabled={onlyPdfs}
+                    onClick={() => setOcrEngineOpen(true)}
+                  >
+                    {selectedOcrName}
+                    <ChevronsUpDown className="h-3.5 w-3.5" />
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>
+                {onlyPdfs
+                  ? "Not used — session contains PDF files only."
+                  : "Image and PDF containing image only."}
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+          <TooltipProvider delayDuration={300}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="gap-1.5 text-xs"
+                  onClick={() => setLlmOpen(true)}
+                >
+                  {selectedLlmName}
+                  <ChevronsUpDown className="h-3.5 w-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                For extracting and transforming data.
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
         </div>
       </div>
 
@@ -1015,6 +1210,13 @@ export function SessionDataTable({
         />
       )}
 
+      <PdfModelDialog
+        open={pdfModelOpen}
+        onClose={() => setPdfModelOpen(false)}
+        sessionId={session?.id}
+        currentModel={session?.extractionModel}
+        onSelectionChange={setSelectedPdfModelName}
+      />
       <OcrEngineDialog
         open={ocrEngineOpen}
         onClose={() => setOcrEngineOpen(false)}
@@ -1024,6 +1226,54 @@ export function SessionDataTable({
         open={llmOpen}
         onClose={() => setLlmOpen(false)}
         onSelectionChange={setSelectedLlmName}
+      />
+      <Dialog
+        open={!!pendingDeleteDocId}
+        onOpenChange={(open) => !open && setPendingDeleteDocId(null)}
+      >
+        <DialogContent className="sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle>Delete row?</DialogTitle>
+            <DialogDescription>
+              This will permanently delete
+              {pendingDeleteDocId
+                ? ` ${documents.find((doc) => doc.id === pendingDeleteDocId)?.filename ?? "this document"}`
+                : " this document"}
+              . This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setPendingDeleteDocId(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={async () => {
+                if (!pendingDeleteDocId) return;
+                try {
+                  await documentsApi.delete(pendingDeleteDocId);
+                  setPendingDeleteDocId(null);
+                  onRefresh();
+                } catch (err) {
+                  console.error("Delete document failed:", err);
+                }
+              }}
+            >
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <ProcessingLogSheet
+        open={logSheetOpen}
+        documentId={logSheetDocId}
+        onOpenChange={(open) => {
+          setLogSheetOpen(open);
+          if (!open) setLogSheetDocId(null);
+        }}
       />
     </div>
   );
@@ -1178,9 +1428,12 @@ function RowDetailDialog({ doc, session, onClose, onSaved }: RowDetailProps) {
       {pickField && (
         <MiniOcrPicker
           docId={doc.id}
+          fieldKey={pickField}
           fieldLabel={
             columns.find((c) => c.key === pickField)?.label ?? pickField
           }
+          session={session}
+          document={doc}
           onPick={(text) => {
             setValues((v) => ({ ...v, [pickField!]: text }));
             setPickField(null);
@@ -1229,7 +1482,10 @@ function InlineFieldSaver({
   return (
     <MiniOcrPicker
       docId={doc.id}
+      fieldKey={initialColKey}
       fieldLabel={col?.label ?? initialColKey}
+      session={session}
+      document={doc}
       onPick={handlePick}
       onClose={onClose}
     />
@@ -1240,14 +1496,158 @@ function InlineFieldSaver({
 
 interface MiniOcrPickerProps {
   docId: string;
+  fieldKey: string;
   fieldLabel: string;
+  session: SessionRecord;
+  document: DocumentListItem;
   onPick: (text: string) => void;
   onClose: () => void;
 }
 
+const MINI_PICKER_HIGHLIGHT = {
+  color: "#3b82f6",
+  borderColor: "rgba(59, 130, 246, 0.95)",
+  fillColor: "rgba(59, 130, 246, 0.18)",
+};
+
+type MiniFieldOverlayMatch = {
+  key: string;
+  label: string;
+  answer: string;
+  score: number;
+  bbox: [number, number, number, number];
+  blockIndexes: number[];
+  color: string;
+  borderColor: string;
+  fillColor: string;
+};
+
+const MINI_PICKER_FIELD_COLORS = [
+  {
+    color: "#3b82f6",
+    borderColor: "rgba(59, 130, 246, 0.95)",
+    fillColor: "rgba(59, 130, 246, 0.18)",
+  },
+  {
+    color: "#ef4444",
+    borderColor: "rgba(239, 68, 68, 0.95)",
+    fillColor: "rgba(239, 68, 68, 0.18)",
+  },
+  {
+    color: "#10b981",
+    borderColor: "rgba(16, 185, 129, 0.95)",
+    fillColor: "rgba(16, 185, 129, 0.18)",
+  },
+  {
+    color: "#f59e0b",
+    borderColor: "rgba(245, 158, 11, 0.95)",
+    fillColor: "rgba(245, 158, 11, 0.18)",
+  },
+  {
+    color: "#8b5cf6",
+    borderColor: "rgba(139, 92, 246, 0.95)",
+    fillColor: "rgba(139, 92, 246, 0.18)",
+  },
+  {
+    color: "#ec4899",
+    borderColor: "rgba(236, 72, 153, 0.95)",
+    fillColor: "rgba(236, 72, 153, 0.18)",
+  },
+];
+
+function normalizeMiniPickerText(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function normalizeMiniPickerLooseText(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function mergeMiniPickerBboxes(
+  blocks: Array<TextBlock & { matchIndex: number }>,
+): [number, number, number, number] | null {
+  const boxes = blocks.map((block) => block.bbox).filter(Boolean) as Array<
+    [number, number, number, number]
+  >;
+  if (boxes.length === 0) return null;
+  return [
+    Math.min(...boxes.map((box) => box[0])),
+    Math.min(...boxes.map((box) => box[1])),
+    Math.max(...boxes.map((box) => box[2])),
+    Math.max(...boxes.map((box) => box[3])),
+  ];
+}
+
+function findMiniPickerFieldMatch(
+  blocks: TextBlock[],
+  answer: string,
+): { bbox: [number, number, number, number]; blockIndexes: number[] } | null {
+  const trimmed = answer.trim();
+  if (!trimmed) return null;
+
+  const target = normalizeMiniPickerText(trimmed);
+  const targetLoose = normalizeMiniPickerLooseText(trimmed);
+  if (!targetLoose) return null;
+
+  let bestMatch: {
+    bbox: [number, number, number, number];
+    blockIndexes: number[];
+    score: number;
+  } | null = null;
+
+  for (let start = 0; start < blocks.length; start += 1) {
+    const startBlock = blocks[start];
+    if (!startBlock?.bbox) continue;
+
+    const candidateBlocks: Array<TextBlock & { matchIndex: number }> = [];
+    for (let end = start; end < Math.min(blocks.length, start + 6); end += 1) {
+      const block = blocks[end];
+      if (block.page !== startBlock.page) break;
+      candidateBlocks.push({ ...block, matchIndex: end });
+
+      const mergedBox = mergeMiniPickerBboxes(candidateBlocks);
+      if (!mergedBox) continue;
+
+      const combinedText = candidateBlocks.map((item) => item.text).join(" ");
+      const normalized = normalizeMiniPickerText(combinedText);
+      const normalizedLoose = normalizeMiniPickerLooseText(combinedText);
+
+      let score = -1;
+      if (normalizedLoose === targetLoose || normalized === target) {
+        score = 1000 - candidateBlocks.length;
+      } else if (
+        normalizedLoose.includes(targetLoose) ||
+        normalized.includes(target)
+      ) {
+        score = 850 - candidateBlocks.length;
+      } else if (
+        targetLoose.includes(normalizedLoose) &&
+        normalizedLoose.length >= Math.min(10, targetLoose.length)
+      ) {
+        score = 700 - candidateBlocks.length;
+      }
+
+      if (score > (bestMatch?.score ?? -1)) {
+        bestMatch = {
+          bbox: mergedBox,
+          blockIndexes: candidateBlocks.map((item) => item.matchIndex),
+          score,
+        };
+      }
+    }
+  }
+
+  return bestMatch
+    ? { bbox: bestMatch.bbox, blockIndexes: bestMatch.blockIndexes }
+    : null;
+}
+
 function MiniOcrPicker({
   docId,
+  fieldKey,
   fieldLabel,
+  session,
+  document,
   onPick,
   onClose,
 }: MiniOcrPickerProps) {
@@ -1255,10 +1655,16 @@ function MiniOcrPicker({
   const [loading, setLoading] = useState(true);
   const [zoom, setZoom] = useState(1);
   const [rotation, setRotation] = useState(0);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
   const [showOverlays, setShowOverlays] = useState(true);
   const [activeTab, setActiveTab] = useState<"formatted" | "raw">("formatted");
   const [selection, setSelection] = useState("");
   const [highlightedBlock, setHighlightedBlock] = useState<number | null>(null);
+  const [activeFieldKey, setActiveFieldKey] = useState<string | null>(fieldKey);
+  const viewerRef = useRef<HTMLDivElement>(null);
+  const imageElRef = useRef<HTMLImageElement>(null);
+  const panStartRef = useRef<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -1269,8 +1675,22 @@ function MiniOcrPicker({
       .finally(() => setLoading(false));
   }, [docId]);
 
+  useEffect(() => {
+    setZoom(1);
+    setRotation(0);
+    setPan({ x: 0, y: 0 });
+    setSelection("");
+    setHighlightedBlock(null);
+    setActiveFieldKey(fieldKey);
+  }, [docId]);
+
   const ocr = fullDoc?.ocrResult ?? null;
+  const extractedRow = document.extractedRow ?? null;
   const imageUrl = `http://localhost:3847/api/documents/${docId}/image`;
+  const isPdfDoc =
+    fullDoc?.extractionType === ExtractionType.PDF_TEXT ||
+    fullDoc?.extractionType === ExtractionType.PDF_IMAGE ||
+    (fullDoc?.filename ?? "").toLowerCase().endsWith(".pdf");
 
   const handleTextSelection = useCallback(() => {
     const sel = window.getSelection()?.toString().trim() ?? "";
@@ -1283,8 +1703,126 @@ function MiniOcrPicker({
   const handleBlockClick = (block: TextBlock, idx: number) => {
     setHighlightedBlock(idx);
     setSelection(block.text.trim());
+    setActiveFieldKey(fieldKey);
     window.getSelection()?.removeAllRanges();
   };
+
+  const fieldMatches = useMemo<MiniFieldOverlayMatch[]>(() => {
+    if (!ocr?.textBlocks || !session.columns?.length || !extractedRow) {
+      return [];
+    }
+
+    return session.columns
+      .map((column, index) => {
+        const extracted = extractedRow[column.key];
+        const answer = extracted?.answer?.trim();
+        if (!answer) return null;
+
+        const match = findMiniPickerFieldMatch(ocr.textBlocks, answer);
+        if (!match) return null;
+
+        const palette =
+          MINI_PICKER_FIELD_COLORS[index % MINI_PICKER_FIELD_COLORS.length];
+        return {
+          key: column.key,
+          label: column.label,
+          answer,
+          score: extracted.score,
+          bbox: match.bbox,
+          blockIndexes: match.blockIndexes,
+          color: palette.color,
+          borderColor: palette.borderColor,
+          fillColor: palette.fillColor,
+        };
+      })
+      .filter((match): match is MiniFieldOverlayMatch => match !== null);
+  }, [extractedRow, ocr?.textBlocks, session.columns]);
+
+  const blockFieldLookup = useMemo(() => {
+    const lookup = new Map<number, MiniFieldOverlayMatch>();
+    fieldMatches.forEach((match) => {
+      match.blockIndexes.forEach((blockIndex) => {
+        if (!lookup.has(blockIndex)) {
+          lookup.set(blockIndex, match);
+        }
+      });
+    });
+    return lookup;
+  }, [fieldMatches]);
+
+  const activeFieldMatch =
+    fieldMatches.find((match) => match.key === activeFieldKey) ?? null;
+
+  const activeHighlight = activeFieldMatch
+    ? {
+        color: activeFieldMatch.color,
+        borderColor: activeFieldMatch.borderColor,
+        fillColor: activeFieldMatch.fillColor,
+      }
+    : MINI_PICKER_HIGHLIGHT;
+
+  const fitToView = useCallback(() => {
+    const viewer = viewerRef.current;
+    const image = imageElRef.current;
+    if (!viewer || !image) {
+      setZoom(1);
+      setRotation(0);
+      setPan({ x: 0, y: 0 });
+      return;
+    }
+
+    const viewerPadding = 32;
+    const availableWidth = Math.max(viewer.clientWidth - viewerPadding, 1);
+    const availableHeight = Math.max(viewer.clientHeight - viewerPadding, 1);
+    const naturalWidth = Math.max(image.naturalWidth, 1);
+    const naturalHeight = Math.max(image.naturalHeight, 1);
+    const fitZoom = Math.min(
+      availableWidth / naturalWidth,
+      availableHeight / naturalHeight,
+      5,
+    );
+
+    setZoom(Math.max(fitZoom, 0.1));
+    setRotation(0);
+    setPan({ x: 0, y: 0 });
+  }, []);
+
+  const onImageLoad = useCallback(() => {
+    fitToView();
+  }, [fitToView]);
+
+  const startPanning = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.button !== 2 || isPdfDoc) return;
+    e.preventDefault();
+    setIsPanning(true);
+    panStartRef.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
+  };
+
+  const onPanMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isPanning || !panStartRef.current || isPdfDoc) return;
+    e.preventDefault();
+    setPan({
+      x: e.clientX - panStartRef.current.x,
+      y: e.clientY - panStartRef.current.y,
+    });
+  };
+
+  const stopPanning = () => {
+    setIsPanning(false);
+    panStartRef.current = null;
+  };
+
+  const onViewerWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    if (isPdfDoc) return;
+    e.preventDefault();
+    const delta = e.deltaY < 0 ? 0.1 : -0.1;
+    setZoom((z) => Math.max(0.1, Math.min(5, z + delta)));
+  };
+
+  const selectedBlock =
+    highlightedBlock !== null
+      ? (ocr?.textBlocks?.[highlightedBlock] ?? null)
+      : null;
 
   return (
     <Dialog open onOpenChange={(v) => !v && onClose()}>
@@ -1339,8 +1877,7 @@ function MiniOcrPicker({
                   size="icon"
                   className="h-7 w-7"
                   onClick={() => {
-                    setZoom(1);
-                    setRotation(0);
+                    fitToView();
                   }}
                 >
                   <Maximize2 className="h-3.5 w-3.5" />
@@ -1359,64 +1896,173 @@ function MiniOcrPicker({
                   {Math.round(zoom * 100)}%
                 </span>
               </div>
-              <div className="flex-1 overflow-auto bg-muted/20 flex items-start justify-center p-4">
+              <div
+                ref={viewerRef}
+                className={cn(
+                  "relative flex-1 overflow-hidden bg-muted/20",
+                  isPanning
+                    ? "cursor-grabbing"
+                    : isPdfDoc
+                      ? "cursor-default"
+                      : "cursor-default",
+                )}
+                onMouseDown={startPanning}
+                onMouseMove={onPanMove}
+                onMouseUp={stopPanning}
+                onMouseLeave={stopPanning}
+                onContextMenu={(e) => {
+                  if (isPanning) e.preventDefault();
+                }}
+                onWheel={onViewerWheel}
+              >
                 {fullDoc ? (
-                  <div className="relative inline-block">
-                    <img
-                      src={imageUrl}
-                      alt={fullDoc.filename}
-                      className="max-w-none block"
-                      style={{
-                        transform: `scale(${zoom}) rotate(${rotation}deg)`,
-                        transformOrigin: "top center",
-                        transition: "transform 0.2s ease",
-                      }}
-                      draggable={false}
-                    />
-                    {showOverlays && ocr?.textBlocks && (
+                  isPdfDoc ? (
+                    <div className="w-full h-full min-h-[420px] rounded border bg-background overflow-hidden m-4">
+                      <iframe
+                        src={`${imageUrl}#toolbar=1&navpanes=0&view=FitH`}
+                        className="w-full h-full border-0"
+                        title={fullDoc.filename || "PDF preview"}
+                      />
+                    </div>
+                  ) : (
+                    <div className="absolute inset-0 overflow-hidden select-none">
                       <div
-                        className="absolute inset-0"
+                        className="absolute left-1/2 top-1/2"
                         style={{
-                          transform: `scale(${zoom}) rotate(${rotation}deg)`,
-                          transformOrigin: "top center",
+                          transform: `translate(${pan.x}px, ${pan.y}px)`,
+                          transition: isPanning
+                            ? "none"
+                            : "transform 0.15s ease-out",
                         }}
                       >
-                        {ocr.textBlocks.map((block, i) => {
-                          const isHighlighted = highlightedBlock === i;
-                          const conf = block.confidence ?? 100;
-                          return (
-                            <div
-                              key={i}
-                              className={cn(
-                                "absolute border cursor-pointer transition-all",
-                                isHighlighted
-                                  ? "border-primary bg-primary/20 ring-1 ring-primary"
-                                  : conf >= 90
-                                    ? "border-green-500/50 bg-green-500/5 hover:bg-green-500/15"
-                                    : conf >= 70
-                                      ? "border-amber-500/50 bg-amber-500/5 hover:bg-amber-500/15"
-                                      : "border-red-500/50 bg-red-500/5 hover:bg-red-500/15",
+                        <div
+                          className="relative"
+                          style={{
+                            transform: `translate(-50%, -50%) scale(${zoom}) rotate(${rotation}deg)`,
+                            transformOrigin: "center center",
+                            transition: isPanning
+                              ? "none"
+                              : "transform 0.2s ease",
+                          }}
+                        >
+                          <img
+                            ref={imageElRef}
+                            src={imageUrl}
+                            alt={fullDoc.filename}
+                            className="max-w-none block"
+                            onLoad={onImageLoad}
+                            draggable={false}
+                          />
+                          {showOverlays && ocr?.textBlocks && (
+                            <div className="absolute inset-0">
+                              {ocr.textBlocks.map((block, i) => {
+                                const isHighlighted = highlightedBlock === i;
+                                const conf = block.confidence ?? 100;
+                                return (
+                                  <div
+                                    key={i}
+                                    className={cn(
+                                      "absolute border cursor-pointer transition-all",
+                                      isHighlighted ? "ring-1" : undefined,
+                                    )}
+                                    style={{
+                                      left: block.bbox?.[0] ?? 0,
+                                      top: block.bbox?.[1] ?? 0,
+                                      width:
+                                        (block.bbox?.[2] ?? 0) -
+                                        (block.bbox?.[0] ?? 0),
+                                      height:
+                                        (block.bbox?.[3] ?? 0) -
+                                        (block.bbox?.[1] ?? 0),
+                                      borderColor: isHighlighted
+                                        ? activeHighlight.borderColor
+                                        : blockFieldLookup.has(i)
+                                          ? blockFieldLookup.get(i)?.borderColor
+                                          : conf >= 90
+                                            ? "rgba(34, 197, 94, 0.35)"
+                                            : conf >= 70
+                                              ? "rgba(234, 179, 8, 0.35)"
+                                              : "rgba(239, 68, 68, 0.35)",
+                                      backgroundColor: isHighlighted
+                                        ? activeHighlight.fillColor
+                                        : blockFieldLookup.has(i)
+                                          ? blockFieldLookup.get(i)?.fillColor
+                                          : conf >= 90
+                                            ? "rgba(34, 197, 94, 0.03)"
+                                            : conf >= 70
+                                              ? "rgba(234, 179, 8, 0.03)"
+                                              : "rgba(239, 68, 68, 0.03)",
+                                      boxShadow: isHighlighted
+                                        ? `0 0 0 2px ${activeHighlight.fillColor}, 0 0 18px ${activeHighlight.fillColor}`
+                                        : undefined,
+                                    }}
+                                    onClick={() => handleBlockClick(block, i)}
+                                    title={block.text}
+                                  />
+                                );
+                              })}
+                              {fieldMatches.map((match) => {
+                                const isActive = match.key === activeFieldKey;
+                                return (
+                                  <div
+                                    key={match.key}
+                                    className="absolute rounded-md border-2 pointer-events-none"
+                                    style={{
+                                      left: match.bbox[0],
+                                      top: match.bbox[1],
+                                      width: match.bbox[2] - match.bbox[0],
+                                      height: match.bbox[3] - match.bbox[1],
+                                      borderColor: match.borderColor,
+                                      backgroundColor: match.fillColor,
+                                      boxShadow: isActive
+                                        ? `0 0 0 2px ${match.fillColor}, 0 0 18px ${match.fillColor}`
+                                        : undefined,
+                                    }}
+                                  >
+                                    <div
+                                      className="absolute -top-6 left-0 rounded-md px-2 py-0.5 text-[10px] font-medium text-white shadow-sm"
+                                      style={{ backgroundColor: match.color }}
+                                    >
+                                      {match.label}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                              {selectedBlock?.bbox && (
+                                <div
+                                  className="absolute rounded-md border-2 pointer-events-none"
+                                  style={{
+                                    left: selectedBlock.bbox[0],
+                                    top: selectedBlock.bbox[1],
+                                    width:
+                                      selectedBlock.bbox[2] -
+                                      selectedBlock.bbox[0],
+                                    height:
+                                      selectedBlock.bbox[3] -
+                                      selectedBlock.bbox[1],
+                                    borderColor: activeHighlight.borderColor,
+                                    backgroundColor: activeHighlight.fillColor,
+                                    boxShadow: `0 0 0 2px ${activeHighlight.fillColor}, 0 0 18px ${activeHighlight.fillColor}`,
+                                  }}
+                                >
+                                  <div
+                                    className="absolute -top-6 left-0 rounded-md px-2 py-0.5 text-[10px] font-medium text-white shadow-sm"
+                                    style={{
+                                      backgroundColor: activeHighlight.color,
+                                    }}
+                                  >
+                                    {fieldLabel}
+                                  </div>
+                                </div>
                               )}
-                              style={{
-                                left: block.bbox?.[0] ?? 0,
-                                top: block.bbox?.[1] ?? 0,
-                                width:
-                                  (block.bbox?.[2] ?? 0) -
-                                  (block.bbox?.[0] ?? 0),
-                                height:
-                                  (block.bbox?.[3] ?? 0) -
-                                  (block.bbox?.[1] ?? 0),
-                              }}
-                              onClick={() => handleBlockClick(block, i)}
-                              title={block.text}
-                            />
-                          );
-                        })}
+                            </div>
+                          )}
+                        </div>
                       </div>
-                    )}
-                  </div>
+                    </div>
+                  )
                 ) : (
-                  <p className="text-muted-foreground text-sm">
+                  <p className="flex h-full items-center justify-center text-muted-foreground text-sm">
                     No image available.
                   </p>
                 )}
@@ -1450,13 +2096,28 @@ function MiniOcrPicker({
                           key={i}
                           className={cn(
                             "leading-relaxed rounded px-0.5 transition-colors",
-                            highlightedBlock === i && "bg-primary/15",
+                            highlightedBlock === i && "font-medium",
+                            blockFieldLookup.has(i) && "font-medium",
                             block.confidence < 70 &&
                               "text-red-400 underline decoration-dotted",
                             block.confidence >= 70 &&
                               block.confidence < 90 &&
                               "text-amber-400",
                           )}
+                          style={
+                            highlightedBlock === i
+                              ? {
+                                  backgroundColor: activeHighlight.fillColor,
+                                  color: activeHighlight.color,
+                                }
+                              : blockFieldLookup.has(i)
+                                ? {
+                                    backgroundColor:
+                                      blockFieldLookup.get(i)?.fillColor,
+                                    color: blockFieldLookup.get(i)?.color,
+                                  }
+                                : undefined
+                          }
                         >
                           {block.text}
                         </p>

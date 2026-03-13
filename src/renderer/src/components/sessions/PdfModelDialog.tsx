@@ -10,130 +10,78 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import {
-  Download,
-  Trash2,
-  BrainCircuit,
-  Loader2,
-  RotateCcw,
-} from "lucide-react";
-import {
-  modelsApi,
-  settingsApi,
-  type LlmInstallProgress,
-  type LlmModelStatus,
-  type LlmRecommendation,
-} from "@/api/client";
+import { Download, Trash2, FileSearch, Loader2 } from "lucide-react";
+import { modelsApi, sessionsApi, type ModelStatus } from "@/api/client";
 import { toast } from "@/hooks/use-toast";
-
-// ─── Data ─────────────────────────────────────────────────────────────────────
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
-interface LlmDialogProps {
+interface PdfModelDialogProps {
   open: boolean;
   onClose: () => void;
+  sessionId?: string;
+  currentModel?: string;
   onSelectionChange?: (name: string) => void;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export function LlmDialog({
+export function PdfModelDialog({
   open,
   onClose,
+  sessionId,
+  currentModel,
   onSelectionChange,
-}: LlmDialogProps) {
-  const [models, setModels] = useState<LlmModelStatus[]>([]);
-  const [recommendation, setRecommendation] =
-    useState<LlmRecommendation | null>(null);
+}: PdfModelDialogProps) {
+  const [models, setModels] = useState<ModelStatus[]>([]);
+  const [selectedId, setSelectedId] = useState(currentModel || "pdfplumber");
   const [loading, setLoading] = useState(false);
-  const [selectedId, setSelectedId] = useState("qwen2.5:3b");
-  const [error, setError] = useState<string | null>(null);
-  const [savingSelection, setSavingSelection] = useState(false);
+  const [saving, setSaving] = useState(false);
 
-  const refreshModels = useCallback(async () => {
+  // Sync selectedId when currentModel prop changes
+  useEffect(() => {
+    if (currentModel) setSelectedId(currentModel);
+  }, [currentModel]);
+
+  // Fetch real model list from backend whenever the dialog opens
+  const fetchModels = useCallback(async () => {
     setLoading(true);
-    setError(null);
     try {
-      const [list, rec, settings] = await Promise.all([
-        modelsApi.listLlm(),
-        modelsApi.llmRecommendation(),
-        settingsApi.get(),
-      ]);
+      const list = await modelsApi.list();
       setModels(list);
-      setRecommendation(rec);
-      const savedSelection = settings?.llm?.defaultModel;
-      const recommended = list.find((m) => m.recommended);
-      const recommendedInstalled = list.find(
-        (m) => m.recommended && m.downloaded,
-      );
-      setSelectedId((current) => {
-        if (savedSelection && list.some((m) => m.id === savedSelection)) {
-          return savedSelection;
-        }
-        if (recommendedInstalled) return recommendedInstalled.id;
-        if (recommended) return recommended.id;
-        if (
-          rec?.recommendedId &&
-          list.some((m) => m.id === rec.recommendedId)
-        ) {
-          return rec.recommendedId;
-        }
-        if (current && list.some((m) => m.id === current)) return current;
-        if (list.some((m) => m.id === "phi4-mini" && m.downloaded))
-          return "phi4-mini";
-        return list[0]?.id ?? current;
-      });
-    } catch (err: any) {
-      setError(err?.message ?? "Failed to load local LLM models.");
-      setModels([]);
+    } catch (err) {
+      console.error("Failed to fetch models:", err);
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    if (open) {
-      refreshModels();
-    }
-  }, [open, refreshModels]);
+    if (open) fetchModels();
+  }, [open, fetchModels]);
+
+  useEffect(() => {
+    const selected = models.find((m) => m.id === selectedId);
+    if (selected) onSelectionChange?.(selected.name);
+  }, [selectedId, models, onSelectionChange]);
 
   const [pendingDownloadId, setPendingDownloadId] = useState<string | null>(
     null,
   );
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [downloading, setDownloading] = useState<string | null>(null);
-  const [removing, setRemoving] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
   const cancelledInstallsRef = useRef<Set<string>>(new Set());
-
-  const formatProgressText = useCallback((p: LlmInstallProgress): string => {
-    const progressPart =
-      p.downloadedMb !== null && p.totalMb !== null
-        ? `${p.downloadedMb.toFixed(1)} MB / ${p.totalMb.toFixed(1)} MB`
-        : p.percent !== null
-          ? `${p.percent}%`
-          : "Preparing...";
-    const speedPart =
-      p.speedMbps !== null ? `, ${p.speedMbps.toFixed(2)} MB/s` : "";
-    const remainingMb =
-      p.downloadedMb !== null && p.totalMb !== null
-        ? Math.max(p.totalMb - p.downloadedMb, 0)
-        : null;
-    const remainingPart =
-      remainingMb !== null ? `, ${remainingMb.toFixed(1)} MB left` : "";
-    const etaPart = p.eta ? `, ETA ${p.eta}` : "";
-    return `${progressPart}${speedPart}${remainingPart}${etaPart}`;
-  }, []);
 
   const cancelActiveDownload = async (modelId: string) => {
     cancelledInstallsRef.current.add(modelId);
     try {
-      await modelsApi.cancelInstallLlm(modelId);
+      await modelsApi.cancelInstall(modelId);
     } catch {
-      // ignore: install call may already be exiting
+      // ignore: install call may already be resolving
     }
     toast({
-      title: "Cancelling LLM Download",
+      title: "Cancelling PDF Model Install",
       description: `${modelId} cancellation requested...`,
       duration: 3000,
     });
@@ -141,43 +89,22 @@ export function LlmDialog({
   };
 
   const startDownload = async (modelId: string, selectAfter = false) => {
-    if (downloading && downloading !== modelId) {
-      toast({
-        title: "Download In Progress",
-        description: `Please wait for ${downloading} to finish or cancel it first.`,
-        duration: 3000,
-      });
-      return;
-    }
     cancelledInstallsRef.current.delete(modelId);
     setDownloading(modelId);
     const notice = toast({
-      title: "Downloading LLM Model",
-      description: `${modelId} download started...`,
+      title: "Installing PDF Model",
+      description: `${modelId} installation started...`,
       duration: 0,
+      actionLabel: "Cancel",
+      onAction: () => {
+        void cancelActiveDownload(modelId);
+      },
     });
-
-    const progressTimer = setInterval(async () => {
-      try {
-        const progress = await modelsApi.installLlmProgress(modelId);
-        notice.update({
-          title: "Downloading LLM Model",
-          description: `${modelId}: ${formatProgressText(progress)}`,
-          duration: 0,
-          actionLabel: undefined,
-          onAction: undefined,
-        });
-      } catch {
-        // Keep existing toast text if polling fails temporarily.
-      }
-    }, 1000);
-
     try {
-      const result = await modelsApi.installLlm(modelId);
-      clearInterval(progressTimer);
+      const result = await modelsApi.install(modelId);
       if (cancelledInstallsRef.current.has(modelId)) {
         notice.update({
-          title: "LLM Download Cancelled",
+          title: "PDF Model Install Cancelled",
           description: `${modelId} was cancelled.`,
           duration: 3000,
           actionLabel: undefined,
@@ -186,9 +113,8 @@ export function LlmDialog({
         return;
       }
       if (!result.ok) {
-        setError(result.log || `Failed to install ${modelId}`);
         notice.update({
-          title: "LLM Download Failed",
+          title: "PDF Model Install Failed",
           description: result.log || `Unable to install ${modelId}.`,
           variant: "destructive",
           duration: 6000,
@@ -197,20 +123,21 @@ export function LlmDialog({
         });
         return;
       }
-      await refreshModels();
+      setModels((prev) =>
+        prev.map((m) => (m.id === modelId ? { ...m, downloaded: true } : m)),
+      );
       if (selectAfter) setSelectedId(modelId);
       notice.update({
-        title: "LLM Download Complete",
-        description: `${modelId} is ready to use.`,
+        title: "PDF Model Ready",
+        description: `${modelId} installed successfully.`,
         duration: 3000,
         actionLabel: undefined,
         onAction: undefined,
       });
-    } catch (err: any) {
-      clearInterval(progressTimer);
+    } catch (err) {
       if (cancelledInstallsRef.current.has(modelId)) {
         notice.update({
-          title: "LLM Download Cancelled",
+          title: "PDF Model Install Cancelled",
           description: `${modelId} was cancelled.`,
           duration: 3000,
           actionLabel: undefined,
@@ -218,26 +145,22 @@ export function LlmDialog({
         });
         return;
       }
-      setError(err?.message ?? `Failed to install ${modelId}`);
+      console.error("Model install failed:", err);
       notice.update({
-        title: "LLM Download Failed",
-        description: err?.message ?? `Unable to install ${modelId}.`,
+        title: "PDF Model Install Failed",
+        description: `Unable to install ${modelId}.`,
         variant: "destructive",
         duration: 6000,
         actionLabel: undefined,
         onAction: undefined,
       });
     } finally {
-      clearInterval(progressTimer);
       cancelledInstallsRef.current.delete(modelId);
       setDownloading((current) => (current === modelId ? null : current));
     }
   };
 
-  const handleSelect = (model: LlmModelStatus) => {
-    if (downloading) {
-      return;
-    }
+  const handleSelect = (model: ModelStatus) => {
     if (!model.downloaded) {
       setPendingDownloadId(model.id);
     } else {
@@ -249,54 +172,24 @@ export function LlmDialog({
     if (!pendingDownloadId) return;
     const id = pendingDownloadId;
     setPendingDownloadId(null);
-    void startDownload(id, true);
+    startDownload(id, true);
   };
 
   const handleDeleteConfirm = async () => {
     if (!pendingDeleteId) return;
     const id = pendingDeleteId;
     setPendingDeleteId(null);
-    setRemoving(id);
+    setDeleting(id);
     try {
-      const result = await modelsApi.uninstallLlm(id);
-      if (!result.ok) {
-        setError(result.log || `Failed to remove ${id}`);
-        return;
-      }
-      await refreshModels();
-      if (selectedId === id) {
-        setSelectedId("qwen2.5:3b");
-      }
-    } catch (err: any) {
-      setError(err?.message ?? `Failed to remove ${id}`);
+      await modelsApi.uninstall(id);
+      setModels((prev) =>
+        prev.map((m) => (m.id === id ? { ...m, downloaded: false } : m)),
+      );
+      if (selectedId === id) setSelectedId("pdfplumber");
+    } catch (err) {
+      console.error("Model uninstall failed:", err);
     } finally {
-      setRemoving(null);
-    }
-  };
-
-  const handleApply = async () => {
-    setSavingSelection(true);
-    setError(null);
-    try {
-      await settingsApi.update({
-        llm: {
-          defaultModel: selectedId,
-        },
-      });
-      const selected = models.find((model) => model.id === selectedId);
-      if (selected) {
-        onSelectionChange?.(selected.name);
-      }
-      toast({
-        title: "LLM Model Updated",
-        description: `${selectedId} will be used for field extraction.`,
-        duration: 3000,
-      });
-      onClose();
-    } catch (err: any) {
-      setError(err?.message ?? "Failed to save the selected LLM model.");
-    } finally {
-      setSavingSelection(false);
+      setDeleting(null);
     }
   };
 
@@ -317,67 +210,31 @@ export function LlmDialog({
         <DialogContent className="sm:max-w-[540px]">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <BrainCircuit className="h-4 w-4" />
-              Local LLM Model
+              <FileSearch className="h-4 w-4" />
+              Document Extraction Model
             </DialogTitle>
             <DialogDescription>
-              Choose a local Ollama model used for field extraction.
+              Choose the model used to extract text and tables from documents
+              (PDF, DOCX, HTML, images, and more).
             </DialogDescription>
           </DialogHeader>
 
-          {recommendation && (
-            <div className="rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-              Recommended:{" "}
-              <span className="font-medium text-foreground">
-                {recommendation.recommendedId}
-              </span>{" "}
-              based on {recommendation.ramGb} GB RAM and{" "}
-              {recommendation.logicalCores} CPU threads.
-            </div>
-          )}
-
-          <p className="text-[11px] text-muted-foreground -mt-1">
-            Lower models are still available below and can be downloaded any
-            time.
-          </p>
-
-          <div className="flex items-center justify-end">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 text-xs"
-              onClick={refreshModels}
-              disabled={loading}
-            >
-              {loading ? (
-                <Loader2 className="h-3 w-3 animate-spin" />
-              ) : (
-                <RotateCcw className="h-3 w-3" />
-              )}
-            </Button>
-          </div>
-
-          {error && <p className="text-xs text-destructive -mt-2">{error}</p>}
-
           <div className="space-y-2 max-h-[400px] overflow-y-auto pr-1">
             {loading && models.length === 0 && (
-              <div className="text-xs text-muted-foreground py-2">
-                Loading local models...
+              <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                Loading models…
               </div>
             )}
             {models.map((model) => {
               const isSelected = selectedId === model.id;
               const isDownloading = downloading === model.id;
-              const hasActiveDownload = !!downloading;
-              const isRemoving = removing === model.id;
+              const isDeleting = deleting === model.id;
               return (
                 <div
                   key={model.id}
                   className={cn(
-                    "flex items-start gap-3 rounded-lg border p-3 transition-colors",
-                    hasActiveDownload && !isDownloading
-                      ? "cursor-not-allowed opacity-80"
-                      : "cursor-pointer",
+                    "flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-colors",
                     isSelected
                       ? "border-primary bg-primary/5"
                       : "border-border hover:bg-muted/50",
@@ -427,7 +284,7 @@ export function LlmDialog({
                           variant="outline"
                           className="text-[10px] px-1.5 py-0 h-4 text-blue-600 border-blue-300"
                         >
-                          Downloading…
+                          Installing…
                         </Badge>
                       )}
                     </div>
@@ -435,7 +292,7 @@ export function LlmDialog({
                       {model.description}
                     </p>
                     <span className="text-[10px] text-muted-foreground mt-1 block">
-                      {`Model size: ${model.size}`}
+                      Model size: {model.size}
                     </span>
                   </div>
 
@@ -449,7 +306,7 @@ export function LlmDialog({
                         variant="ghost"
                         size="icon"
                         className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                        disabled={isSelected || isRemoving}
+                        disabled={isSelected || isDeleting}
                         title={
                           isSelected
                             ? "Cannot delete the active model"
@@ -457,7 +314,7 @@ export function LlmDialog({
                         }
                         onClick={() => setPendingDeleteId(model.id)}
                       >
-                        {isRemoving ? (
+                        {isDeleting ? (
                           <Loader2 className="h-3.5 w-3.5 animate-spin" />
                         ) : (
                           <Trash2 className="h-3.5 w-3.5" />
@@ -468,21 +325,15 @@ export function LlmDialog({
                         variant="outline"
                         size="sm"
                         className="h-7 text-xs gap-1"
-                        disabled={hasActiveDownload && !isDownloading}
-                        onClick={() => {
-                          if (isDownloading) {
-                            void cancelActiveDownload(model.id);
-                            return;
-                          }
-                          void startDownload(model.id);
-                        }}
+                        disabled={isDownloading}
+                        onClick={() => startDownload(model.id)}
                       >
                         {isDownloading ? (
                           <Loader2 className="h-3 w-3 animate-spin" />
                         ) : (
                           <Download className="h-3 w-3" />
                         )}
-                        {isDownloading ? "Cancel" : "Download"}
+                        {isDownloading ? "Installing…" : "Download"}
                       </Button>
                     )}
                   </div>
@@ -495,8 +346,26 @@ export function LlmDialog({
             <Button variant="outline" onClick={onClose}>
               Cancel
             </Button>
-            <Button onClick={handleApply} disabled={savingSelection || loading}>
-              {savingSelection ? "Saving..." : "Apply"}
+            <Button
+              disabled={saving}
+              onClick={async () => {
+                if (sessionId) {
+                  setSaving(true);
+                  try {
+                    await sessionsApi.updateExtractionModel(
+                      sessionId,
+                      selectedId,
+                    );
+                  } catch (err) {
+                    console.error("Failed to save extraction model:", err);
+                  } finally {
+                    setSaving(false);
+                  }
+                }
+                onClose();
+              }}
+            >
+              {saving ? "Saving…" : "Apply"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -512,8 +381,8 @@ export function LlmDialog({
             <DialogTitle>Download model?</DialogTitle>
             <DialogDescription>
               <strong>{pendingDownloadModel?.name}</strong> (
-              {pendingDownloadModel?.size}) needs to be downloaded before it can
-              be used.
+              {pendingDownloadModel?.size}) will be installed via pip. This may
+              take a moment depending on your connection.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -537,9 +406,9 @@ export function LlmDialog({
           <DialogHeader>
             <DialogTitle>Delete model files?</DialogTitle>
             <DialogDescription>
-              This will remove all downloaded files for{" "}
-              <strong>{pendingDeleteModel?.name}</strong> (
-              {pendingDeleteModel?.size}). You can install it again at any time.
+              This will remove the local files for{" "}
+              <strong>{pendingDeleteModel?.name}</strong>. You can re-download
+              them later.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

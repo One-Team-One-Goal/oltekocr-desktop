@@ -1,7 +1,16 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
 import { OcrService } from "../ocr/ocr.service";
+import { ContractExtractionService } from "../contract-extraction/contract-extraction.service";
 import { DocumentsGateway } from "../documents/documents.gateway";
 import { PrismaService } from "../prisma/prisma.service";
+
+interface ProcessingMeta {
+  scanTime: number;
+  llmTime: number;
+  totalTime: number;
+  scanModel: string;
+  llmModel: string | null;
+}
 
 /**
  * Processing queue — FIFO, sequential document processing.
@@ -14,11 +23,34 @@ export class QueueService {
   private paused = false;
   private readonly cancelledDocs = new Set<string>();
 
+  private formatSeconds(value: number): string {
+    return Number(value ?? 0).toFixed(3);
+  }
+
+  private formatConfidenceValue(value: unknown): string {
+    const n = Number(value);
+    return Number.isFinite(n) ? `${n.toFixed(2)}%` : "n/a";
+  }
+
   constructor(
     private readonly ocrService: OcrService,
+    private readonly contractExtractionService: ContractExtractionService,
     private readonly gateway: DocumentsGateway,
     private readonly prisma: PrismaService,
   ) {}
+
+  async onModuleInit(): Promise<void> {
+    // Recover from previous app crashes/restarts so rows are not stuck forever.
+    const recovered = await this.prisma.document.updateMany({
+      where: { status: { in: ["CANCELLING", "SCANNING", "PROCESSING"] } },
+      data: { status: "QUEUED" },
+    });
+    if (recovered.count > 0) {
+      this.logger.log(
+        `Recovered ${recovered.count} document(s) from transient statuses to QUEUED`,
+      );
+    }
+  }
 
   /** Add a document ID to the queue */
   add(documentId: string): void {
@@ -76,22 +108,44 @@ export class QueueService {
     this.queue = this.queue.filter((id) => !documentIds.includes(id));
 
     // Track active cancellation for anything currently running
+    const inFlightIds: string[] = [];
     if (this.processing && documentIds.includes(this.processing)) {
       this.cancelledDocs.add(this.processing);
+      inFlightIds.push(this.processing);
     }
 
-    // Immediately update visible status for active docs so UI does not look stuck
-    await this.prisma.document.updateMany({
-      where: {
-        id: { in: documentIds },
-        status: { in: ["SCANNING", "PROCESSING"] },
-      },
-      data: { status: "CANCELLING" },
-    });
+    const immediateResetIds = documentIds.filter(
+      (id) => !inFlightIds.includes(id),
+    );
+
+    // Active docs go CANCELLING while worker winds down.
+    if (inFlightIds.length > 0) {
+      await this.prisma.document.updateMany({
+        where: {
+          id: { in: inFlightIds },
+          status: { in: ["SCANNING", "PROCESSING"] },
+        },
+        data: { status: "CANCELLING" },
+      });
+    }
+
+    // Non-active docs should not remain in transient state.
+    if (immediateResetIds.length > 0) {
+      await this.prisma.document.updateMany({
+        where: {
+          id: { in: immediateResetIds },
+          status: { in: ["QUEUED", "SCANNING", "PROCESSING", "CANCELLING"] },
+        },
+        data: { status: "QUEUED" },
+      });
+    }
 
     const now = new Date().toISOString();
-    for (const id of documentIds) {
+    for (const id of inFlightIds) {
       this.gateway.sendDocumentStatus(id, "CANCELLING", now);
+    }
+    for (const id of immediateResetIds) {
+      this.gateway.sendDocumentStatus(id, "QUEUED", now);
     }
 
     this.gateway.sendQueueUpdate(this.queue.length, this.processing);
@@ -106,11 +160,29 @@ export class QueueService {
     this.processing = documentId;
     this.gateway.sendQueueUpdate(this.queue.length, this.processing);
 
-    try {
-      this.logger.log(`Processing document: ${documentId}`);
-      this.gateway.sendProcessingProgress(documentId, 0, "Starting OCR...");
+    // Determine session mode to dispatch to the correct processor
+    const docRecord = await this.prisma.document.findUnique({
+      where: { id: documentId },
+      select: { session: { select: { mode: true } } },
+    });
+    const sessionMode = docRecord?.session?.mode ?? "OCR_EXTRACT";
+    const isPdfExtract = sessionMode === "PDF_EXTRACT";
 
-      const result = await this.ocrService.process(documentId);
+    try {
+      this.logger.log(`Processing document: ${documentId} [${sessionMode}]`);
+      this.gateway.sendProcessingProgress(
+        documentId,
+        0,
+        isPdfExtract ? "Extracting contract data..." : "Starting OCR...",
+      );
+      this.gateway.sendProcessingLog(
+        documentId,
+        `Starting processing for ${documentId}...`,
+      );
+
+      const result = isPdfExtract
+        ? await this.contractExtractionService.process(documentId)
+        : await this.ocrService.process(documentId);
 
       this.gateway.sendProcessingProgress(documentId, 100, "Complete");
 
@@ -126,6 +198,10 @@ export class QueueService {
           "QUEUED",
           new Date().toISOString(),
         );
+        this.gateway.sendProcessingLog(
+          documentId,
+          "Processing cancelled — reset to QUEUED",
+        );
         this.logger.log(
           `Document ${documentId} was cancelled — reset to QUEUED`,
         );
@@ -135,8 +211,29 @@ export class QueueService {
           "REVIEW",
           new Date().toISOString(),
         );
+        const meta = ((result as any).processingMeta ??
+          null) as ProcessingMeta | null;
+        const scanTime = Number(
+          meta?.scanTime ?? (result as any).processingTime ?? 0,
+        );
+        const llmTime = Number(meta?.llmTime ?? 0);
+        const totalTime = Number(
+          meta?.totalTime ?? Number((scanTime + llmTime).toFixed(3)),
+        );
+        const scanModel =
+          meta?.scanModel ??
+          (isPdfExtract ? "pdf_contract_extract" : "rapidocr");
+        const llmModel = meta?.llmModel ?? null;
+        const modelsLabel = llmModel
+          ? `models: scan=${scanModel}, llm=${llmModel}`
+          : `models: scan=${scanModel}`;
+
+        this.gateway.sendProcessingLog(
+          documentId,
+          `Completed (conf: ${this.formatConfidenceValue((result as any).avgConfidence)}, time: ${this.formatSeconds(totalTime)}s, scan: ${this.formatSeconds(scanTime)}s, llm: ${this.formatSeconds(llmTime)}s, ${modelsLabel})`,
+        );
         this.logger.log(
-          `Completed: ${documentId} (conf: ${result.avgConfidence}%, time: ${result.processingTime}s)`,
+          `Completed: ${documentId} [${sessionMode}] (total: ${this.formatSeconds(totalTime)}s, scan: ${this.formatSeconds(scanTime)}s, llm: ${this.formatSeconds(llmTime)}s, ${modelsLabel})`,
         );
       }
     } catch (err: any) {
@@ -168,6 +265,10 @@ export class QueueService {
         );
       } else {
         this.logger.error(`Failed to process document: ${documentId}`, err);
+        this.gateway.sendProcessingLog(
+          documentId,
+          `ERROR: ${err?.message ?? String(err)}`,
+        );
         this.gateway.sendDocumentStatus(
           documentId,
           "ERROR",

@@ -1,5 +1,11 @@
 import { Check, Pencil } from "lucide-react";
-import { FileText, Table2, FolderOpen, ChevronRight } from "lucide-react";
+import {
+  FileText,
+  Table2,
+  FileScan,
+  FolderOpen,
+  ChevronRight,
+} from "lucide-react";
 import { useState, useRef, useEffect } from "react";
 import { Input } from "@/components/ui/input";
 import type { SessionListItem, SessionMode } from "@shared/types";
@@ -33,11 +39,25 @@ const modeConfig: Record<
     border: "border-blue-200",
   },
   TABLE_EXTRACT: {
-    label: "Table Extract",
+    label: "Keyword to Column Extract",
     icon: Table2,
     bg: "bg-violet-50",
     text: "text-violet-700",
     border: "border-violet-200",
+  },
+  PDF_EXTRACT: {
+    label: "PDF to Table Extract",
+    icon: FileScan,
+    bg: "bg-emerald-50",
+    text: "text-emerald-700",
+    border: "border-emerald-200",
+  },
+  JSON_EXTRACT: {
+    label: "JSON Extract",
+    icon: FileText,
+    bg: "bg-amber-50",
+    text: "text-amber-700",
+    border: "border-amber-200",
   },
 };
 
