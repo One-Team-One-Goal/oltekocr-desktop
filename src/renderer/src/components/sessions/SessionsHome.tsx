@@ -14,6 +14,23 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   CirclePlus,
   Copy,
   Plus,
@@ -29,10 +46,33 @@ import {
   Scale,
   BadgeCheck,
   HelpCircle,
+  LayoutGrid,
+  LayoutList,
+  Pencil,
+  MoreVertical,
+  Star,
 } from "lucide-react";
 import type { SessionListItem, SessionMode } from "@shared/types";
 import { WindowControls } from "@/components/layout/SidebarContext";
 import { markUnsaved, nextUnnamedName } from "@/lib/unsaved-sessions";
+
+// Load all file-type icons via glob (handles special chars in filenames)
+const _svgModules = import.meta.glob("../../assets/icons/*.svg", {
+  eager: true,
+  import: "default",
+}) as Record<string, string>;
+
+// Map lowercase extension -> resolved URL
+const FILE_ICON_MAP: Record<string, string> = {};
+for (const [path, url] of Object.entries(_svgModules)) {
+  const m = path.match(/File Type=([A-Z]+)\.svg$/i);
+  if (m) FILE_ICON_MAP[m[1].toLowerCase()] = url;
+}
+
+function getFileIcon(name: string): string {
+  const ext = name.split(".").pop()?.toLowerCase() ?? "pdf";
+  return FILE_ICON_MAP[ext] ?? FILE_ICON_MAP["pdf"] ?? "";
+}
 
 const drag = { WebkitAppRegion: "drag" } as React.CSSProperties;
 const noDrag = { WebkitAppRegion: "no-drag" } as React.CSSProperties;
@@ -148,6 +188,11 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [creating, setCreating] = useState<string | null>(null);
+  const [pdfViewMode, setPdfViewMode] = useState<"list" | "cards">("list");
+  const [pdfRenamingId, setPdfRenamingId] = useState<string | null>(null);
+  const [pdfRenameValue, setPdfRenameValue] = useState("");
+  const [starredIds, setStarredIds] = useState<Set<string>>(new Set());
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
   const toggleActionMode = (nextMode: "delete" | "duplicate") => {
     setActionMode((prev) => (prev === nextMode ? "none" : nextMode));
@@ -165,12 +210,6 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
 
   const handleDeleteSelected = async () => {
     const ids = [...selectedIds];
-    if (
-      !confirm(
-        `Delete ${ids.length} session${ids.length > 1 ? "s" : ""} and all their documents?`,
-      )
-    )
-      return;
     setSessions((prev) => prev.filter((s) => !selectedIds.has(s.id)));
     setSelectedIds(new Set());
     setActionMode("none");
@@ -245,9 +284,22 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
   };
 
   const handleDeleteSession = async (id: string) => {
-    if (!confirm("Delete this session and all its documents?")) return;
     setSessions((prev) => prev.filter((s) => s.id !== id));
+    setStarredIds((prev) => {
+      const n = new Set(prev);
+      n.delete(id);
+      return n;
+    });
     await sessionsApi.remove(id);
+  };
+
+  const toggleStar = (id: string) => {
+    setStarredIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   };
 
   const filteredSessions = useMemo(() => {
@@ -259,8 +311,13 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
     if (statusFilter !== "all") {
       result = result.filter((s) => s.status === statusFilter);
     }
-    return result;
-  }, [sessions, searchQuery, statusFilter]);
+    // Starred sessions float to the top
+    return [...result].sort((a, b) => {
+      const aS = starredIds.has(a.id) ? 0 : 1;
+      const bS = starredIds.has(b.id) ? 0 : 1;
+      return aS - bS;
+    });
+  }, [sessions, searchQuery, statusFilter, starredIds]);
 
   const handleSessionCreated = async (sessionId: string, docIds: string[]) => {
     setDialogOpen(false);
@@ -292,138 +349,320 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
   // ── PDF_EXTRACT: Excel-style home layout ─────────────────────────────────
   if (mode === "PDF_EXTRACT") {
     return (
-      <div className="flex flex-col h-full bg-background">
-        {/* Header */}
-        <header
-          className="flex items-stretch h-14 pl-6 border-b shrink-0 pt-0.5"
-          style={drag}
-        >
-          <div className="flex items-center gap-2 flex-1" style={noDrag}>
-            <h1 className="text-lg font-semibold">{MODE_TITLES[mode]}</h1>
-          </div>
-          <WindowControls />
-        </header>
+      <>
+        <div className="flex flex-col h-full bg-background">
+          {/* Header */}
+          <header
+            className="flex items-stretch h-14 pl-6 border-b shrink-0 pt-0.5"
+            style={drag}
+          >
+            <div className="flex items-center gap-2 flex-1" style={noDrag}>
+              <h1 className="text-lg font-semibold">{MODE_TITLES[mode]}</h1>
+            </div>
+            <WindowControls />
+          </header>
 
-        <div className="flex-1 overflow-auto">
-          {/* ── New section ───────────────────────────────────────────── */}
-          <section className="px-8 pt-8">
-            <h2 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-4">
-              New
-            </h2>
-            <div className="flex flex-wrap gap-3">
-              {PDF_NEW_CARDS.map(
-                ({ value, Icon, label, desc, placeholder }) => {
-                  const isCreating = creating === value;
-                  return (
-                    <button
-                      key={value}
-                      onClick={() =>
-                        !creating && !placeholder && handleNewPdfSession(value)
-                      }
-                      disabled={creating !== null || placeholder}
-                      className="flex flex-col w-36 rounded-lg border bg-card hover:border-primary hover:shadow-md transition-all overflow-hidden text-left disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:hover:border-border disabled:hover:shadow-none"
-                    >
-                      <div className="relative flex items-center justify-center h-24 w-full bg-primary/10">
-                        {isCreating ? (
-                          <Loader2 className="h-8 w-8 text-primary animate-spin" />
-                        ) : (
-                          <Icon className="h-10 w-10 text-primary" />
+          <div className="flex-1 overflow-auto">
+            {/* ── New section ───────────────────────────────────────────── */}
+            <section className="px-8 pt-8">
+              <h2 className="text-xs font-semibold uppercase tracking-widest mb-4">
+                New
+              </h2>
+              <div className="flex flex-wrap gap-3">
+                {PDF_NEW_CARDS.map(
+                  ({ value, Icon, label, desc, placeholder }) => {
+                    const isCreating = creating === value;
+                    return (
+                      <button
+                        key={value}
+                        onClick={() =>
+                          !creating &&
+                          !placeholder &&
+                          handleNewPdfSession(value)
+                        }
+                        disabled={creating !== null || placeholder}
+                        className="relative flex flex-col w-28 h-32 border bg-card hover:border-primary transition-colors text-left disabled:opacity-50 focus-visible:outline-none disabled:cursor-not-allowed rounded-xl"
+                        style={{
+                          clipPath:
+                            "polygon(0 0, calc(100% - 24px) 0, 100% 24px, 100% 100%, 0 100%)",
+                        }}
+                      >
+                        {/* Folded corner — auto-clipped to a triangle by parent clip-path */}
+                        <span className="absolute top-0 right-0 w-6 h-6 bg-muted" />
+                        {/* Loading spinner overlay */}
+                        {isCreating && (
+                          <span className="absolute inset-0 flex items-center justify-center bg-card/70">
+                            <Loader2 className="h-5 w-5 text-primary animate-spin" />
+                          </span>
                         )}
                         {placeholder && (
-                          <span className="absolute top-1.5 right-1.5 text-[9px] font-semibold uppercase tracking-wide bg-muted text-muted-foreground px-1.5 py-0.5 rounded-sm">
+                          <span className="absolute top-1.5 left-2.5 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
                             Soon
                           </span>
                         )}
-                      </div>
-                      <div className="px-3 py-2 border-t">
-                        <p className="text-xs font-semibold">{label}</p>
-                        <p className="text-[10px] text-muted-foreground leading-snug mt-0.5">
-                          {desc}
-                        </p>
-                      </div>
-                    </button>
-                  );
-                },
-              )}
-            </div>
-          </section>
-
-          {/* ── Recent section ────────────────────────────────────────── */}
-          {loading ? (
-            <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">
-              Loading sessions…
-            </div>
-          ) : sessions.length > 0 ? (
-            <section className="px-8 pt-8 pb-8">
-              <div className="flex items-center gap-6 mb-3">
-                <h2 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground shrink-0">
-                  Recent
-                </h2>
-                <div className="relative max-w-xs flex-1">
-                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-                  <Input
-                    placeholder="Search sessions…"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="pl-8 h-7 text-xs bg-card"
-                  />
-                </div>
-              </div>
-
-              {/* Column headers */}
-              <div className="grid grid-cols-[1fr_140px_36px] px-4 py-1.5 text-[11px] font-medium text-muted-foreground border-b">
-                <span>Name</span>
-                <span>Date</span>
-                <span />
-              </div>
-
-              <div className="divide-y">
-                {filteredSessions.map((session) => (
-                  <div
-                    key={session.id}
-                    className="group grid grid-cols-[1fr_140px_36px] items-center px-4 py-2.5 hover:bg-muted/50 cursor-pointer"
-                    onClick={() => navigate(`/pdf-sessions/${session.id}`)}
-                  >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <FileText className="h-4 w-4 text-primary shrink-0" />
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium truncate">
-                          {session.name}
-                        </p>
-                        <p className="text-xs text-muted-foreground">
-                          {session.documentCount} document
-                          {session.documentCount !== 1 ? "s" : ""}
-                        </p>
-                      </div>
-                    </div>
-                    <span className="text-xs text-muted-foreground">
-                      {formatRelativeDate(session.createdAt)}
-                    </span>
-                    <div className="flex justify-end opacity-0 group-hover:opacity-100 transition-opacity">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-6 w-6"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDeleteSession(session.id);
-                        }}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-                {filteredSessions.length === 0 && (
-                  <div className="py-8 text-center text-sm text-muted-foreground">
-                    No sessions match your search.
-                  </div>
+                        <div className="flex flex-col justify-end flex-1 px-3 pb-3 pt-6">
+                          <p className="text-xs font-semibold leading-tight">
+                            {label}
+                          </p>
+                          <p className="text-[10px] text-muted-foreground leading-snug mt-1">
+                            {desc}
+                          </p>
+                        </div>
+                      </button>
+                    );
+                  },
                 )}
               </div>
             </section>
-          ) : null}
+
+            {/* ── Recent section ────────────────────────────────────────── */}
+            {loading ? (
+              <div className="flex items-center justify-center h-32 text-muted-foreground text-sm">
+                Loading sessions…
+              </div>
+            ) : sessions.length > 0 ? (
+              <section className="px-8 pt-8 pb-8">
+                <div className="flex items-center gap-6 mb-3 justify-between">
+                  <div className="flex items-center gap-6">
+                    <h2 className="text-xs font-semibold uppercase tracking-widest shrink-0">
+                      Recent
+                    </h2>
+                    <div className="relative max-w-xs flex-1" style={noDrag}>
+                      <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                      <Input
+                        placeholder="Search sessions…"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        className="pl-8 h-7 text-xs bg-card"
+                      />
+                    </div>
+                  </div>
+                  <div
+                    className="flex items-center gap-0.5 shrink-0"
+                    style={noDrag}
+                  >
+                    <Button
+                      variant={pdfViewMode === "list" ? "secondary" : "ghost"}
+                      size="icon"
+                      className="h-7 w-7"
+                      onClick={() => setPdfViewMode("list")}
+                      title="List view"
+                    >
+                      <LayoutList className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      variant={pdfViewMode === "cards" ? "secondary" : "ghost"}
+                      size="icon"
+                      className="h-7 w-7"
+                      onClick={() => setPdfViewMode("cards")}
+                      title="Cards view"
+                    >
+                      <LayoutGrid className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </div>
+
+                {pdfViewMode === "list" ? (
+                  <>
+                    {/* Column headers */}
+                    <div className="grid grid-cols-[1fr_140px_60px] px-4 py-1.5 text-[11px] font-medium text-muted-foreground border-b">
+                      <span>Name</span>
+                      <span>Date</span>
+                      <span className="text-right">Actions</span>
+                    </div>
+
+                    <div className="divide-y">
+                      {filteredSessions.map((session) => {
+                        const isStarred = starredIds.has(session.id);
+                        return (
+                          <div
+                            key={session.id}
+                            className="group grid grid-cols-[1fr_140px_60px] items-center px-4 py-2.5 hover:bg-muted/50 cursor-pointer"
+                            onClick={() => {
+                              if (pdfRenamingId === session.id) return;
+                              navigate(`/pdf-sessions/${session.id}`);
+                            }}
+                          >
+                            <div className="flex items-center gap-3 min-w-0">
+                              <img
+                                src={getFileIcon(session.name)}
+                                className="h-5 w-5 shrink-0 opacity-50"
+                                alt=""
+                              />
+                              <div className="min-w-0">
+                                {pdfRenamingId === session.id ? (
+                                  <Input
+                                    autoFocus
+                                    className="h-7 text-sm font-medium"
+                                    value={pdfRenameValue}
+                                    onChange={(e) =>
+                                      setPdfRenameValue(e.target.value)
+                                    }
+                                    onBlur={() => {
+                                      const trimmed = pdfRenameValue.trim();
+                                      if (trimmed && trimmed !== session.name)
+                                        handleRename(session.id, trimmed);
+                                      setPdfRenamingId(null);
+                                    }}
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter") {
+                                        const trimmed = pdfRenameValue.trim();
+                                        if (trimmed && trimmed !== session.name)
+                                          handleRename(session.id, trimmed);
+                                        setPdfRenamingId(null);
+                                      }
+                                      if (e.key === "Escape")
+                                        setPdfRenamingId(null);
+                                    }}
+                                    onClick={(e) => e.stopPropagation()}
+                                  />
+                                ) : (
+                                  <p className="text-sm font-medium truncate flex items-center gap-1.5">
+                                    {session.name}
+                                    {isStarred && (
+                                      <Star className="h-2.5 w-2.5 fill-amber-400 text-amber-400 shrink-0" />
+                                    )}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+
+                            <span className="text-xs text-muted-foreground">
+                              {formatRelativeDate(session.createdAt)}
+                            </span>
+
+                            {/* Actions: star + ellipsis menu */}
+                            <div
+                              className="flex justify-end items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              {/* Star */}
+                              <button
+                                className={`shrink-0 transition-colors ${
+                                  isStarred
+                                    ? "text-amber-400"
+                                    : "text-muted-foreground hover:text-amber-400"
+                                }`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  toggleStar(session.id);
+                                }}
+                                title={isStarred ? "Unstar" : "Star"}
+                              >
+                                <Star
+                                  className={`h-3.5 w-3.5 ${isStarred ? "fill-amber-400" : ""}`}
+                                />
+                              </button>
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-6 w-6"
+                                    title="More actions"
+                                  >
+                                    <MoreVertical className="h-3.5 w-3.5" />
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent
+                                  align="end"
+                                  className="w-40"
+                                >
+                                  <DropdownMenuItem
+                                    onSelect={() => {
+                                      setPdfRenamingId(session.id);
+                                      setPdfRenameValue(session.name);
+                                    }}
+                                  >
+                                    <Pencil className="h-3.5 w-3.5 mr-2" />
+                                    Rename
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
+                                    onSelect={() => {
+                                      setSelectedIds(new Set([session.id]));
+                                      setDuplicateOpen(true);
+                                    }}
+                                  >
+                                    <Copy className="h-3.5 w-3.5 mr-2" />
+                                    Duplicate
+                                  </DropdownMenuItem>
+                                  <DropdownMenuSeparator />
+                                  <DropdownMenuItem
+                                    className="text-destructive focus:text-destructive"
+                                    onSelect={() =>
+                                      setDeleteConfirmId(session.id)
+                                    }
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5 mr-2" />
+                                    Delete
+                                  </DropdownMenuItem>
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            </div>
+                          </div>
+                        );
+                      })}
+                      {filteredSessions.length === 0 && (
+                        <div className="py-8 text-center text-sm text-muted-foreground">
+                          No sessions match your search.
+                        </div>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 pt-2">
+                      {filteredSessions.map((session) => (
+                        <SessionCard
+                          key={session.id}
+                          session={session}
+                          onOpen={() => navigate(`/pdf-sessions/${session.id}`)}
+                          onRename={handleRename}
+                        />
+                      ))}
+                      {filteredSessions.length === 0 && (
+                        <div className="col-span-full text-center py-12 text-muted-foreground text-sm">
+                          No sessions match your search.
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
+              </section>
+            ) : null}
+          </div>
         </div>
-      </div>
+
+        {/* ── Shadcn delete-confirm dialog for PDF list ─────────── */}
+        <AlertDialog
+          open={deleteConfirmId !== null}
+          onOpenChange={(open) => {
+            if (!open) setDeleteConfirmId(null);
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete session?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This will permanently delete the session and all its documents.
+                This action cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                onClick={() => {
+                  if (deleteConfirmId) handleDeleteSession(deleteConfirmId);
+                  setDeleteConfirmId(null);
+                }}
+              >
+                Delete
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </>
     );
   }
 

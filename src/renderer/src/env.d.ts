@@ -1,3 +1,5 @@
+/// <reference types="vite/client" />
+
 // Make OltekApi (defined in preload/index.d.ts) available to all renderer files.
 // This re-exports the global augmentation so TS picks it up inside src/renderer/src.
 

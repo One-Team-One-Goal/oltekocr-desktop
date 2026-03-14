@@ -1,4 +1,6 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import Lottie from "lottie-react";
+import trdntLoading from "@/assets/trdnt_loading.json";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
@@ -18,6 +20,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { documentsApi } from "@/api/client";
+import { useTheme } from "@/components/ThemeProvider";
 import { statusLabel, statusBadgeColor } from "@/lib/utils";
 import {
   CheckCircle2,
@@ -224,207 +227,246 @@ const DOC_TYPE_RENDERERS: Record<string, DocTypeRenderer> = {
 
 // ─── WebGL loader (empty table state) ──────────────────────────────────────
 
-function TableLoadingWebGL({
-  active,
-  label,
-}: {
-  active: boolean;
-  label: string;
-}) {
+interface Dot {
+  x: number;
+  y: number;
+  baseR: number;
+  baseAngle: number;
+  size: number;
+  hue: number;
+  saturation: number;
+  lightness: number;
+  alphaBase: number;
+  phase: number;
+  distortionFactor: number;
+}
+
+function BreathingDotsCanvas({ isDark }: { isDark: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const mouseRef = useRef({ x: 0, y: 0, targetX: 0, targetY: 0 });
 
   useEffect(() => {
-    if (!active) return;
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    const wrap = wrapRef.current;
+    if (!canvas || !wrap) return;
 
-    const gl = canvas.getContext("webgl", {
-      antialias: true,
-      alpha: true,
-      premultipliedAlpha: false,
-    });
-    if (!gl) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
 
-    const vertexSrc = `
-      attribute vec2 a_position;
-      attribute float a_size;
-      attribute float a_alpha;
-      varying float v_alpha;
-      void main() {
-        gl_Position = vec4(a_position, 0.0, 1.0);
-        gl_PointSize = a_size;
-        v_alpha = a_alpha;
+    let animationFrameId = 0;
+    let dots: Dot[] = [];
+    let time = 0;
+
+    let centerX = 0;
+    let centerY = 0;
+    let width = 0;
+    let height = 0;
+
+    const initDots = () => {
+      dots = [];
+      const numDots = 400;
+      const maxRadius = Math.min(width, height) * 0.45;
+
+      for (let i = 0; i < numDots; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const r = (0.3 + 0.7 * Math.sqrt(Math.random())) * maxRadius;
+        const distFromCenter = maxRadius > 0 ? r / maxRadius : 0;
+
+        const hue = isDark
+          ? 195 + Math.random() * 30
+          : 205 + Math.random() * 18;
+        const saturation = isDark
+          ? 24 + Math.random() * 14
+          : 18 + Math.random() * 12;
+        const lightness = isDark
+          ? 62 + Math.random() * 14
+          : 16 + Math.random() * 10;
+        const alphaBase = isDark
+          ? 0.018 + (1 - distFromCenter) * 0.09
+          : 0.016 + (1 - distFromCenter) * 0.075;
+
+        dots.push({
+          x: centerX + Math.cos(angle) * r,
+          y: centerY + Math.sin(angle) * r,
+          baseR: r,
+          baseAngle: angle,
+          size: 0.45 + Math.random() * 1.7,
+          hue,
+          saturation,
+          lightness,
+          alphaBase,
+          phase: Math.random() * Math.PI * 2,
+          distortionFactor: 0.5 + Math.random() * 1.5,
+        });
       }
-    `;
-
-    const fragSrc = `
-      precision mediump float;
-      varying float v_alpha;
-      void main() {
-        vec2 p = gl_PointCoord - vec2(0.5);
-        float d = length(p);
-        float a = smoothstep(0.5, 0.28, d) * v_alpha;
-        gl_FragColor = vec4(0.62, 0.78, 0.98, a);
-      }
-    `;
-
-    const compile = (type: number, src: string) => {
-      const shader = gl.createShader(type);
-      if (!shader) return null;
-      gl.shaderSource(shader, src);
-      gl.compileShader(shader);
-      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-        gl.deleteShader(shader);
-        return null;
-      }
-      return shader;
-    };
-
-    const vs = compile(gl.VERTEX_SHADER, vertexSrc);
-    const fs = compile(gl.FRAGMENT_SHADER, fragSrc);
-    if (!vs || !fs) return;
-
-    const program = gl.createProgram();
-    if (!program) return;
-    gl.attachShader(program, vs);
-    gl.attachShader(program, fs);
-    gl.linkProgram(program);
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) return;
-
-    gl.useProgram(program);
-
-    const dotCount = 26;
-    const positions = new Float32Array(dotCount * 2);
-    const sizes = new Float32Array(dotCount);
-    const alphas = new Float32Array(dotCount);
-
-    const posBuffer = gl.createBuffer();
-    const sizeBuffer = gl.createBuffer();
-    const alphaBuffer = gl.createBuffer();
-    if (!posBuffer || !sizeBuffer || !alphaBuffer) return;
-
-    const posLoc = gl.getAttribLocation(program, "a_position");
-    const sizeLoc = gl.getAttribLocation(program, "a_size");
-    const alphaLoc = gl.getAttribLocation(program, "a_alpha");
-
-    const state = {
-      w: 1,
-      h: 1,
-      dpr: 1,
-      tx: 0,
-      ty: 0,
-      x: 0,
-      y: 0,
-      raf: 0,
     };
 
     const resize = () => {
-      const rect = canvas.getBoundingClientRect();
-      state.dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 2));
-      state.w = Math.max(1, Math.floor(rect.width));
-      state.h = Math.max(1, Math.floor(rect.height));
-      canvas.width = Math.floor(state.w * state.dpr);
-      canvas.height = Math.floor(state.h * state.dpr);
-      gl.viewport(0, 0, canvas.width, canvas.height);
-      state.tx = state.w * 0.5;
-      state.ty = state.h * 0.5;
-      if (state.x === 0 && state.y === 0) {
-        state.x = state.tx;
-        state.y = state.ty;
+      const rect = wrap.getBoundingClientRect();
+      width = Math.max(1, Math.floor(rect.width));
+      height = Math.max(1, Math.floor(rect.height));
+
+      const dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 2));
+      canvas.width = Math.floor(width * dpr);
+      canvas.height = Math.floor(height * dpr);
+      canvas.style.width = `${width}px`;
+      canvas.style.height = `${height}px`;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      centerX = width * 0.5;
+      centerY = height * 0.5;
+      mouseRef.current.targetX = centerX;
+      mouseRef.current.targetY = centerY;
+      mouseRef.current.x = centerX;
+      mouseRef.current.y = centerY;
+      initDots();
+    };
+
+    const handlePointerMove = (e: PointerEvent) => {
+      const rect = wrap.getBoundingClientRect();
+      mouseRef.current.targetX = e.clientX - rect.left;
+      mouseRef.current.targetY = e.clientY - rect.top;
+    };
+
+    const handlePointerLeave = () => {
+      mouseRef.current.targetX = width * 0.5;
+      mouseRef.current.targetY = height * 0.5;
+    };
+
+    const animate = () => {
+      time += 0.016;
+      ctx.clearRect(0, 0, width, height);
+
+      mouseRef.current.x +=
+        (mouseRef.current.targetX - mouseRef.current.x) * 0.045;
+      mouseRef.current.y +=
+        (mouseRef.current.targetY - mouseRef.current.y) * 0.045;
+      centerX = mouseRef.current.x;
+      centerY = mouseRef.current.y;
+
+      const pulse = Math.sin(time * 1.4);
+      const splatIntensity = pulse > 0 ? Math.pow(pulse, 0.5) : pulse * 0.25;
+
+      dots.forEach((dot) => {
+        const noise =
+          Math.sin(dot.baseAngle * 3 + time * 0.7) * 0.3 +
+          Math.sin(dot.baseAngle * 11 - time * 0.4) * 0.15 +
+          Math.sin(dot.baseAngle * 2 + time * 1.6) * 0.25;
+
+        const distFactor =
+          dot.baseR / Math.max(1, Math.min(width, height) * 0.45);
+        const expansion =
+          1 + splatIntensity * (0.15 + noise * Math.pow(distFactor, 1.8) * 2.5);
+
+        const tx = centerX + Math.cos(dot.baseAngle) * dot.baseR * expansion;
+        const ty = centerY + Math.sin(dot.baseAngle) * dot.baseR * expansion;
+
+        dot.x += (tx - dot.x) * 0.09;
+        dot.y += (ty - dot.y) * 0.09;
+        dot.x += Math.sin(time * 2.8 + dot.phase) * 0.4;
+        dot.y += Math.cos(time * 2.8 + dot.phase) * 0.4;
+
+        ctx.save();
+        ctx.translate(dot.x, dot.y);
+        const rotationOffset = noise * 0.15 * Math.max(0, splatIntensity);
+        ctx.rotate(dot.baseAngle + rotationOffset);
+
+        const currentSize =
+          dot.size * (0.82 + Math.max(0, splatIntensity) * 0.45);
+        const transition = Math.max(0, splatIntensity);
+        const stretch = transition * 0.75 * dot.distortionFactor;
+        const rectW = currentSize * 2 * (1 + stretch);
+        const heightWobble = 1 + noise * 0.12 * transition;
+        const rectH = currentSize * 2 * 0.72 * heightWobble;
+        const cornerRadius = Math.min(rectW, rectH) * 0.5;
+        const alpha =
+          dot.alphaBase *
+          (0.9 + Math.max(0, splatIntensity) * (isDark ? 0.24 : 0.2));
+        const dotColor = `hsla(${dot.hue}, ${dot.saturation}%, ${dot.lightness}%, ${alpha})`;
+
+        ctx.beginPath();
+        ctx.roundRect(-rectW / 2, -rectH / 2, rectW, rectH, cornerRadius);
+
+        if (splatIntensity > 0.35) {
+          ctx.shadowBlur = (isDark ? 8 : 3.5) * splatIntensity;
+          ctx.shadowColor = dotColor;
+        } else {
+          ctx.shadowBlur = 0;
+        }
+
+        ctx.fillStyle = dotColor;
+        ctx.fill();
+        ctx.restore();
+      });
+
+      ctx.lineWidth = 0.4;
+      for (let i = 0; i < dots.length; i += 5) {
+        for (let j = i + 1; j < i + 18 && j < dots.length; j++) {
+          const d1 = dots[i];
+          const d2 = dots[j];
+          const dx = d1.x - d2.x;
+          const dy = d1.y - d2.y;
+          const distSq = dx * dx + dy * dy;
+
+          if (distSq < 4000) {
+            const alpha =
+              (1 - Math.sqrt(distSq) / 63) * (isDark ? 0.022 : 0.018);
+            const strokeRgb = isDark ? "188, 224, 245" : "24, 42, 63";
+            ctx.strokeStyle = `rgba(${strokeRgb}, ${alpha})`;
+            ctx.beginPath();
+            ctx.moveTo(d1.x, d1.y);
+            ctx.lineTo(d2.x, d2.y);
+            ctx.stroke();
+          }
+        }
       }
+
+      animationFrameId = requestAnimationFrame(animate);
     };
 
-    const onMove = (e: PointerEvent) => {
-      const rect = canvas.getBoundingClientRect();
-      state.tx = e.clientX - rect.left;
-      state.ty = e.clientY - rect.top;
-    };
-
-    const onLeave = () => {
-      state.tx = state.w * 0.5;
-      state.ty = state.h * 0.5;
-    };
-
-    const toClipX = (px: number) => (px / state.w) * 2 - 1;
-    const toClipY = (py: number) => 1 - (py / state.h) * 2;
-
-    const draw = (timeMs: number) => {
-      state.x += (state.tx - state.x) * 0.09;
-      state.y += (state.ty - state.y) * 0.09;
-
-      const t = timeMs * 0.001;
-      const baseR = Math.min(
-        Math.max(Math.min(state.w, state.h) * 0.12, 44),
-        92,
-      );
-      const breathe = Math.sin(t * 2.0) * 11;
-      const spin = t * 0.45;
-
-      for (let i = 0; i < dotCount; i++) {
-        const p = i / dotCount;
-        const a = p * Math.PI * 2 + spin;
-        const ripple = Math.sin(t * 3.2 + p * Math.PI * 4) * 3.2;
-        const r = baseR + breathe + ripple;
-        const px = state.x + Math.cos(a) * r;
-        const py = state.y + Math.sin(a) * r;
-        positions[i * 2] = toClipX(px);
-        positions[i * 2 + 1] = toClipY(py);
-        sizes[i] = (4.0 + (1 + Math.sin(t * 3.0 + p * 6.0)) * 2.8) * state.dpr;
-        alphas[i] = 0.3 + (1 + Math.sin(t * 4.0 + p * 8.0)) * 0.25;
-      }
-
-      gl.clearColor(0, 0, 0, 0);
-      gl.clear(gl.COLOR_BUFFER_BIT);
-      gl.enable(gl.BLEND);
-      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-
-      gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, positions, gl.DYNAMIC_DRAW);
-      gl.enableVertexAttribArray(posLoc);
-      gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
-
-      gl.bindBuffer(gl.ARRAY_BUFFER, sizeBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, sizes, gl.DYNAMIC_DRAW);
-      gl.enableVertexAttribArray(sizeLoc);
-      gl.vertexAttribPointer(sizeLoc, 1, gl.FLOAT, false, 0, 0);
-
-      gl.bindBuffer(gl.ARRAY_BUFFER, alphaBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, alphas, gl.DYNAMIC_DRAW);
-      gl.enableVertexAttribArray(alphaLoc);
-      gl.vertexAttribPointer(alphaLoc, 1, gl.FLOAT, false, 0, 0);
-
-      gl.drawArrays(gl.POINTS, 0, dotCount);
-      state.raf = requestAnimationFrame(draw);
-    };
-
+    const resizeObserver = new ResizeObserver(() => resize());
+    resizeObserver.observe(wrap);
+    wrap.addEventListener("pointermove", handlePointerMove);
+    wrap.addEventListener("pointerleave", handlePointerLeave);
     resize();
-    canvas.addEventListener("pointermove", onMove);
-    canvas.addEventListener("pointerleave", onLeave);
-    window.addEventListener("resize", resize);
-    state.raf = requestAnimationFrame(draw);
+    animate();
 
     return () => {
-      cancelAnimationFrame(state.raf);
-      window.removeEventListener("resize", resize);
-      canvas.removeEventListener("pointermove", onMove);
-      canvas.removeEventListener("pointerleave", onLeave);
-      gl.deleteBuffer(posBuffer);
-      gl.deleteBuffer(sizeBuffer);
-      gl.deleteBuffer(alphaBuffer);
-      gl.deleteProgram(program);
-      gl.deleteShader(vs);
-      gl.deleteShader(fs);
+      resizeObserver.disconnect();
+      wrap.removeEventListener("pointermove", handlePointerMove);
+      wrap.removeEventListener("pointerleave", handlePointerLeave);
+      cancelAnimationFrame(animationFrameId);
     };
-  }, [active]);
+  }, [isDark]);
 
   return (
-    <div className="relative h-full w-full bg-background">
-      <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
-      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-        <div className="rounded-md border border-border/50 bg-background/70 px-3 py-1.5 text-xs text-muted-foreground backdrop-blur-sm">
-          {label}
-        </div>
-      </div>
+    <div ref={wrapRef} className="absolute inset-0 overflow-hidden">
+      <canvas
+        ref={canvasRef}
+        className="h-full w-full"
+        style={{ filter: "blur(0.1px)" }}
+      />
+    </div>
+  );
+}
+
+function TableLoadingLottie() {
+  const { theme } = useTheme();
+  const isDark = theme.type === "dark";
+
+  return (
+    <div className="relative flex h-full w-full items-center justify-center overflow-hidden bg-background">
+      <BreathingDotsCanvas isDark={isDark} />
+      <Lottie
+        animationData={trdntLoading}
+        loop
+        autoplay
+        className="pointer-events-none relative z-10 h-5/6 w-5/6"
+        style={{
+          filter: isDark ? "invert(1) brightness(1.05)" : "none",
+        }}
+      />
     </div>
   );
 }
@@ -1312,19 +1354,7 @@ export function ExtractionView({
                     }}
                   />
                 ) : (
-                  <TableLoadingWebGL
-                    active={
-                      doc?.status === "QUEUED" ||
-                      doc?.status === "SCANNING" ||
-                      doc?.status === "PROCESSING" ||
-                      doc?.status === "CANCELLING"
-                    }
-                    label={
-                      doc?.status === "ERROR"
-                        ? "Extraction failed"
-                        : "Processing tables..."
-                    }
-                  />
+                  <TableLoadingLottie />
                 )}
               </div>
             </div>
