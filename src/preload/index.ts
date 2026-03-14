@@ -15,6 +15,10 @@ const api = {
   saveFileDialog: (options: Record<string, unknown>) =>
     ipcRenderer.invoke(IpcChannel.SAVE_FILE_DIALOG, options),
 
+  /** Copy a file on disk (used for Save As exports) */
+  copyFile: (fromPath: string, toPath: string) =>
+    ipcRenderer.invoke(IpcChannel.COPY_FILE, fromPath, toPath),
+
   /** Get the user data path */
   getAppPath: () => ipcRenderer.invoke(IpcChannel.GET_APP_PATH),
 

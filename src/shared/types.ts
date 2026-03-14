@@ -289,6 +289,7 @@ export const IpcChannel = {
   OPEN_FILE_DIALOG: "dialog:open-file",
   OPEN_FOLDER_DIALOG: "dialog:open-folder",
   SAVE_FILE_DIALOG: "dialog:save-file",
+  COPY_FILE: "fs:copy-file",
   GET_APP_PATH: "app:get-path",
   SHOW_ITEM_IN_FOLDER: "shell:show-item",
   WINDOW_CLOSE: "window:close",

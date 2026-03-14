@@ -240,7 +240,16 @@ export function SessionDetail() {
   const handleExport = async () => {
     const ids = documents.map((d) => d.id);
     if (ids.length === 0) return;
-    await exportApi.exportDocuments(ids, "excel");
+    try {
+      const result = await exportApi.exportDocuments(ids, "excel");
+      if (result?.exportPath) {
+        await window.api.showItemInFolder(result.exportPath).catch(() => {});
+      }
+      refresh();
+    } catch (err: any) {
+      console.error("Export failed:", err);
+      alert(err?.message || "Export failed");
+    }
   };
 
   // ── Mode badge ─────────────────────────────────────────

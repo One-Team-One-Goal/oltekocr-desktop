@@ -1,6 +1,7 @@
 import "reflect-metadata";
 import { app, shell, BrowserWindow, ipcMain, dialog } from "electron";
 import { join } from "path";
+import { copyFile } from "fs/promises";
 import { electronApp, optimizer, is } from "@electron-toolkit/utils";
 import { bootstrapNestServer } from "./nest/bootstrap";
 import { ensureDataDirs } from "./data-dirs";
@@ -74,6 +75,14 @@ function registerIpcHandlers(): void {
     if (!mainWindow) return { canceled: true, filePath: "" };
     return dialog.showSaveDialog(mainWindow, options);
   });
+
+  ipcMain.handle(
+    IpcChannel.COPY_FILE,
+    async (_event, fromPath: string, toPath: string) => {
+      await copyFile(fromPath, toPath);
+      return true;
+    },
+  );
 
   ipcMain.handle(IpcChannel.GET_APP_PATH, () => {
     return app.getPath("userData");

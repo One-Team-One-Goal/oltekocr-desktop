@@ -5,6 +5,7 @@ import { useWebSocket } from "@/hooks/useWebSocket";
 import { WindowControls } from "@/components/layout/SidebarContext";
 import { ExtractionView } from "./ExtractionPanel";
 import { checkUnsaved, markSaved } from "@/lib/unsaved-sessions";
+import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -32,6 +33,7 @@ export function PdfSessionDetail() {
   const [saveName, setSaveName] = useState("");
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
   const [isReprocessing, setIsReprocessing] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
   const [isRenaming, setIsRenaming] = useState(false);
   const [rawOpen, setRawOpen] = useState(false);
   const [tablesOpen, setTablesOpen] = useState(false);
@@ -105,7 +107,49 @@ export function PdfSessionDetail() {
   const handleExport = async () => {
     const ids = documents.map((d) => d.id);
     if (ids.length === 0) return;
-    await exportApi.exportDocuments(ids, "excel");
+    setIsExporting(true);
+    try {
+      const result = await exportApi.exportDocuments(ids, "excel");
+      const exportPath = result?.exportPath;
+      if (!exportPath) throw new Error("No export path returned by server");
+
+      const defaultName = exportPath.split(/[\\/]/).pop() || "contract_export.xlsx";
+      const picked = await window.api.saveFileDialog({
+        title: "Save Exported Excel",
+        defaultPath: defaultName,
+        filters: [{ name: "Excel Workbook", extensions: ["xlsx"] }],
+      });
+
+      if (picked?.canceled || !picked?.filePath) {
+        toast({
+          title: "Export created",
+          description: "Saved in app exports folder.",
+          actionLabel: "Show in folder",
+          onAction: () => window.api.showItemInFolder(exportPath),
+        });
+        return;
+      }
+
+      await window.api.copyFile(exportPath, picked.filePath);
+      toast({
+        title: "Export successful",
+        description: `Saved to: ${picked.filePath.split(/[\\/]/).pop()}`,
+        actionLabel: "Show in folder",
+        onAction: () => {
+          window.api.showItemInFolder(picked.filePath);
+        },
+      });
+      refresh();
+    } catch (err: any) {
+      console.error("Export failed:", err);
+      toast({
+        title: "Export failed",
+        description: err?.message || "Unknown error",
+        variant: "destructive",
+      });
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   const handleReprocess = async () => {
@@ -205,9 +249,10 @@ export function PdfSessionDetail() {
             size="sm"
             className="gap-1.5 text-xs"
             onClick={handleExport}
+            disabled={isExporting}
           >
             <FileOutput className="h-3.5 w-3.5" />
-            Export
+            {isExporting ? "Exporting…" : "Export"}
           </Button>
           <Button variant="ghost" size="icon" onClick={refresh}>
             <RefreshCw className="h-4 w-4" />
