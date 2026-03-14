@@ -51,7 +51,9 @@ export function Sidebar() {
   const location = useLocation();
   const { theme: currentTheme, setTheme } = useTheme();
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const { collapsed, toggle } = useSidebar();
+  const { collapsed, hidden, toggle } = useSidebar();
+
+  if (hidden) return null;
 
   const darkThemes = themes.filter((t) => t.type === "dark");
   const lightThemes = themes.filter((t) => t.type === "light");

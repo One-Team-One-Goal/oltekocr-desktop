@@ -3,6 +3,7 @@ import { OcrService } from "../ocr/ocr.service";
 import { ContractExtractionService } from "../contract-extraction/contract-extraction.service";
 import { DocumentsGateway } from "../documents/documents.gateway";
 import { PrismaService } from "../prisma/prisma.service";
+import { SessionsService } from "../sessions/sessions.service";
 
 interface ProcessingMeta {
   scanTime: number;
@@ -37,6 +38,7 @@ export class QueueService {
     private readonly contractExtractionService: ContractExtractionService,
     private readonly gateway: DocumentsGateway,
     private readonly prisma: PrismaService,
+    private readonly sessionsService: SessionsService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -163,10 +165,15 @@ export class QueueService {
     // Determine session mode to dispatch to the correct processor
     const docRecord = await this.prisma.document.findUnique({
       where: { id: documentId },
-      select: { session: { select: { mode: true } } },
+      select: { sessionId: true, session: { select: { mode: true } } },
     });
+    const sessionId = docRecord?.sessionId ?? null;
     const sessionMode = docRecord?.session?.mode ?? "OCR_EXTRACT";
     const isPdfExtract = sessionMode === "PDF_EXTRACT";
+
+    if (sessionId) {
+      await this.sessionsService.syncStatus(sessionId);
+    }
 
     try {
       this.logger.log(`Processing document: ${documentId} [${sessionMode}]`);
@@ -276,6 +283,9 @@ export class QueueService {
         );
       }
     } finally {
+      if (sessionId) {
+        await this.sessionsService.syncStatus(sessionId);
+      }
       this.processing = null;
       this.gateway.sendQueueUpdate(this.queue.length, null);
       // Process next in queue

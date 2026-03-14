@@ -74,6 +74,18 @@ function getFileName(filePath: string): string {
   return parts[parts.length - 1] || filePath;
 }
 
+function uniqueSessionName(baseName: string, existingNames: string[]): string {
+  const trimmed = baseName.trim();
+  if (!trimmed) return nextUnnamedName(existingNames);
+
+  const nameSet = new Set(existingNames);
+  if (!nameSet.has(trimmed)) return trimmed;
+
+  let n = 1;
+  while (nameSet.has(`${trimmed} (${n})`)) n++;
+  return `${trimmed} (${n})`;
+}
+
 const PDF_NEW_CARDS = [
   {
     value: "CONTRACT",
@@ -205,12 +217,10 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
       const selectedFile = result.filePaths[0];
       const allSessions = await sessionsApi.list();
       const inferredName = getFileName(selectedFile);
-      const existingNames = new Set(
+      const name = uniqueSessionName(
+        inferredName,
         allSessions.map((s: SessionListItem) => s.name),
       );
-      const name = existingNames.has(inferredName)
-        ? nextUnnamedName(allSessions.map((s: SessionListItem) => s.name))
-        : inferredName;
       const session = await sessionsApi.create({
         name,
         mode: "PDF_EXTRACT",

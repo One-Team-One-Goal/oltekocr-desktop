@@ -188,6 +188,14 @@ export function SessionDetail() {
   );
   useWebSocket(handleWsEvent);
 
+  useEffect(() => {
+    if (!isRunning) return;
+    const timer = window.setInterval(() => {
+      refresh();
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [isRunning, refresh]);
+
   // ── Save / back (unsaved sessions) ────────────────────
   const modeToRoute: Record<string, string> = {
     PDF_EXTRACT: "/",
