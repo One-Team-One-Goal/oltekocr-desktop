@@ -178,11 +178,7 @@ export class ExportService {
         if (rows.length === 0) return;
         const sheet = workbook.addWorksheet(name);
 
-        // Collect all keys present in the data, respecting preferred order
-        const allKeys = new Set<string>();
-        columnOrder.forEach((k) => allKeys.add(k));
-        rows.forEach((r) => Object.keys(r).forEach((k) => allKeys.add(k)));
-        const keys = Array.from(allKeys);
+        const keys = columnOrder;
 
         sheet.columns = keys.map((k) => ({
           header: k,
@@ -191,7 +187,16 @@ export class ExportService {
         }));
 
         for (const row of rows) {
-          sheet.addRow(keys.map((k) => row[k] ?? ""));
+          sheet.addRow(
+            keys.map((k) => {
+              const value = row[k] ?? "";
+              if ((k === "effective_date" || k === "expiration_date") && value) {
+                const parsed = new Date(String(value));
+                if (!Number.isNaN(parsed.getTime())) return parsed;
+              }
+              return value;
+            }),
+          );
         }
 
         // Style header row
@@ -207,29 +212,34 @@ export class ExportService {
           from: { row: 1, column: 1 },
           to: { row: 1, column: keys.length },
         };
+
+        const effIdx = keys.indexOf("effective_date");
+        if (effIdx >= 0) sheet.getColumn(effIdx + 1).numFmt = "yyyy-mm-dd";
+        const expIdx = keys.indexOf("expiration_date");
+        if (expIdx >= 0) sheet.getColumn(expIdx + 1).numFmt = "yyyy-mm-dd";
       };
 
       const RATES_COLS = [
-        "carrier", "contractId", "effectiveDate", "expirationDate",
-        "commodity", "destinationCity", "destinationViaCity",
-        "service", "remarks", "scope",
-        "baseRate20", "baseRate40", "baseRate40H", "baseRate45",
+        "Carrier", "Contract ID", "effective_date", "expiration_date",
+        "commodity", "origin_city", "origin_via_city", "destination_city", "destination_via_city",
+        "service", "Remarks", "SCOPE",
+        "BaseRate 20", "BaseRate 40", "BaseRate 40H", "BaseRate 45",
+        "AMS(CHINA & JAPAN)", "(HEA) Heavy Surcharge", "AGW", "RED SEA DIVERSION CHARGE(RDS).",
       ];
 
       const ORIGIN_ARB_COLS = [
-        "carrier", "contractId", "effectiveDate", "expirationDate",
-        "commodity", "originCity", "originViaCity",
-        "service", "remarks", "scope",
-        "baseRate20", "baseRate40", "baseRate40H", "baseRate45",
-        "agw20", "agw40", "agw45",
+        "Carrier", "Contract ID", "effective_date", "expiration_date",
+        "commodity", "origin_city", "origin_via_city",
+        "service", "Remarks", "Scope",
+        "BaseRate 20", "BaseRate 40", "BaseRate 40H", "BaseRate 45",
+        "20' AGW", "40' AGW", "45' AGW",
       ];
 
       const DEST_ARB_COLS = [
-        "carrier", "contractId", "effectiveDate", "expirationDate",
-        "commodity", "originCity", "originViaCity", "destinationCity", "destinationViaCity",
-        "service", "remarks", "scope",
-        "baseRate20", "baseRate40", "baseRate40H", "baseRate45",
-        "amsChina", "heaHeavySurcharge", "agw", "redSeaDiversion",
+        "Carrier", "Contract ID", "effective_date", "expiration_date",
+        "commodity", "destination_city", "destination_via_city",
+        "service", "Remarks", "Scope",
+        "BaseRate 20", "BaseRate 40", "BaseRate 40H", "BaseRate 45",
       ];
 
       buildSheet("Rates", allRates, RATES_COLS);
