@@ -353,7 +353,10 @@ function TableLoadingWebGL({
       state.y += (state.ty - state.y) * 0.09;
 
       const t = timeMs * 0.001;
-      const baseR = Math.min(Math.max(Math.min(state.w, state.h) * 0.12, 44), 92);
+      const baseR = Math.min(
+        Math.max(Math.min(state.w, state.h) * 0.12, 44),
+        92,
+      );
       const breathe = Math.sin(t * 2.0) * 11;
       const spin = t * 0.45;
 
