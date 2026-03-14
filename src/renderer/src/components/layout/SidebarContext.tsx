@@ -12,19 +12,29 @@ const noDrag = { WebkitAppRegion: "no-drag" } as React.CSSProperties;
 
 interface SidebarContextType {
   collapsed: boolean;
+  hidden: boolean;
   toggle: () => void;
+  setHidden: (hidden: boolean) => void;
 }
 
 const SidebarContext = createContext<SidebarContextType>({
   collapsed: false,
+  hidden: false,
   toggle: () => {},
+  setHidden: () => {},
 });
 
 export function SidebarProvider({ children }: { children: React.ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
+  const [hidden, setHidden] = useState(false);
   return (
     <SidebarContext.Provider
-      value={{ collapsed, toggle: () => setCollapsed((v) => !v) }}
+      value={{
+        collapsed,
+        hidden,
+        toggle: () => setCollapsed((v) => !v),
+        setHidden,
+      }}
     >
       {children}
     </SidebarContext.Provider>

@@ -37,6 +37,9 @@ export function PdfSessionDetail() {
   const [isRenaming, setIsRenaming] = useState(false);
   const [rawOpen, setRawOpen] = useState(false);
   const [tablesOpen, setTablesOpen] = useState(false);
+  const isRunning = documents.some(
+    (d) => d.status === "SCANNING" || d.status === "PROCESSING",
+  );
 
   const refresh = useCallback(async () => {
     if (!id) return;
@@ -85,6 +88,14 @@ export function PdfSessionDetail() {
     [refresh],
   );
   useWebSocket(handleWsEvent);
+
+  useEffect(() => {
+    if (!isRunning) return;
+    const timer = window.setInterval(() => {
+      refresh();
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [isRunning, refresh]);
 
   const handleSave = async () => {
     if (!id || !saveName.trim()) return;

@@ -1,4 +1,5 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -221,6 +222,213 @@ const DOC_TYPE_RENDERERS: Record<string, DocTypeRenderer> = {
   // },
 };
 
+// ─── WebGL loader (empty table state) ──────────────────────────────────────
+
+function TableLoadingWebGL({
+  active,
+  label,
+}: {
+  active: boolean;
+  label: string;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    if (!active) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const gl = canvas.getContext("webgl", {
+      antialias: true,
+      alpha: true,
+      premultipliedAlpha: false,
+    });
+    if (!gl) return;
+
+    const vertexSrc = `
+      attribute vec2 a_position;
+      attribute float a_size;
+      attribute float a_alpha;
+      varying float v_alpha;
+      void main() {
+        gl_Position = vec4(a_position, 0.0, 1.0);
+        gl_PointSize = a_size;
+        v_alpha = a_alpha;
+      }
+    `;
+
+    const fragSrc = `
+      precision mediump float;
+      varying float v_alpha;
+      void main() {
+        vec2 p = gl_PointCoord - vec2(0.5);
+        float d = length(p);
+        float a = smoothstep(0.5, 0.28, d) * v_alpha;
+        gl_FragColor = vec4(0.62, 0.78, 0.98, a);
+      }
+    `;
+
+    const compile = (type: number, src: string) => {
+      const shader = gl.createShader(type);
+      if (!shader) return null;
+      gl.shaderSource(shader, src);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        gl.deleteShader(shader);
+        return null;
+      }
+      return shader;
+    };
+
+    const vs = compile(gl.VERTEX_SHADER, vertexSrc);
+    const fs = compile(gl.FRAGMENT_SHADER, fragSrc);
+    if (!vs || !fs) return;
+
+    const program = gl.createProgram();
+    if (!program) return;
+    gl.attachShader(program, vs);
+    gl.attachShader(program, fs);
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) return;
+
+    gl.useProgram(program);
+
+    const dotCount = 26;
+    const positions = new Float32Array(dotCount * 2);
+    const sizes = new Float32Array(dotCount);
+    const alphas = new Float32Array(dotCount);
+
+    const posBuffer = gl.createBuffer();
+    const sizeBuffer = gl.createBuffer();
+    const alphaBuffer = gl.createBuffer();
+    if (!posBuffer || !sizeBuffer || !alphaBuffer) return;
+
+    const posLoc = gl.getAttribLocation(program, "a_position");
+    const sizeLoc = gl.getAttribLocation(program, "a_size");
+    const alphaLoc = gl.getAttribLocation(program, "a_alpha");
+
+    const state = {
+      w: 1,
+      h: 1,
+      dpr: 1,
+      tx: 0,
+      ty: 0,
+      x: 0,
+      y: 0,
+      raf: 0,
+    };
+
+    const resize = () => {
+      const rect = canvas.getBoundingClientRect();
+      state.dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 2));
+      state.w = Math.max(1, Math.floor(rect.width));
+      state.h = Math.max(1, Math.floor(rect.height));
+      canvas.width = Math.floor(state.w * state.dpr);
+      canvas.height = Math.floor(state.h * state.dpr);
+      gl.viewport(0, 0, canvas.width, canvas.height);
+      state.tx = state.w * 0.5;
+      state.ty = state.h * 0.5;
+      if (state.x === 0 && state.y === 0) {
+        state.x = state.tx;
+        state.y = state.ty;
+      }
+    };
+
+    const onMove = (e: PointerEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      state.tx = e.clientX - rect.left;
+      state.ty = e.clientY - rect.top;
+    };
+
+    const onLeave = () => {
+      state.tx = state.w * 0.5;
+      state.ty = state.h * 0.5;
+    };
+
+    const toClipX = (px: number) => (px / state.w) * 2 - 1;
+    const toClipY = (py: number) => 1 - (py / state.h) * 2;
+
+    const draw = (timeMs: number) => {
+      state.x += (state.tx - state.x) * 0.09;
+      state.y += (state.ty - state.y) * 0.09;
+
+      const t = timeMs * 0.001;
+      const baseR = Math.min(
+        Math.max(Math.min(state.w, state.h) * 0.12, 44),
+        92,
+      );
+      const breathe = Math.sin(t * 2.0) * 11;
+      const spin = t * 0.45;
+
+      for (let i = 0; i < dotCount; i++) {
+        const p = i / dotCount;
+        const a = p * Math.PI * 2 + spin;
+        const ripple = Math.sin(t * 3.2 + p * Math.PI * 4) * 3.2;
+        const r = baseR + breathe + ripple;
+        const px = state.x + Math.cos(a) * r;
+        const py = state.y + Math.sin(a) * r;
+        positions[i * 2] = toClipX(px);
+        positions[i * 2 + 1] = toClipY(py);
+        sizes[i] = (4.0 + (1 + Math.sin(t * 3.0 + p * 6.0)) * 2.8) * state.dpr;
+        alphas[i] = 0.3 + (1 + Math.sin(t * 4.0 + p * 8.0)) * 0.25;
+      }
+
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, positions, gl.DYNAMIC_DRAW);
+      gl.enableVertexAttribArray(posLoc);
+      gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, sizeBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, sizes, gl.DYNAMIC_DRAW);
+      gl.enableVertexAttribArray(sizeLoc);
+      gl.vertexAttribPointer(sizeLoc, 1, gl.FLOAT, false, 0, 0);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, alphaBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, alphas, gl.DYNAMIC_DRAW);
+      gl.enableVertexAttribArray(alphaLoc);
+      gl.vertexAttribPointer(alphaLoc, 1, gl.FLOAT, false, 0, 0);
+
+      gl.drawArrays(gl.POINTS, 0, dotCount);
+      state.raf = requestAnimationFrame(draw);
+    };
+
+    resize();
+    canvas.addEventListener("pointermove", onMove);
+    canvas.addEventListener("pointerleave", onLeave);
+    window.addEventListener("resize", resize);
+    state.raf = requestAnimationFrame(draw);
+
+    return () => {
+      cancelAnimationFrame(state.raf);
+      window.removeEventListener("resize", resize);
+      canvas.removeEventListener("pointermove", onMove);
+      canvas.removeEventListener("pointerleave", onLeave);
+      gl.deleteBuffer(posBuffer);
+      gl.deleteBuffer(sizeBuffer);
+      gl.deleteBuffer(alphaBuffer);
+      gl.deleteProgram(program);
+      gl.deleteShader(vs);
+      gl.deleteShader(fs);
+    };
+  }, [active]);
+
+  return (
+    <div className="relative h-full w-full bg-background">
+      <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
+      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+        <div className="rounded-md border border-border/50 bg-background/70 px-3 py-1.5 text-xs text-muted-foreground backdrop-blur-sm">
+          {label}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Section table ────────────────────────────────────────────────────────────
 
 function SectionTable({
@@ -250,134 +458,166 @@ function SectionTable({
     );
   }
 
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const rowVirtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 30,
+    overscan: 30,
+  });
+
+  const virtualRows = rowVirtualizer.getVirtualItems();
+  const totalSize = rowVirtualizer.getTotalSize();
+  const topPadding = virtualRows.length > 0 ? virtualRows[0].start : 0;
+  const bottomPadding =
+    virtualRows.length > 0
+      ? totalSize - virtualRows[virtualRows.length - 1].end
+      : 0;
+
   return (
     <div
-      className="h-full min-h-0 overflow-x-auto [&::-webkit-scrollbar]:h-1 hover:[&::-webkit-scrollbar]:h-3 [&::-webkit-scrollbar-track]:bg-muted/30 [&::-webkit-scrollbar-thumb]:bg-border [&::-webkit-scrollbar-thumb]:rounded-full"
-      style={{ contain: "strict", willChange: "transform" }}
+      ref={scrollRef}
+      className="h-full min-h-0 overflow-auto extraction-table-scrollbar"
     >
-      <div className="min-w-max h-full min-h-0 flex flex-col">
-        <table className="w-full text-xs border-collapse shrink-0">
-          <thead className="bg-muted shadow-[0_1px_0_hsl(var(--border))]">
-            <tr>
-              {cols.map((col) => (
-                <th
-                  key={col.key}
-                  className="group relative px-2 pr-7 py-1.5 text-left font-semibold border-b border-border whitespace-nowrap"
-                  style={{ minWidth: col.width }}
-                >
-                  {col.label}
-                  {onHeaderFilterChange && (
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <button
-                          aria-label={`Filter ${col.label} column`}
-                          className={`absolute right-1 top-1/2 -translate-y-1/2 h-5 w-5 inline-flex items-center justify-center rounded-sm hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-opacity ${
-                            headerFilters?.[col.key]
-                              ? "opacity-100 text-primary"
-                              : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 text-muted-foreground"
-                          }`}
+      <table className="min-w-max w-full text-xs border-collapse">
+        <thead className="bg-muted shadow-[0_1px_0_hsl(var(--border))] sticky top-0 z-10">
+          <tr>
+            <th className="px-2 py-1.5 text-left font-semibold border-b border-border whitespace-nowrap w-12 min-w-[48px]">
+              #
+            </th>
+            {cols.map((col) => (
+              <th
+                key={col.key}
+                className="group relative px-2 pr-7 py-1.5 text-left font-semibold border-b border-border whitespace-nowrap"
+                style={{ minWidth: col.width }}
+              >
+                {col.label}
+                {onHeaderFilterChange && (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        aria-label={`Filter ${col.label} column`}
+                        className={`absolute right-1 top-1/2 -translate-y-1/2 h-5 w-5 inline-flex items-center justify-center rounded-sm hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring transition-opacity ${
+                          headerFilters?.[col.key]
+                            ? "opacity-100 text-primary"
+                            : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 text-muted-foreground"
+                        }`}
+                      >
+                        <Funnel className="h-3.5 w-3.5" />
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-56 p-2">
+                      <div
+                        className="space-y-2"
+                        onKeyDown={(e) => e.stopPropagation()}
+                      >
+                        <p className="text-xs font-semibold text-muted-foreground">
+                          Filter: {col.label}
+                        </p>
+                        <select
+                          className="h-7 w-full rounded border bg-background px-2 text-xs"
+                          value={headerFilters?.[col.key]?.op ?? "contains"}
+                          onChange={(e) =>
+                            onHeaderFilterChange(col.key, {
+                              op: e.target.value as HeaderColumnFilter["op"],
+                              value: headerFilters?.[col.key]?.value ?? "",
+                              valueTo: headerFilters?.[col.key]?.valueTo,
+                            })
+                          }
                         >
-                          <Funnel className="h-3.5 w-3.5" />
-                        </button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="w-56 p-2">
-                        <div
-                          className="space-y-2"
-                          onKeyDown={(e) => e.stopPropagation()}
-                        >
-                          <p className="text-xs font-semibold text-muted-foreground">
-                            Filter: {col.label}
-                          </p>
-                          <select
-                            className="h-7 w-full rounded border bg-background px-2 text-xs"
-                            value={headerFilters?.[col.key]?.op ?? "contains"}
-                            onChange={(e) =>
-                              onHeaderFilterChange(col.key, {
-                                op: e.target.value as HeaderColumnFilter["op"],
-                                value: headerFilters?.[col.key]?.value ?? "",
-                                valueTo: headerFilters?.[col.key]?.valueTo,
-                              })
-                            }
-                          >
-                            <option value="contains">contains</option>
-                            <option value="equals">equals</option>
-                            <option value="startsWith">startsWith</option>
-                            <option value="gt">&gt;</option>
-                            <option value="lt">&lt;</option>
-                            <option value="between">between</option>
-                          </select>
+                          <option value="contains">contains</option>
+                          <option value="equals">equals</option>
+                          <option value="startsWith">startsWith</option>
+                          <option value="gt">&gt;</option>
+                          <option value="lt">&lt;</option>
+                          <option value="between">between</option>
+                        </select>
+                        <Input
+                          value={headerFilters?.[col.key]?.value ?? ""}
+                          onChange={(e) =>
+                            onHeaderFilterChange(col.key, {
+                              op: headerFilters?.[col.key]?.op ?? "contains",
+                              value: e.target.value,
+                              valueTo: headerFilters?.[col.key]?.valueTo,
+                            })
+                          }
+                          className="h-7 text-xs"
+                          placeholder="Value"
+                        />
+                        {(headerFilters?.[col.key]?.op ?? "contains") ===
+                          "between" && (
                           <Input
-                            value={headerFilters?.[col.key]?.value ?? ""}
+                            value={headerFilters?.[col.key]?.valueTo ?? ""}
                             onChange={(e) =>
                               onHeaderFilterChange(col.key, {
-                                op: headerFilters?.[col.key]?.op ?? "contains",
-                                value: e.target.value,
-                                valueTo: headerFilters?.[col.key]?.valueTo,
+                                op: headerFilters?.[col.key]?.op ?? "between",
+                                value: headerFilters?.[col.key]?.value ?? "",
+                                valueTo: e.target.value,
                               })
                             }
                             className="h-7 text-xs"
-                            placeholder="Value"
+                            placeholder="Value to"
                           />
-                          {(headerFilters?.[col.key]?.op ?? "contains") ===
-                            "between" && (
-                            <Input
-                              value={headerFilters?.[col.key]?.valueTo ?? ""}
-                              onChange={(e) =>
-                                onHeaderFilterChange(col.key, {
-                                  op: headerFilters?.[col.key]?.op ?? "between",
-                                  value: headerFilters?.[col.key]?.value ?? "",
-                                  valueTo: e.target.value,
-                                })
-                              }
-                              className="h-7 text-xs"
-                              placeholder="Value to"
-                            />
-                          )}
-                          <div className="flex justify-end">
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="h-7 px-2 text-xs"
-                              onClick={() =>
-                                onHeaderFilterChange(col.key, null)
-                              }
-                            >
-                              Clear
-                            </Button>
-                          </div>
+                        )}
+                        <div className="flex justify-end">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-2 text-xs"
+                            onClick={() => onHeaderFilterChange(col.key, null)}
+                          >
+                            Clear
+                          </Button>
                         </div>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  )}
-                </th>
-              ))}
+                      </div>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                )}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {topPadding > 0 && (
+            <tr aria-hidden>
+              <td
+                colSpan={cols.length + 1}
+                style={{ height: `${topPadding}px`, padding: 0, border: 0 }}
+              />
             </tr>
-          </thead>
-        </table>
-
-        <div className="flex-1 min-h-0 overflow-y-auto [&::-webkit-scrollbar]:w-1 hover:[&::-webkit-scrollbar]:w-3 [&::-webkit-scrollbar-track]:bg-muted/30 [&::-webkit-scrollbar-thumb]:bg-border [&::-webkit-scrollbar-thumb]:rounded-full">
-          <table className="w-full text-xs border-collapse">
-            <tbody>
-              {rows.map((row, i) => (
-                <tr
-                  key={i}
-                  className="odd:bg-background even:bg-muted/20 hover:bg-accent/20 transition-colors"
-                >
-                  {cols.map((col) => (
-                    <td
-                      key={col.key}
-                      className="px-2 py-1 border-b border-border/40 whitespace-nowrap align-top text-[11px]"
-                      style={{ minWidth: col.width }}
-                    >
-                      {row[col.key] ?? ""}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+          )}
+          {virtualRows.map((virtualRow) => {
+            const row = rows[virtualRow.index];
+            return (
+              <tr
+                key={virtualRow.key}
+                className="odd:bg-background even:bg-muted/20 hover:bg-accent/20 transition-colors"
+              >
+                <td className="px-2 py-1 border-b border-border/40 whitespace-nowrap align-top text-[11px] text-muted-foreground tabular-nums">
+                  {virtualRow.index + 1}
+                </td>
+                {cols.map((col) => (
+                  <td
+                    key={col.key}
+                    className="px-2 py-1 border-b border-border/40 whitespace-nowrap align-top text-[11px]"
+                    style={{ minWidth: col.width }}
+                  >
+                    {row[col.key] ?? ""}
+                  </td>
+                ))}
+              </tr>
+            );
+          })}
+          {bottomPadding > 0 && (
+            <tr aria-hidden>
+              <td
+                colSpan={cols.length + 1}
+                style={{ height: `${bottomPadding}px`, padding: 0, border: 0 }}
+              />
+            </tr>
+          )}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -418,8 +658,8 @@ export function ExtractionView({
   // sectionOpen[sectionKey] = expanded?
   const [sectionOpen, setSectionOpen] = useState<Record<string, boolean>>({});
   const [activeTab, setActiveTab] = useState<string>("");
-  const [isRightPanelCollapsed, setIsRightPanelCollapsed] = useState(false);
-  const [isColumnsCollapsed, setIsColumnsCollapsed] = useState(false);
+  const [isRightPanelCollapsed, setIsRightPanelCollapsed] = useState(true);
+  const [isColumnsCollapsed, setIsColumnsCollapsed] = useState(true);
   const [isFiltersCollapsed, setIsFiltersCollapsed] = useState(false);
   const [searchText, setSearchText] = useState("");
   const [quickFilters, setQuickFilters] = useState<QuickFilters>({
@@ -458,15 +698,38 @@ export function ExtractionView({
   // sectionCols[sectionKey] = derived ColDef[] from actual extracted rows
   const [sectionCols, setSectionCols] = useState<Record<string, ColDef[]>>({});
 
+  const refreshCurrentDoc = useCallback(async () => {
+    try {
+      const nextDoc = await documentsApi.get(documentId);
+      setDoc(nextDoc);
+      onRefresh?.();
+    } catch (err) {
+      console.error(err);
+    }
+  }, [documentId, onRefresh]);
+
   // ── Fetch document ────────────────────────────────────────────────────────
   useEffect(() => {
     setLoading(true);
-    documentsApi
-      .get(documentId)
-      .then(setDoc)
+    refreshCurrentDoc()
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, [documentId]);
+  }, [refreshCurrentDoc]);
+
+  useEffect(() => {
+    if (!doc) return;
+    const shouldPoll =
+      doc.status === "QUEUED" ||
+      doc.status === "SCANNING" ||
+      doc.status === "PROCESSING" ||
+      doc.status === "CANCELLING";
+    if (!shouldPoll) return;
+
+    const timer = window.setInterval(() => {
+      refreshCurrentDoc();
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [doc, refreshCurrentDoc]);
 
   // ── Reset column visibility and active tab when document changes ──────────
   useEffect(() => {
@@ -513,16 +776,14 @@ export function ExtractionView({
   const handleApprove = async () => {
     if (!doc) return;
     await documentsApi.approve(doc.id);
-    onRefresh?.();
-    documentsApi.get(doc.id).then(setDoc).catch(console.error);
+    refreshCurrentDoc();
   };
 
   const handleReject = async () => {
     if (!doc) return;
     const notes = prompt("Rejection reason (optional):");
     await documentsApi.reject(doc.id, notes || undefined);
-    onRefresh?.();
-    documentsApi.get(doc.id).then(setDoc).catch(console.error);
+    refreshCurrentDoc();
   };
 
   const handleReprocess = async () => {
@@ -532,8 +793,7 @@ export function ExtractionView({
     } else {
       await documentsApi.reprocess(doc.id);
     }
-    onRefresh?.();
-    documentsApi.get(doc.id).then(setDoc).catch(console.error);
+    refreshCurrentDoc();
   };
 
   // ── Derived ───────────────────────────────────────────────────────────────
@@ -941,26 +1201,18 @@ export function ExtractionView({
             <Loader2 className="h-4 w-4 animate-spin" />
             <span className="text-sm">Loading…</span>
           </div>
-        ) : !renderer ? (
-          <div className="flex flex-col flex-1 items-center justify-center gap-3 text-muted-foreground">
-            <AlertTriangle className="h-7 w-7" />
-            <span className="text-xs text-center px-8">
-              {doc?.status === "ERROR"
-                ? "Extraction failed — use Reprocess to retry."
-                : doc?.status === "QUEUED" ||
-                    doc?.status === "PROCESSING" ||
-                    doc?.status === "SCANNING"
-                  ? "Processing in progress…"
-                  : "No extracted data available yet."}
-            </span>
-          </div>
         ) : (
           <div className="flex flex-col flex-1 min-h-0">
             <div className="mx-4 mt-2 mb-0 shrink-0 flex items-center justify-between gap-2 pb-2">
               <div className="inline-flex items-stretch rounded-md border overflow-x-auto w-max max-w-full bg-background">
-                {renderer.sections.map((s) => {
-                  const rowCount = s.getRows(extractedData!).length;
-                  const active = s.key === activeTab;
+                {(
+                  renderer?.sections ?? DOC_TYPE_RENDERERS.CONTRACT.sections
+                ).map((s) => {
+                  const rowCount = renderer
+                    ? s.getRows(extractedData!).length
+                    : 0;
+                  const currentTab = activeTab || s.key;
+                  const active = s.key === currentTab;
                   return (
                     <Button
                       key={s.key}
@@ -1042,22 +1294,38 @@ export function ExtractionView({
             </div>
             <div className="flex flex-col flex-1 min-h-0 mt-2 px-4 pb-4">
               <div className="flex-1 min-h-0 rounded-md border overflow-hidden">
-                <SectionTable
-                  rows={filteredRows}
-                  cols={visibleCols}
-                  headerFilters={headerFilters}
-                  onHeaderFilterChange={(key, next) => {
-                    setHeaderFilters((prev) => {
-                      const copy = { ...prev };
-                      if (!next || !(next.value ?? "").trim()) {
-                        delete copy[key];
+                {renderer ? (
+                  <SectionTable
+                    rows={filteredRows}
+                    cols={visibleCols}
+                    headerFilters={headerFilters}
+                    onHeaderFilterChange={(key, next) => {
+                      setHeaderFilters((prev) => {
+                        const copy = { ...prev };
+                        if (!next || !(next.value ?? "").trim()) {
+                          delete copy[key];
+                          return copy;
+                        }
+                        copy[key] = next;
                         return copy;
-                      }
-                      copy[key] = next;
-                      return copy;
-                    });
-                  }}
-                />
+                      });
+                    }}
+                  />
+                ) : (
+                  <TableLoadingWebGL
+                    active={
+                      doc?.status === "QUEUED" ||
+                      doc?.status === "SCANNING" ||
+                      doc?.status === "PROCESSING" ||
+                      doc?.status === "CANCELLING"
+                    }
+                    label={
+                      doc?.status === "ERROR"
+                        ? "Extraction failed"
+                        : "Processing tables..."
+                    }
+                  />
+                )}
               </div>
             </div>
           </div>
@@ -1065,542 +1333,530 @@ export function ExtractionView({
       </div>
 
       {/* ── Right: column checkbox panel ─────────────────────────────────── */}
-      {!isRightPanelCollapsed && (
-        <div className="w-72 shrink-0 border-l flex flex-col bg-card">
-          {/* Contract header info */}
-          {renderer && extractedData && (
-            <div className="pt-3 border-b space-y-2 px-4 my-1 pb-4">
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                {renderer.label} Info
-              </p>
-              {renderer.getHeaderFields(extractedData).map((f) => (
-                <div key={f.label} className="flex flex-col min-w-0">
-                  <span className="text-xs text-muted-foreground uppercase tracking-wide leading-tight">
-                    {f.label}
-                  </span>
-                  <span
-                    className="text-sm font-medium truncate"
-                    title={f.value}
-                  >
-                    {f.value}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
+      <div
+        className={`shrink-0 border-l flex flex-col bg-card overflow-hidden transition-[width,opacity,transform] duration-300 ease-out ${
+          isRightPanelCollapsed
+            ? "w-0 opacity-0 translate-x-2 border-transparent pointer-events-none"
+            : "w-72 opacity-100 translate-x-0"
+        }`}
+      >
+        {/* Contract header info */}
+        {renderer && extractedData && (
+          <div className="pt-3 border-b space-y-2 px-4 my-1 pb-4">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+              {renderer.label} Info
+            </p>
+            {renderer.getHeaderFields(extractedData).map((f) => (
+              <div key={f.label} className="flex flex-col min-w-0">
+                <span className="text-xs text-muted-foreground uppercase tracking-wide leading-tight">
+                  {f.label}
+                </span>
+                <span className="text-sm font-medium truncate" title={f.value}>
+                  {f.value}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
 
-          {/* Column visibility checkboxes — only for the active tab */}
-          <ScrollArea className="flex-1">
-            <div className="py-1">
-              {renderer && activeTab
-                ? (() => {
-                    const section = renderer.sections.find(
-                      (s) => s.key === activeTab,
-                    );
-                    const cols = section ? (sectionCols[activeTab] ?? []) : [];
-                    const sectionVis = colVisibility[activeTab] ?? {};
-                    const checkedCount = cols.filter(
-                      (c) => sectionVis[c.key] !== false,
-                    ).length;
-                    const allChecked = checkedCount === cols.length;
-                    const parentChecked =
-                      checkedCount === 0
-                        ? false
-                        : checkedCount === cols.length
-                          ? true
-                          : "indeterminate";
-                    return (
-                      <div>
-                        <div className="flex items-center justify-between px-3 pt-2 pb-1.5">
+        {/* Column visibility checkboxes — only for the active tab */}
+        <ScrollArea className="flex-1">
+          <div className="py-1">
+            {renderer && activeTab
+              ? (() => {
+                  const section = renderer.sections.find(
+                    (s) => s.key === activeTab,
+                  );
+                  const cols = section ? (sectionCols[activeTab] ?? []) : [];
+                  const sectionVis = colVisibility[activeTab] ?? {};
+                  const checkedCount = cols.filter(
+                    (c) => sectionVis[c.key] !== false,
+                  ).length;
+                  const allChecked = checkedCount === cols.length;
+                  const parentChecked =
+                    checkedCount === 0
+                      ? false
+                      : checkedCount === cols.length
+                        ? true
+                        : "indeterminate";
+                  return (
+                    <div>
+                      <div className="flex items-center justify-between px-3 pt-2 pb-1.5">
+                        <button
+                          className="inline-flex items-center gap-1.5 pb-1 text-xs font-semibold text-muted-foreground uppercase tracking-wide hover:text-foreground"
+                          onClick={() => setIsColumnsCollapsed((prev) => !prev)}
+                        >
+                          {isColumnsCollapsed ? (
+                            <ChevronRight className="h-3 w-3" />
+                          ) : (
+                            <ChevronDown className="h-3 w-3" />
+                          )}
+                          Columns
+                        </button>
+                      </div>
+                      {!isColumnsCollapsed && (
+                        <div className="pb-2 space-y-2 text-sm px-5">
+                          <label className="flex items-center gap-2 cursor-pointer select-none">
+                            <Checkbox
+                              checked={
+                                parentChecked as boolean | "indeterminate"
+                              }
+                              onCheckedChange={(v) =>
+                                toggleSectionAll(activeTab, !!v, cols)
+                              }
+                              className="h-3.5 w-3.5 [&_svg]:h-3 [&_svg]:w-3"
+                            />
+                            Select all
+                          </label>
+                          <div className="pl-5 space-y-2">
+                            {cols.map((col) => (
+                              <label
+                                key={col.key}
+                                className="flex items-center gap-2 text-sm cursor-pointer select-none"
+                              >
+                                <Checkbox
+                                  checked={sectionVis[col.key] !== false}
+                                  onCheckedChange={(v) =>
+                                    toggleCol(activeTab, col.key, !!v)
+                                  }
+                                  className="h-3.5 w-3.5 [&_svg]:h-3 [&_svg]:w-3"
+                                />
+                                {col.label}
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="mt-2">
+                        <div className="flex items-center justify-between px-3 pb-1.5">
                           <button
-                            className="inline-flex items-center gap-1.5 pb-1 text-xs font-semibold text-muted-foreground uppercase tracking-wide hover:text-foreground"
+                            className="inline-flex items-center gap-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wide hover:text-foreground"
                             onClick={() =>
-                              setIsColumnsCollapsed((prev) => !prev)
+                              setIsFiltersCollapsed((prev) => !prev)
                             }
                           >
-                            {isColumnsCollapsed ? (
+                            {isFiltersCollapsed ? (
                               <ChevronRight className="h-3 w-3" />
                             ) : (
                               <ChevronDown className="h-3 w-3" />
                             )}
-                            Columns
+                            Filters
                           </button>
+                          <span className="text-xs text-muted-foreground pr-2">
+                            {filteredRows.length}/{activeSectionRows.length}
+                          </span>
                         </div>
-                        {!isColumnsCollapsed && (
-                          <div className="pb-2 space-y-2 text-sm px-5">
-                            <label className="flex items-center gap-2 cursor-pointer select-none">
-                              <Checkbox
-                                checked={
-                                  parentChecked as boolean | "indeterminate"
-                                }
-                                onCheckedChange={(v) =>
-                                  toggleSectionAll(activeTab, !!v, cols)
-                                }
-                                className="h-3.5 w-3.5 [&_svg]:h-3 [&_svg]:w-3"
-                              />
-                              Select all
-                            </label>
-                            <div className="pl-5 space-y-2">
-                              {cols.map((col) => (
-                                <label
-                                  key={col.key}
-                                  className="flex items-center gap-2 text-sm cursor-pointer select-none"
+
+                        {!isFiltersCollapsed && (
+                          <div className="pb-3 space-y-3 text-sm pt-1 px-5">
+                            <Input
+                              value={searchText}
+                              onChange={(e) => setSearchText(e.target.value)}
+                              placeholder="Search all visible values"
+                              className="h-8 text-sm"
+                            />
+
+                            <div className="flex flex-wrap gap-1">
+                              {(
+                                [
+                                  ["usdOnly", "USD"],
+                                  ["hasOrigin", "Has Origin"],
+                                  ["hasViaCity", "Has Via"],
+                                  ["directCallOnly", "Direct Call"],
+                                  ["hasDestination", "Has Dest"],
+                                ] as const
+                              ).map(([key, label]) => (
+                                <Button
+                                  key={key}
+                                  type="button"
+                                  size="sm"
+                                  variant={
+                                    quickFilters[key] ? "secondary" : "outline"
+                                  }
+                                  className="h-7 px-3 text-xs"
+                                  onClick={() =>
+                                    setQuickFilters((prev) => ({
+                                      ...prev,
+                                      [key]: !prev[key],
+                                    }))
+                                  }
                                 >
-                                  <Checkbox
-                                    checked={sectionVis[col.key] !== false}
-                                    onCheckedChange={(v) =>
-                                      toggleCol(activeTab, col.key, !!v)
-                                    }
-                                    className="h-3.5 w-3.5 [&_svg]:h-3 [&_svg]:w-3"
-                                  />
-                                  {col.label}
-                                </label>
+                                  {label}
+                                </Button>
                               ))}
                             </div>
-                          </div>
-                        )}
 
-                        <div className="mt-2">
-                          <div className="flex items-center justify-between px-3 pb-1.5">
-                            <button
-                              className="inline-flex items-center gap-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wide hover:text-foreground"
-                              onClick={() =>
-                                setIsFiltersCollapsed((prev) => !prev)
-                              }
-                            >
-                              {isFiltersCollapsed ? (
-                                <ChevronRight className="h-3 w-3" />
-                              ) : (
-                                <ChevronDown className="h-3 w-3" />
-                              )}
-                              Filters
-                            </button>
-                            <span className="text-xs text-muted-foreground pr-2">
-                              {filteredRows.length}/{activeSectionRows.length}
-                            </span>
-                          </div>
-
-                          {!isFiltersCollapsed && (
-                            <div className="pb-3 space-y-3 text-sm pt-1 px-5">
-                              <Input
-                                value={searchText}
-                                onChange={(e) => setSearchText(e.target.value)}
-                                placeholder="Search all visible values"
-                                className="h-8 text-sm"
-                              />
-
-                              <div className="flex flex-wrap gap-1">
-                                {(
-                                  [
-                                    ["usdOnly", "USD"],
-                                    ["hasOrigin", "Has Origin"],
-                                    ["hasViaCity", "Has Via"],
-                                    ["directCallOnly", "Direct Call"],
-                                    ["hasDestination", "Has Dest"],
-                                  ] as const
-                                ).map(([key, label]) => (
+                            <div className="rounded-md border p-2 space-y-2">
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                                  Logic
+                                </span>
+                                <div className="inline-flex rounded-md border overflow-hidden">
                                   <Button
-                                    key={key}
-                                    type="button"
                                     size="sm"
                                     variant={
-                                      quickFilters[key]
-                                        ? "secondary"
-                                        : "outline"
+                                      logic === "AND" ? "secondary" : "ghost"
                                     }
-                                    className="h-7 px-3 text-xs"
-                                    onClick={() =>
-                                      setQuickFilters((prev) => ({
-                                        ...prev,
-                                        [key]: !prev[key],
-                                      }))
-                                    }
+                                    className="h-7 px-3 text-xs rounded-none"
+                                    onClick={() => setLogic("AND")}
                                   >
-                                    {label}
+                                    AND
                                   </Button>
-                                ))}
+                                  <Button
+                                    size="sm"
+                                    variant={
+                                      logic === "OR" ? "secondary" : "ghost"
+                                    }
+                                    className="h-7 px-3 text-xs rounded-none border-l"
+                                    onClick={() => setLogic("OR")}
+                                  >
+                                    OR
+                                  </Button>
+                                </div>
                               </div>
 
-                              <div className="rounded-md border p-2 space-y-2">
-                                <div className="flex items-center justify-between">
-                                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                                    Logic
-                                  </span>
-                                  <div className="inline-flex rounded-md border overflow-hidden">
+                              {clauses.map((clause) => (
+                                <div
+                                  key={clause.id}
+                                  className="space-y-1 rounded border p-1.5"
+                                >
+                                  <div className="flex items-center gap-1">
+                                    <select
+                                      className="h-7 flex-1 rounded border bg-background px-2 text-xs"
+                                      value={clause.field}
+                                      onChange={(e) =>
+                                        setClauses((prev) =>
+                                          prev.map((c) =>
+                                            c.id === clause.id
+                                              ? {
+                                                  ...c,
+                                                  field: e.target.value,
+                                                }
+                                              : c,
+                                          ),
+                                        )
+                                      }
+                                    >
+                                      {activeSectionCols.map((c) => (
+                                        <option key={c.key} value={c.key}>
+                                          {c.label}
+                                        </option>
+                                      ))}
+                                    </select>
                                     <Button
                                       size="sm"
-                                      variant={
-                                        logic === "AND" ? "secondary" : "ghost"
+                                      variant="ghost"
+                                      className="h-7 px-2 text-xs"
+                                      onClick={() =>
+                                        setClauses((prev) =>
+                                          prev.filter(
+                                            (c) => c.id !== clause.id,
+                                          ),
+                                        )
                                       }
-                                      className="h-7 px-3 text-xs rounded-none"
-                                      onClick={() => setLogic("AND")}
                                     >
-                                      AND
-                                    </Button>
-                                    <Button
-                                      size="sm"
-                                      variant={
-                                        logic === "OR" ? "secondary" : "ghost"
-                                      }
-                                      className="h-7 px-3 text-xs rounded-none border-l"
-                                      onClick={() => setLogic("OR")}
-                                    >
-                                      OR
+                                      ✕
                                     </Button>
                                   </div>
-                                </div>
-
-                                {clauses.map((clause) => (
-                                  <div
-                                    key={clause.id}
-                                    className="space-y-1 rounded border p-1.5"
-                                  >
-                                    <div className="flex items-center gap-1">
-                                      <select
-                                        className="h-7 flex-1 rounded border bg-background px-2 text-xs"
-                                        value={clause.field}
-                                        onChange={(e) =>
-                                          setClauses((prev) =>
-                                            prev.map((c) =>
-                                              c.id === clause.id
-                                                ? {
-                                                    ...c,
-                                                    field: e.target.value,
-                                                  }
-                                                : c,
-                                            ),
-                                          )
-                                        }
-                                      >
-                                        {activeSectionCols.map((c) => (
-                                          <option key={c.key} value={c.key}>
-                                            {c.label}
-                                          </option>
-                                        ))}
-                                      </select>
-                                      <Button
-                                        size="sm"
-                                        variant="ghost"
-                                        className="h-7 px-2 text-xs"
-                                        onClick={() =>
-                                          setClauses((prev) =>
-                                            prev.filter(
-                                              (c) => c.id !== clause.id,
-                                            ),
-                                          )
-                                        }
-                                      >
-                                        ✕
-                                      </Button>
-                                    </div>
-                                    <div className="flex items-center gap-1">
-                                      <select
-                                        className="h-7 w-28 rounded border bg-background px-2 text-xs"
-                                        value={clause.op}
-                                        onChange={(e) =>
-                                          setClauses((prev) =>
-                                            prev.map((c) =>
-                                              c.id === clause.id
-                                                ? {
-                                                    ...c,
-                                                    op: e.target
-                                                      .value as FilterOp,
-                                                  }
-                                                : c,
-                                            ),
-                                          )
-                                        }
-                                      >
-                                        <option value="contains">
-                                          contains
-                                        </option>
-                                        <option value="equals">equals</option>
-                                        <option value="startsWith">
-                                          startsWith
-                                        </option>
-                                        <option value="gt">&gt;</option>
-                                        <option value="lt">&lt;</option>
-                                        <option value="between">between</option>
-                                        <option value="in">in (csv)</option>
-                                      </select>
+                                  <div className="flex items-center gap-1">
+                                    <select
+                                      className="h-7 w-28 rounded border bg-background px-2 text-xs"
+                                      value={clause.op}
+                                      onChange={(e) =>
+                                        setClauses((prev) =>
+                                          prev.map((c) =>
+                                            c.id === clause.id
+                                              ? {
+                                                  ...c,
+                                                  op: e.target
+                                                    .value as FilterOp,
+                                                }
+                                              : c,
+                                          ),
+                                        )
+                                      }
+                                    >
+                                      <option value="contains">contains</option>
+                                      <option value="equals">equals</option>
+                                      <option value="startsWith">
+                                        startsWith
+                                      </option>
+                                      <option value="gt">&gt;</option>
+                                      <option value="lt">&lt;</option>
+                                      <option value="between">between</option>
+                                      <option value="in">in (csv)</option>
+                                    </select>
+                                    <Input
+                                      value={clause.value}
+                                      onChange={(e) =>
+                                        setClauses((prev) =>
+                                          prev.map((c) =>
+                                            c.id === clause.id
+                                              ? {
+                                                  ...c,
+                                                  value: e.target.value,
+                                                }
+                                              : c,
+                                          ),
+                                        )
+                                      }
+                                      className="h-7 text-xs"
+                                    />
+                                    {clause.op === "between" && (
                                       <Input
-                                        value={clause.value}
+                                        value={clause.valueTo ?? ""}
                                         onChange={(e) =>
                                           setClauses((prev) =>
                                             prev.map((c) =>
                                               c.id === clause.id
                                                 ? {
                                                     ...c,
-                                                    value: e.target.value,
+                                                    valueTo: e.target.value,
                                                   }
                                                 : c,
                                             ),
                                           )
                                         }
                                         className="h-7 text-xs"
+                                        placeholder="to"
                                       />
-                                      {clause.op === "between" && (
-                                        <Input
-                                          value={clause.valueTo ?? ""}
-                                          onChange={(e) =>
-                                            setClauses((prev) =>
-                                              prev.map((c) =>
-                                                c.id === clause.id
-                                                  ? {
-                                                      ...c,
-                                                      valueTo: e.target.value,
-                                                    }
-                                                  : c,
-                                              ),
-                                            )
-                                          }
-                                          className="h-7 text-xs"
-                                          placeholder="to"
-                                        />
-                                      )}
-                                    </div>
+                                    )}
                                   </div>
-                                ))}
-
-                                <div className="flex gap-1">
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    className="h-7 px-3 text-xs"
-                                    onClick={addClause}
-                                  >
-                                    + Clause
-                                  </Button>
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    className="h-7 px-3 text-xs"
-                                    onClick={clearFilters}
-                                  >
-                                    Clear
-                                  </Button>
                                 </div>
-                              </div>
+                              ))}
 
-                              <div className="rounded-md border p-2 space-y-2">
-                                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                                  Sort
-                                </span>
-                                <div className="flex gap-1">
-                                  <select
-                                    className="h-7 flex-1 rounded border bg-background px-2 text-xs"
-                                    value={sortKey}
-                                    onChange={(e) => setSortKey(e.target.value)}
-                                  >
-                                    <option value="">No sort</option>
-                                    {activeSectionCols.map((c) => (
-                                      <option key={c.key} value={c.key}>
-                                        {c.label}
-                                      </option>
-                                    ))}
-                                  </select>
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    className="h-7 px-3 text-xs"
-                                    onClick={() =>
-                                      setSortDir((d) =>
-                                        d === "asc" ? "desc" : "asc",
-                                      )
-                                    }
-                                  >
-                                    {sortDir.toUpperCase()}
-                                  </Button>
-                                </div>
+                              <div className="flex gap-1">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-7 px-3 text-xs"
+                                  onClick={addClause}
+                                >
+                                  + Clause
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-7 px-3 text-xs"
+                                  onClick={clearFilters}
+                                >
+                                  Clear
+                                </Button>
                               </div>
+                            </div>
 
-                              <div className="rounded-md border p-2 space-y-2">
-                                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                                  Header Filters
-                                </span>
-                                {activeSectionCols.length === 0 ? (
-                                  <p className="text-xs text-muted-foreground">
-                                    No columns available.
-                                  </p>
-                                ) : (
-                                  <div className="space-y-2">
-                                    {activeSectionCols.map((col) => {
-                                      const hf = headerFilters[col.key];
-                                      return (
-                                        <div
-                                          key={col.key}
-                                          className="space-y-1 rounded border p-1.5"
-                                        >
-                                          <div className="flex items-center justify-between">
-                                            <span className="text-xs font-medium truncate">
-                                              {col.label}
-                                            </span>
-                                            <Button
-                                              size="sm"
-                                              variant={
-                                                hf ? "secondary" : "ghost"
-                                              }
-                                              className="h-6 px-2 text-[10px]"
-                                              onClick={() =>
-                                                setHeaderFilters((prev) => {
-                                                  const copy = { ...prev };
-                                                  if (copy[col.key]) {
-                                                    delete copy[col.key];
-                                                  } else {
-                                                    copy[col.key] = {
-                                                      op: "contains",
-                                                      value: "",
-                                                    };
-                                                  }
-                                                  return copy;
-                                                })
+                            <div className="rounded-md border p-2 space-y-2">
+                              <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                                Sort
+                              </span>
+                              <div className="flex gap-1">
+                                <select
+                                  className="h-7 flex-1 rounded border bg-background px-2 text-xs"
+                                  value={sortKey}
+                                  onChange={(e) => setSortKey(e.target.value)}
+                                >
+                                  <option value="">No sort</option>
+                                  {activeSectionCols.map((c) => (
+                                    <option key={c.key} value={c.key}>
+                                      {c.label}
+                                    </option>
+                                  ))}
+                                </select>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-7 px-3 text-xs"
+                                  onClick={() =>
+                                    setSortDir((d) =>
+                                      d === "asc" ? "desc" : "asc",
+                                    )
+                                  }
+                                >
+                                  {sortDir.toUpperCase()}
+                                </Button>
+                              </div>
+                            </div>
+
+                            <div className="rounded-md border p-2 space-y-2">
+                              <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                                Header Filters
+                              </span>
+                              {activeSectionCols.length === 0 ? (
+                                <p className="text-xs text-muted-foreground">
+                                  No columns available.
+                                </p>
+                              ) : (
+                                <div className="space-y-2">
+                                  {activeSectionCols.map((col) => {
+                                    const hf = headerFilters[col.key];
+                                    return (
+                                      <div
+                                        key={col.key}
+                                        className="space-y-1 rounded border p-1.5"
+                                      >
+                                        <div className="flex items-center justify-between">
+                                          <span className="text-xs font-medium truncate">
+                                            {col.label}
+                                          </span>
+                                          <Button
+                                            size="sm"
+                                            variant={hf ? "secondary" : "ghost"}
+                                            className="h-6 px-2 text-[10px]"
+                                            onClick={() =>
+                                              setHeaderFilters((prev) => {
+                                                const copy = { ...prev };
+                                                if (copy[col.key]) {
+                                                  delete copy[col.key];
+                                                } else {
+                                                  copy[col.key] = {
+                                                    op: "contains",
+                                                    value: "",
+                                                  };
+                                                }
+                                                return copy;
+                                              })
+                                            }
+                                          >
+                                            {hf ? "On" : "Off"}
+                                          </Button>
+                                        </div>
+
+                                        {hf && (
+                                          <div className="flex items-center gap-1">
+                                            <select
+                                              className="h-7 w-24 rounded border bg-background px-2 text-xs"
+                                              value={hf.op}
+                                              onChange={(e) =>
+                                                setHeaderFilters((prev) => ({
+                                                  ...prev,
+                                                  [col.key]: {
+                                                    ...prev[col.key],
+                                                    op: e.target
+                                                      .value as HeaderColumnFilter["op"],
+                                                  },
+                                                }))
                                               }
                                             >
-                                              {hf ? "On" : "Off"}
-                                            </Button>
-                                          </div>
-
-                                          {hf && (
-                                            <div className="flex items-center gap-1">
-                                              <select
-                                                className="h-7 w-24 rounded border bg-background px-2 text-xs"
-                                                value={hf.op}
-                                                onChange={(e) =>
-                                                  setHeaderFilters((prev) => ({
-                                                    ...prev,
-                                                    [col.key]: {
-                                                      ...prev[col.key],
-                                                      op: e.target
-                                                        .value as HeaderColumnFilter["op"],
-                                                    },
-                                                  }))
-                                                }
-                                              >
-                                                <option value="contains">
-                                                  contains
-                                                </option>
-                                                <option value="equals">
-                                                  equals
-                                                </option>
-                                                <option value="startsWith">
-                                                  startsWith
-                                                </option>
-                                                <option value="gt">&gt;</option>
-                                                <option value="lt">&lt;</option>
-                                                <option value="between">
-                                                  between
-                                                </option>
-                                              </select>
+                                              <option value="contains">
+                                                contains
+                                              </option>
+                                              <option value="equals">
+                                                equals
+                                              </option>
+                                              <option value="startsWith">
+                                                startsWith
+                                              </option>
+                                              <option value="gt">&gt;</option>
+                                              <option value="lt">&lt;</option>
+                                              <option value="between">
+                                                between
+                                              </option>
+                                            </select>
+                                            <Input
+                                              value={hf.value}
+                                              onChange={(e) =>
+                                                setHeaderFilters((prev) => ({
+                                                  ...prev,
+                                                  [col.key]: {
+                                                    ...prev[col.key],
+                                                    value: e.target.value,
+                                                  },
+                                                }))
+                                              }
+                                              className="h-7 text-xs"
+                                            />
+                                            {hf.op === "between" && (
                                               <Input
-                                                value={hf.value}
+                                                value={hf.valueTo ?? ""}
                                                 onChange={(e) =>
                                                   setHeaderFilters((prev) => ({
                                                     ...prev,
                                                     [col.key]: {
                                                       ...prev[col.key],
-                                                      value: e.target.value,
+                                                      valueTo: e.target.value,
                                                     },
                                                   }))
                                                 }
                                                 className="h-7 text-xs"
+                                                placeholder="to"
                                               />
-                                              {hf.op === "between" && (
-                                                <Input
-                                                  value={hf.valueTo ?? ""}
-                                                  onChange={(e) =>
-                                                    setHeaderFilters(
-                                                      (prev) => ({
-                                                        ...prev,
-                                                        [col.key]: {
-                                                          ...prev[col.key],
-                                                          valueTo:
-                                                            e.target.value,
-                                                        },
-                                                      }),
-                                                    )
-                                                  }
-                                                  className="h-7 text-xs"
-                                                  placeholder="to"
-                                                />
-                                              )}
-                                            </div>
-                                          )}
-                                        </div>
-                                      );
-                                    })}
-                                  </div>
-                                )}
-                              </div>
+                                            )}
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
 
-                              <div className="rounded-md border p-2 space-y-2">
-                                <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                                  Saved Views
-                                </span>
-                                <div className="flex gap-1">
-                                  <Input
-                                    value={viewName}
-                                    onChange={(e) =>
-                                      setViewName(e.target.value)
-                                    }
-                                    placeholder="View name"
-                                    className="h-7 text-xs"
-                                  />
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    className="h-7 px-3 text-xs"
-                                    onClick={saveCurrentView}
+                            <div className="rounded-md border p-2 space-y-2">
+                              <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                                Saved Views
+                              </span>
+                              <div className="flex gap-1">
+                                <Input
+                                  value={viewName}
+                                  onChange={(e) => setViewName(e.target.value)}
+                                  placeholder="View name"
+                                  className="h-7 text-xs"
+                                />
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-7 px-3 text-xs"
+                                  onClick={saveCurrentView}
+                                >
+                                  Save
+                                </Button>
+                              </div>
+                              <div className="max-h-28 overflow-y-auto space-y-1">
+                                {savedViews.map((view) => (
+                                  <div
+                                    key={view.id}
+                                    className="flex items-center gap-1"
                                   >
-                                    Save
-                                  </Button>
-                                </div>
-                                <div className="max-h-28 overflow-y-auto space-y-1">
-                                  {savedViews.map((view) => (
-                                    <div
-                                      key={view.id}
-                                      className="flex items-center gap-1"
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      className="h-7 flex-1 justify-start px-2 text-xs"
+                                      onClick={() => loadView(view)}
                                     >
-                                      <Button
-                                        size="sm"
-                                        variant="ghost"
-                                        className="h-7 flex-1 justify-start px-2 text-xs"
-                                        onClick={() => loadView(view)}
-                                      >
-                                        {view.name}
-                                      </Button>
-                                      <Button
-                                        size="sm"
-                                        variant="ghost"
-                                        className="h-7 px-2 text-xs"
-                                        onClick={() =>
-                                          persistViews(
-                                            savedViews.filter(
-                                              (v) => v.id !== view.id,
-                                            ),
-                                          )
-                                        }
-                                      >
-                                        ✕
-                                      </Button>
-                                    </div>
-                                  ))}
-                                </div>
+                                      {view.name}
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      className="h-7 px-2 text-xs"
+                                      onClick={() =>
+                                        persistViews(
+                                          savedViews.filter(
+                                            (v) => v.id !== view.id,
+                                          ),
+                                        )
+                                      }
+                                    >
+                                      ✕
+                                    </Button>
+                                  </div>
+                                ))}
                               </div>
                             </div>
-                          )}
-                        </div>
+                          </div>
+                        )}
                       </div>
-                    );
-                  })()
-                : !loading && (
-                    <p className="text-xs text-muted-foreground italic px-3 pt-2">
-                      No data loaded
-                    </p>
-                  )}
-            </div>
-          </ScrollArea>
-        </div>
-      )}
+                    </div>
+                  );
+                })()
+              : !loading && (
+                  <p className="text-xs text-muted-foreground italic px-3 pt-2">
+                    No data loaded
+                  </p>
+                )}
+          </div>
+        </ScrollArea>
+      </div>
 
       {/* ── Tables preview dialog ─────────────────────────────────────────── */}
       {renderer && (

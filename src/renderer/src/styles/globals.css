@@ -75,6 +75,30 @@
   background: hsl(var(--muted-foreground) / 0.5);
 }
 
+/* Extraction table scrollbar: thicker on hover for easier grab */
+.extraction-table-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.extraction-table-scrollbar::-webkit-scrollbar:hover {
+  width: 12px;
+  height: 12px;
+}
+
+.extraction-table-scrollbar::-webkit-scrollbar-track {
+  background: hsl(var(--muted) / 0.35);
+}
+
+.extraction-table-scrollbar::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 9999px;
+}
+
+.extraction-table-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.45);
+}
+
 /* Disable text selection on UI elements */
 .no-select {
   user-select: none;
