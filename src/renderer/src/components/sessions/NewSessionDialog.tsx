@@ -24,6 +24,14 @@ import {
   FileScan,
   Construction,
   Settings2,
+  Receipt,
+  ScrollText,
+  ClipboardList,
+  Scale,
+  BarChart3,
+  BadgeCheck,
+  HelpCircle,
+  type LucideIcon,
 } from "lucide-react";
 import type { SessionColumn, SessionPresetRecord } from "@shared/types";
 import {
@@ -39,6 +47,7 @@ interface NewSessionDialogProps {
   open: boolean;
   onClose: () => void;
   onCreated: (sessionId: string, docIds: string[]) => void;
+  defaultMode?: SessionMode;
 }
 
 type SessionMode =
@@ -46,6 +55,72 @@ type SessionMode =
   | "TABLE_EXTRACT"
   | "PDF_EXTRACT"
   | "JSON_EXTRACT";
+
+type PdfDocumentType =
+  | "INVOICE"
+  | "CONTRACT"
+  | "REPORT"
+  | "FORM"
+  | "LEGAL"
+  | "RECEIPT"
+  | "ID"
+  | "OTHER";
+
+const PDF_DOC_TYPES: {
+  value: PdfDocumentType;
+  icon: LucideIcon;
+  label: string;
+  desc: string;
+}[] = [
+  {
+    value: "INVOICE",
+    icon: Receipt,
+    label: "Invoice / Bill",
+    desc: "Billing documents, purchase orders, and statements.",
+  },
+  {
+    value: "CONTRACT",
+    icon: ScrollText,
+    label: "Contract / Agreement",
+    desc: "Signed agreements, terms, MoUs and similar.",
+  },
+  {
+    value: "REPORT",
+    icon: BarChart3,
+    label: "Report / Letter",
+    desc: "Business or technical reports and correspondence.",
+  },
+  {
+    value: "FORM",
+    icon: ClipboardList,
+    label: "Form / Application",
+    desc: "Filled-in forms, registrations, or applications.",
+  },
+  {
+    value: "LEGAL",
+    icon: Scale,
+    label: "Legal / Court Order",
+    desc: "Court orders, judgements, and legal filings.",
+  },
+  {
+    value: "ID",
+    icon: BadgeCheck,
+    label: "ID / Certificate",
+    desc: "Identity documents, licences, and certificates.",
+  },
+  {
+    value: "RECEIPT",
+    icon: FileText,
+    label: "Receipt / Voucher",
+    desc: "Payment receipts and transaction vouchers.",
+  },
+  {
+    value: "OTHER",
+    icon: HelpCircle,
+    label: "Other",
+    desc: "Any other document type not listed above.",
+  },
+];
 type SourceType = "FILES" | "FOLDER";
 
 const STEPS = ["Details", "Columns", "Source"] as const;
@@ -62,13 +137,14 @@ export function NewSessionDialog({
   open,
   onClose,
   onCreated,
+  defaultMode,
 }: NewSessionDialogProps) {
   // ── Step ─────────────────────────────────────────────
   const [step, setStep] = useState(1);
 
   // ── Step 1 ────────────────────────────────────────────
   const [name, setName] = useState("");
-  const [mode, setMode] = useState<SessionMode>("OCR_EXTRACT");
+  const [mode, setMode] = useState<SessionMode>(defaultMode ?? "OCR_EXTRACT");
 
   // ── Step 2 (TABLE_EXTRACT columns) ───────────────────
   const [columns, setColumns] = useState<SessionColumn[]>([
@@ -88,6 +164,11 @@ export function NewSessionDialog({
   const [selectedPresetId, setSelectedPresetId] = useState<string>("none");
   const [presetDialogOpen, setPresetDialogOpen] = useState(false);
 
+  // ── PDF document type ──────────────────────────────────
+  const [documentType, setDocumentType] = useState<PdfDocumentType | "">(
+    "INVOICE",
+  );
+
   // ── Loading ────────────────────────────────────────────
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -106,20 +187,21 @@ export function NewSessionDialog({
   }, [open]);
 
   // ── Total steps depends on mode ────────────────────────
-  const totalSteps = mode === "TABLE_EXTRACT" ? 3 : 2;
-  const isMockMode = mode === "PDF_EXTRACT" || mode === "JSON_EXTRACT";
+  const totalSteps = mode === "TABLE_EXTRACT" || mode === "PDF_EXTRACT" ? 3 : 2;
+  const isMockMode = mode === "JSON_EXTRACT";
 
   // ── Reset on close ────────────────────────────────────
   const handleClose = () => {
     setStep(1);
     setName("");
-    setMode("OCR_EXTRACT");
+    setMode(defaultMode ?? "OCR_EXTRACT");
     setColumns([{ key: "", label: "", question: "" }]);
     setColumnInputMode("MANUAL");
     setSourceType("FILES");
     setFilePaths([]);
     setFolderPath("");
     setSelectedPresetId("none");
+    setDocumentType("INVOICE");
     setError("");
     onClose();
   };
@@ -155,23 +237,28 @@ export function NewSessionDialog({
         (c) => c.label.trim() && c.key.trim() && c.question.trim(),
       );
     }
-    const lastStep = mode === "TABLE_EXTRACT" ? 3 : 2;
-    if (step === lastStep) {
+    // Source step for OCR_EXTRACT (step 2) and PDF_EXTRACT (step 2) and TABLE_EXTRACT (step 3)
+    const sourceStep = mode === "TABLE_EXTRACT" ? 3 : 2;
+    if (step === sourceStep && mode !== "PDF_EXTRACT") {
       return sourceType === "FILES"
         ? filePaths.length > 0
         : folderPath.trim().length > 0;
+    }
+    // PDF_EXTRACT: step 2 = source, step 3 = doc type
+    if (mode === "PDF_EXTRACT") {
+      if (step === 2) {
+        return sourceType === "FILES"
+          ? filePaths.length > 0
+          : folderPath.trim().length > 0;
+      }
+      if (step === 3) return documentType !== "";
     }
     return true;
   };
 
   const nextStep = () => {
     if (!canAdvance()) return;
-    // Skip column step for OCR_EXTRACT
-    if (step === 1 && mode === "OCR_EXTRACT") {
-      setStep(2); // sourceType step becomes step 2 for OCR_EXTRACT
-    } else {
-      setStep((s) => s + 1);
-    }
+    setStep((s) => s + 1);
   };
 
   // ── File picker ───────────────────────────────────────
@@ -226,9 +313,10 @@ export function NewSessionDialog({
       // 1. Create session
       const session = await sessionsApi.create({
         name: name.trim(),
-        mode: mode as "OCR_EXTRACT" | "TABLE_EXTRACT",
+        mode,
         columns: mode === "TABLE_EXTRACT" ? columns : [],
         sourceType,
+        documentType: mode === "PDF_EXTRACT" ? documentType : undefined,
       });
 
       // 2. Ingest files / folder
@@ -249,7 +337,10 @@ export function NewSessionDialog({
   };
 
   // ── Render ─────────────────────────────────────────────
-  const isLastStep = mode === "TABLE_EXTRACT" ? step === 3 : step === 2;
+  const isLastStep =
+    mode === "TABLE_EXTRACT" || mode === "PDF_EXTRACT"
+      ? step === 3
+      : step === 2;
 
   return (
     <Dialog open={open} onOpenChange={(v) => !v && handleClose()}>
@@ -258,7 +349,9 @@ export function NewSessionDialog({
         <div className="flex border-b px-6 pt-5 pb-0 gap-0">
           {(mode === "TABLE_EXTRACT"
             ? ["Details", "Columns", "Source"]
-            : ["Details", "Source"]
+            : mode === "PDF_EXTRACT"
+              ? ["Details", "Source", "Doc Type"]
+              : ["Details", "Source"]
           ).map((label, i) => {
             const n = i + 1;
             const active = n === step;
@@ -289,7 +382,10 @@ export function NewSessionDialog({
                   </span>
                   {label}
                 </button>
-                {i < (mode === "TABLE_EXTRACT" ? 2 : 1) && (
+                {i <
+                  (mode === "TABLE_EXTRACT" || mode === "PDF_EXTRACT"
+                    ? 2
+                    : 1) && (
                   <ChevronRight className="h-3 w-3 text-muted-foreground mx-1 mb-2" />
                 )}
               </div>
@@ -311,70 +407,70 @@ export function NewSessionDialog({
                   onKeyDown={(e) => e.key === "Enter" && nextStep()}
                 />
               </div>
-
-              <div className="space-y-2">
-                <label className="text-sm font-medium">Processing Mode</label>
-                <div className="grid grid-cols-2 gap-3">
-                  {(
-                    [
-                      {
-                        value: "OCR_EXTRACT" as const,
-                        icon: FileText,
-                        title: "OCR Extract",
-                        desc: "Full OCR — extract text, tables, and confidence scores from each document.",
-                        mock: false,
-                      },
-                      {
-                        value: "TABLE_EXTRACT" as const,
-                        icon: Table2,
-                        title: "Table Extract",
-                        desc: "Define columns (e.g. Case No, Date, Respondent) and AI fills them from each document.",
-                        mock: false,
-                      },
-                      {
-                        value: "PDF_EXTRACT" as const,
-                        icon: FileScan,
-                        title: "PDF Extract",
-                        desc: "Directly extract structured text from digital PDF files — no OCR needed.",
-                        mock: true,
-                      },
-                      {
-                        value: "JSON_EXTRACT" as const,
-                        icon: FileJson,
-                        title: "JSON Extract",
-                        desc: "Use an LLM to extract fields and output structured JSON from logistics documents.",
-                        mock: true,
-                      },
-                    ] as const
-                  ).map(({ value, icon: Icon, title, desc, mock }) => (
-                    <button
-                      key={value}
-                      type="button"
-                      onClick={() => setMode(value)}
-                      className={`relative text-left p-4 rounded-xl border-2 transition-all ${
-                        mode === value
-                          ? "border-primary bg-primary/5"
-                          : "border-border hover:border-muted-foreground/50"
-                      }`}
-                    >
-                      {mock && (
-                        <span className="absolute top-2 right-2 inline-flex items-center gap-0.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-semibold text-amber-700">
-                          <Construction className="h-2.5 w-2.5" />
-                          Soon
-                        </span>
-                      )}
-                      <Icon
-                        className={`h-5 w-5 mb-2 ${mode === value ? "text-primary" : "text-muted-foreground"}`}
-                      />
-                      <p className="text-sm font-semibold">{title}</p>
-                      <p className="text-xs text-muted-foreground mt-0.5">
-                        {desc}
-                      </p>
-                    </button>
-                  ))}
+              {!defaultMode && (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Processing Mode</label>
+                  <div className="grid grid-cols-2 gap-3">
+                    {(
+                      [
+                        {
+                          value: "OCR_EXTRACT" as const,
+                          icon: FileText,
+                          title: "OCR Extract",
+                          desc: "Full OCR — extract text, tables, and confidence scores from each document.",
+                          mock: false,
+                        },
+                        {
+                          value: "TABLE_EXTRACT" as const,
+                          icon: Table2,
+                          title: "Table Extract",
+                          desc: "Define columns (e.g. Case No, Date, Respondent) and AI fills them from each document.",
+                          mock: false,
+                        },
+                        {
+                          value: "PDF_EXTRACT" as const,
+                          icon: FileScan,
+                          title: "PDF Extract",
+                          desc: "Directly extract structured text from digital PDF files — no OCR needed.",
+                          mock: false,
+                        },
+                        {
+                          value: "JSON_EXTRACT" as const,
+                          icon: FileJson,
+                          title: "JSON Extract",
+                          desc: "Use an LLM to extract fields and output structured JSON from logistics documents.",
+                          mock: true,
+                        },
+                      ] as const
+                    ).map(({ value, icon: Icon, title, desc, mock }) => (
+                      <button
+                        key={value}
+                        type="button"
+                        onClick={() => setMode(value)}
+                        className={`relative text-left p-4 rounded-xl border-2 transition-all ${
+                          mode === value
+                            ? "border-primary bg-primary/5"
+                            : "border-border hover:border-muted-foreground/50"
+                        }`}
+                      >
+                        {mock && (
+                          <span className="absolute top-2 right-2 inline-flex items-center gap-0.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-semibold text-amber-700">
+                            <Construction className="h-2.5 w-2.5" />
+                            Soon
+                          </span>
+                        )}
+                        <Icon
+                          className={`h-5 w-5 mb-2 ${mode === value ? "text-primary" : "text-muted-foreground"}`}
+                        />
+                        <p className="text-sm font-semibold">{title}</p>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          {desc}
+                        </p>
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </div>
-
+              )}
             </>
           )}
 
@@ -425,7 +521,9 @@ export function NewSessionDialog({
                 <div className="space-y-3">
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
-                      <label className="text-xs font-medium">Select Preset</label>
+                      <label className="text-xs font-medium">
+                        Select Preset
+                      </label>
                       <Button
                         variant="ghost"
                         size="sm"
@@ -467,7 +565,9 @@ export function NewSessionDialog({
                           <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
                             Column Label
                           </p>
-                          <p className="text-xs font-medium">{col.label || "-"}</p>
+                          <p className="text-xs font-medium">
+                            {col.label || "-"}
+                          </p>
                           <p className="text-[10px] font-mono text-muted-foreground">
                             key: {col.key || "-"}
                           </p>
@@ -556,8 +656,48 @@ export function NewSessionDialog({
             </div>
           )}
 
+          {/* ── STEP 3: Doc Type (PDF_EXTRACT only) ── */}
+          {step === 3 && mode === "PDF_EXTRACT" && (
+            <div className="space-y-3">
+              <div>
+                <p className="text-sm font-medium">Document Type</p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Select the type of document you are extracting. This helps
+                  tailor the extraction pipeline.
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-2.5">
+                {PDF_DOC_TYPES.map(({ value, icon: Icon, label, desc }) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setDocumentType(value)}
+                    className={`text-left p-3 rounded-xl border-2 transition-all ${
+                      documentType === value
+                        ? "border-primary bg-primary/5"
+                        : "border-border hover:border-muted-foreground/50"
+                    }`}
+                  >
+                    <Icon
+                      className={`h-4 w-4 mb-1.5 ${
+                        documentType === value
+                          ? "text-primary"
+                          : "text-muted-foreground"
+                      }`}
+                    />
+                    <p className="text-xs font-semibold">{label}</p>
+                    <p className="text-[10px] text-muted-foreground mt-0.5 leading-tight">
+                      {desc}
+                    </p>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* ── STEP 2/3: Source ── */}
           {((step === 2 && mode === "OCR_EXTRACT") ||
+            (step === 2 && mode === "PDF_EXTRACT") ||
             (step === 3 && mode === "TABLE_EXTRACT")) && (
             <div className="space-y-4">
               <div className="space-y-2">
@@ -671,14 +811,7 @@ export function NewSessionDialog({
           <Button
             variant="ghost"
             size="sm"
-            onClick={
-              step === 1
-                ? handleClose
-                : () => {
-                    if (step === 2 && mode === "OCR_EXTRACT") setStep(1);
-                    else setStep((s) => s - 1);
-                  }
-            }
+            onClick={step === 1 ? handleClose : () => setStep((s) => s - 1)}
           >
             {step === 1 ? (
               "Cancel"

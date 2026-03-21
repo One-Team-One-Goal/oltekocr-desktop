@@ -32,9 +32,9 @@ export class CreateSessionDto {
   @IsNotEmpty()
   name: string;
 
-  @ApiProperty({ enum: ["OCR_EXTRACT", "TABLE_EXTRACT"] })
-  @IsEnum(["OCR_EXTRACT", "TABLE_EXTRACT"])
-  mode: "OCR_EXTRACT" | "TABLE_EXTRACT";
+  @ApiProperty({ enum: ["OCR_EXTRACT", "TABLE_EXTRACT", "PDF_EXTRACT", "JSON_EXTRACT"] })
+  @IsEnum(["OCR_EXTRACT", "TABLE_EXTRACT", "PDF_EXTRACT", "JSON_EXTRACT"])
+  mode: "OCR_EXTRACT" | "TABLE_EXTRACT" | "PDF_EXTRACT" | "JSON_EXTRACT";
 
   @ApiPropertyOptional({ type: [SessionColumnDto] })
   @IsOptional()
@@ -51,6 +51,11 @@ export class CreateSessionDto {
   @IsOptional()
   @IsString()
   sourcePath?: string;
+
+  @ApiPropertyOptional({ example: "INVOICE" })
+  @IsOptional()
+  @IsString()
+  documentType?: string;
 }
 
 export class UpdateColumnsDto {
@@ -94,4 +99,15 @@ export class DuplicateSessionDto {
   @IsString()
   @IsNotEmpty()
   name?: string;
+}
+
+export class UpdateExtractionModelDto {
+  @ApiProperty({
+    example: "docling",
+    description:
+      'Extraction model ID: "docling" | "pdfplumber" | "pymupdf" | "unstructured"',
+  })
+  @IsString()
+  @IsNotEmpty()
+  extractionModel: string;
 }

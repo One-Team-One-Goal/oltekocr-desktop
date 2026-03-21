@@ -80,6 +80,14 @@ export class UpdateDocumentDto {
   })
   @IsOptional()
   extractedRow?: Record<string, unknown>;
+
+  @ApiPropertyOptional({
+    enum: ["IMAGE", "PDF_TEXT", "PDF_IMAGE", "EXCEL"],
+    description: "How this file should be processed",
+  })
+  @IsOptional()
+  @IsString()
+  extractionType?: string;
 }
 
 export class RejectDocumentDto {

@@ -13,6 +13,7 @@ interface OltekApi {
     canceled: boolean;
     filePath: string;
   }>;
+  copyFile: (fromPath: string, toPath: string) => Promise<void>;
   getAppPath: () => Promise<string>;
   showItemInFolder: (path: string) => Promise<void>;
   getNestPort: () => Promise<number>;

@@ -4,7 +4,14 @@ import { sessionsApi, queueApi, exportApi } from "@/api/client";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { SessionDataTable } from "./SessionDataTable";
 import { ReviewDialog } from "@/components/ReviewDialog";
+import { ContractReviewDialog } from "./ContractReviewDialog";
 import { EditColumnsDialog } from "./EditColumnsDialog";
+import { WindowControls } from "@/components/layout/SidebarContext";
+import { ExtractionView } from "./ExtractionPanel";
+import { checkUnsaved, markSaved } from "@/lib/unsaved-sessions";
+
+const drag = { WebkitAppRegion: "drag" } as React.CSSProperties;
+const noDrag = { WebkitAppRegion: "no-drag" } as React.CSSProperties;
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -16,8 +23,6 @@ import {
 } from "@/components/ui/select";
 import {
   ArrowLeft,
-  FilePlus,
-  FolderOpen,
   RefreshCw,
   FileOutput,
   Search,
@@ -93,6 +98,9 @@ export function SessionDetail() {
   const [reviewDocId, setReviewDocId] = useState<string | null>(null);
   const [editColumnsOpen, setEditColumnsOpen] = useState(false);
   const [isStopPending, setIsStopPending] = useState(false);
+  const [isUnsaved, setIsUnsaved] = useState(false);
+  const [saveName, setSaveName] = useState("");
+  const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
   // Derived — true while any doc is actively running (not counting CANCELLING, so
   // pressing Stop flips the button to Play immediately even if Python is still finishing up)
   const isRunning = documents.some(
@@ -123,6 +131,12 @@ export function SessionDetail() {
       setSession(sessionData);
       setDocuments(docsData);
       setStats(statsData);
+      // Check unsaved status once session name is loaded
+      if (id) {
+        const unsaved = checkUnsaved(id);
+        setIsUnsaved(unsaved);
+        if (unsaved) setSaveName(sessionData.name);
+      }
     } catch (err) {
       console.error("Failed to fetch session:", err);
     } finally {
@@ -134,6 +148,12 @@ export function SessionDetail() {
     setLoading(true);
     refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    if (session?.mode === "PDF_EXTRACT" && id) {
+      navigate(`/pdf-sessions/${id}`, { replace: true });
+    }
+  }, [session?.mode, id, navigate]);
 
   // ── Apply filters ──────────────────────────────────────
   useEffect(() => {
@@ -148,6 +168,15 @@ export function SessionDetail() {
     setFilteredDocs(result);
   }, [documents, statusFilter, searchQuery]);
 
+  // PDF mode is single-document per session; open that document immediately.
+  useEffect(() => {
+    if (session?.mode !== "PDF_EXTRACT") return;
+    if (selectedDocId) return;
+    if (documents.length > 0) {
+      setSelectedDocId(documents[0].id);
+    }
+  }, [session?.mode, documents, selectedDocId]);
+
   // ── WebSocket ──────────────────────────────────────────
   const handleWsEvent = useCallback(
     (event: WsEvent) => {
@@ -159,21 +188,34 @@ export function SessionDetail() {
   );
   useWebSocket(handleWsEvent);
 
-  // ── Add files ──────────────────────────────────────────
-  const handleAddFiles = async () => {
-    const result = await window.api.openFileDialog();
-    if (!result.canceled && result.filePaths.length > 0) {
-      await sessionsApi.ingestFiles(id!, result.filePaths);
+  useEffect(() => {
+    if (!isRunning) return;
+    const timer = window.setInterval(() => {
       refresh();
-    }
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [isRunning, refresh]);
+
+  // ── Save / back (unsaved sessions) ────────────────────
+  const modeToRoute: Record<string, string> = {
+    PDF_EXTRACT: "/",
+    OCR_EXTRACT: "/ocr-extract",
+    TABLE_EXTRACT: "/keyword-extract",
   };
 
-  const handleAddFolder = async () => {
-    const result = await window.api.openFolderDialog();
-    if (!result.canceled && result.filePaths.length > 0) {
-      await sessionsApi.ingestFolder(id!, result.filePaths[0]);
-      refresh();
+  const handleSave = async () => {
+    if (!id || !saveName.trim()) return;
+    await sessionsApi.rename(id, saveName.trim());
+    markSaved(id);
+    setIsUnsaved(false);
+    setSession((prev) => (prev ? { ...prev, name: saveName.trim() } : prev));
+  };
+
+  const handleBack = () => {
+    if (id && isUnsaved) {
+      markSaved(id); // accept the auto-generated "Unnamed N" name
     }
+    navigate(modeToRoute[session?.mode ?? "PDF_EXTRACT"] ?? "/");
   };
 
   // ── Play / Stop ──────────────────────────────────────────
@@ -206,7 +248,16 @@ export function SessionDetail() {
   const handleExport = async () => {
     const ids = documents.map((d) => d.id);
     if (ids.length === 0) return;
-    await exportApi.exportDocuments(ids, "excel");
+    try {
+      const result = await exportApi.exportDocuments(ids, "excel");
+      if (result?.exportPath) {
+        await window.api.showItemInFolder(result.exportPath).catch(() => {});
+      }
+      refresh();
+    } catch (err: any) {
+      console.error("Export failed:", err);
+      alert(err?.message || "Export failed");
+    }
   };
 
   // ── Mode badge ─────────────────────────────────────────
@@ -225,16 +276,22 @@ export function SessionDetail() {
     );
   }
 
+  const selectedReviewDocument = reviewDocId
+    ? (documents.find((d) => d.id === reviewDocId) ?? null)
+    : null;
   return (
     <div className="flex flex-col h-full bg-background">
       {/* Header */}
-      <header className="flex items-center justify-between h-14 px-4 border-b shrink-0 gap-3">
-        <div className="flex items-center gap-3 min-w-0">
+      <header
+        className="flex items-stretch h-14 pl-4 border-b shrink-0"
+        style={drag}
+      >
+        <div className="flex items-center gap-3 min-w-0 flex-1" style={noDrag}>
           <Button
             variant="ghost"
             size="icon"
             className="shrink-0"
-            onClick={() => navigate("/")}
+            onClick={handleBack}
           >
             <ArrowLeft className="h-4 w-4" />
           </Button>
@@ -245,7 +302,7 @@ export function SessionDetail() {
             {modeBadge}
           </div>
         </div>
-        <div className="flex items-center gap-1.5 shrink-0">
+        <div className="flex items-center gap-1.5 shrink-0" style={noDrag}>
           {/* Play / Stop */}
           {(() => {
             const canStart =
@@ -272,36 +329,15 @@ export function SessionDetail() {
             );
           })()}
 
-          {/* Add / Export button group */}
-          <div className="flex">
-            <Button
-              variant="outline"
-              size="sm"
-              className="gap-1.5 text-xs rounded-r-none border-r-0"
-              onClick={handleAddFiles}
-            >
-              <FilePlus className="h-3.5 w-3.5" />
-              Add Files
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="gap-1.5 text-xs rounded-none border-r-0"
-              onClick={handleAddFolder}
-            >
-              <FolderOpen className="h-3.5 w-3.5" />
-              Add Folder
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="gap-1.5 text-xs rounded-l-none"
-              onClick={handleExport}
-            >
-              <FileOutput className="h-3.5 w-3.5" />
-              Export
-            </Button>
-          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1.5 text-xs"
+            onClick={handleExport}
+          >
+            <FileOutput className="h-3.5 w-3.5" />
+            Export
+          </Button>
 
           <Button variant="ghost" size="icon" onClick={refresh}>
             <RefreshCw className="h-4 w-4" />
@@ -318,27 +354,89 @@ export function SessionDetail() {
             </Button>
           )}
         </div>
+        <WindowControls />
       </header>
+
+      {/* Inline save bar — shown for newly created unsaved sessions */}
+      {isUnsaved && (
+        <div className="flex items-center gap-3 px-4 py-2 bg-amber-500/10 border-b border-amber-500/25 shrink-0">
+          <span className="text-xs font-medium text-amber-600 dark:text-amber-400 shrink-0">
+            Unsaved session
+          </span>
+          <Input
+            value={saveName}
+            onChange={(e) => setSaveName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleSave()}
+            placeholder="Session name…"
+            className="h-7 max-w-xs text-xs"
+          />
+          <Button
+            size="sm"
+            className="h-7 text-xs"
+            onClick={handleSave}
+            disabled={!saveName.trim()}
+          >
+            Save
+          </Button>
+        </div>
+      )}
 
       {/* Stats + filter */}
       <div className="px-4 pt-4 pb-3 space-y-3 shrink-0">
-        <SessionStatsStrip stats={stats} />
+        {session?.mode === "PDF_EXTRACT" ? (
+          <div className="rounded-md border bg-card px-4 py-2">
+            <div className="grid grid-cols-[1.8fr_1fr_1fr_0.8fr_0.8fr_0.6fr_0.8fr_1fr] gap-3 text-[11px] font-medium text-muted-foreground">
+              <span>Filename</span>
+              <span>Status</span>
+              <span>Scanned</span>
+              <span>Time</span>
+              <span>Conf.</span>
+              <span>Pg</span>
+              <span>Time</span>
+              <span>Ext. Type</span>
+            </div>
+          </div>
+        ) : (
+          <SessionStatsStrip stats={stats} />
+        )}
       </div>
 
-      {/* Unified data table */}
-      <div className="flex-1 min-h-0 overflow-auto px-4 pb-4">
-        <SessionDataTable
-          documents={filteredDocs}
-          loading={loading}
-          session={session}
-          onReview={setReviewDocId}
+      {/* Content area — PDF_EXTRACT with a selected doc: full-area extraction view */}
+      {session?.mode === "PDF_EXTRACT" && selectedDocId ? (
+        <ExtractionView
+          documentId={selectedDocId}
+          onClose={() => setSelectedDocId(null)}
           onRefresh={refresh}
         />
-      </div>
+      ) : (
+        <div className="flex-1 min-h-0 overflow-auto px-4 pb-4">
+          <SessionDataTable
+            documents={filteredDocs}
+            loading={loading}
+            session={session}
+            onReview={setReviewDocId}
+            onRefresh={refresh}
+            selectedDocId={selectedDocId ?? undefined}
+            onSelectDoc={setSelectedDocId}
+          />
+        </div>
+      )}
 
-      {/* Review Dialog */}
-      {reviewDocId && (
+      {/* Review Dialog — OCR/TABLE sessions */}
+      {reviewDocId && session?.mode !== "PDF_EXTRACT" && (
         <ReviewDialog
+          documentId={reviewDocId}
+          open={!!reviewDocId}
+          onClose={() => setReviewDocId(null)}
+          onRefresh={refresh}
+          session={session}
+          selectedDocument={selectedReviewDocument}
+        />
+      )}
+
+      {/* Contract Review Dialog — PDF_EXTRACT sessions */}
+      {reviewDocId && session?.mode === "PDF_EXTRACT" && (
+        <ContractReviewDialog
           documentId={reviewDocId}
           open={!!reviewDocId}
           onClose={() => setReviewDocId(null)}

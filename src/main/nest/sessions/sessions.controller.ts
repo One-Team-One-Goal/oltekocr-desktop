@@ -18,6 +18,7 @@ import {
   IngestFolderDto,
   UpdateColumnsDto,
   RenameSessionDto,
+  UpdateExtractionModelDto,
 } from "./sessions.dto";
 
 @ApiTags("sessions")
@@ -65,6 +66,15 @@ export class SessionsController {
   @ApiOperation({ summary: "Rename a session" })
   rename(@Param("id") id: string, @Body() dto: RenameSessionDto) {
     return this.sessionsService.rename(id, dto.name);
+  }
+
+  @Patch(":id/extraction-model")
+  @ApiOperation({ summary: "Change the extraction model for a session" })
+  updateExtractionModel(
+    @Param("id") id: string,
+    @Body() dto: UpdateExtractionModelDto,
+  ) {
+    return this.sessionsService.updateExtractionModel(id, dto.extractionModel);
   }
 
   @Delete(":id")

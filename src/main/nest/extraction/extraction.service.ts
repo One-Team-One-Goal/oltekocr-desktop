@@ -13,14 +13,14 @@ export interface ExtractionResult {
 @Injectable()
 export class ExtractionService {
   private readonly logger = new Logger(ExtractionService.name);
-  private readonly modelId = "mrm8488/longformer-base-4096-finetuned-squadv2";
+  private readonly fallbackModelId = "phi4-mini";
   private ready = false;
   private loadError: string | null = null;
 
   constructor(private readonly settings: SettingsService) {}
 
   private get scriptPath(): string {
-    return join(process.cwd(), "src", "main", "python", "qa_longformer.py");
+    return join(process.cwd(), "src", "main", "python", "qa_ollama.py");
   }
 
   private resolvePythonExe(): string {
@@ -36,23 +36,33 @@ export class ExtractionService {
     return configured;
   }
 
-  private runLongformerExtraction(
+  getSelectedModelId(): string {
+    const selected = this.settings.getAll().llm?.defaultModel;
+    return (selected && selected.trim()) || this.fallbackModelId;
+  }
+
+  private runOllamaExtraction(
     columns: SessionColumn[],
     context: string,
   ): Promise<Record<string, ExtractionResult>> {
     const script = this.scriptPath;
     if (!existsSync(script)) {
       return Promise.reject(
-        new Error(`Longformer sidecar script not found: ${script}`),
+        new Error(`Ollama QA sidecar script not found: ${script}`),
       );
     }
 
     const pythonExe = this.resolvePythonExe();
-    const timeoutSec = this.settings.getAll().ocr.timeout ?? 120;
+    const modelId = this.getSelectedModelId();
+    // Ollama needs substantially more time than OCR — allow at least 600s
+    const timeoutSec = Math.max(
+      (this.settings.getAll().ocr.timeout ?? 120) * 5,
+      600,
+    );
     const timeoutMs = timeoutSec * 1000;
 
     return new Promise((resolve, reject) => {
-      const child = spawn(pythonExe, [script, "--model", this.modelId], {
+      const child = spawn(pythonExe, [script, "--model", modelId], {
         windowsHide: true,
       });
 
@@ -76,9 +86,7 @@ export class ExtractionService {
 
       const timer = setTimeout(() => {
         child.kill();
-        reject(
-          new Error(`Longformer extraction timed out after ${timeoutSec}s`),
-        );
+        reject(new Error(`Ollama extraction timed out after ${timeoutSec}s`));
       }, timeoutMs);
 
       child.on("close", (code) => {
@@ -113,8 +121,10 @@ export class ExtractionService {
 
       child.on("error", (err) => {
         clearTimeout(timer);
-        reject(new Error(`Failed to start Longformer sidecar: ${err.message}`));
+        reject(new Error(`Failed to start Ollama QA sidecar: ${err.message}`));
       });
+
+      this.logger.log(`Using TABLE_EXTRACT LLM model: ${modelId}`);
 
       child.stdin.write(payload);
       child.stdin.end();
@@ -131,7 +141,7 @@ export class ExtractionService {
       question,
     };
 
-    const results = await this.runLongformerExtraction([single], context);
+    const results = await this.runOllamaExtraction([single], context);
     return results.__single__ ?? { answer: "", score: 0 };
   }
 
@@ -143,9 +153,9 @@ export class ExtractionService {
     columns: SessionColumn[],
     ocrText: string,
   ): Promise<Record<string, ExtractionResult>> {
-    this.logger.log(`Running Longformer QA sidecar (${columns.length} fields)`);
+    this.logger.log(`Running Ollama QA sidecar (${columns.length} fields)`);
 
-    const results = await this.runLongformerExtraction(columns, ocrText);
+    const results = await this.runOllamaExtraction(columns, ocrText);
     this.ready = true;
     this.loadError = null;
 
