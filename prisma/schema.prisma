@@ -17,14 +17,89 @@ model Session {
   sourcePath      String     @default("") @map("source_path")
   documentType    String     @default("") @map("document_type") // for PDF_EXTRACT: "INVOICE" | "CONTRACT" | etc.
   extractionModel String     @default("pdfplumber") @map("extraction_model") // e.g. "pdfplumber" | "pymupdf" | "unstructured"
+  schemaPresetId  String?    @map("schema_preset_id")
   status          String     @default("PENDING")       // "PENDING" | "PROCESSING" | "DONE" | "ERROR"
   createdAt       DateTime   @default(now()) @map("created_at")
   updatedAt       DateTime   @updatedAt @map("updated_at")
   documents       Document[]
+  schemaFields    SessionSchemaField[]
+  schemaPreset    SchemaPreset? @relation(fields: [schemaPresetId], references: [id], onDelete: SetNull)
 
   @@index([status])
   @@index([createdAt])
+  @@index([schemaPresetId])
   @@map("sessions")
+}
+
+model SchemaPreset {
+  id        String            @id @default(uuid())
+  name      String
+  createdAt DateTime          @default(now()) @map("created_at")
+  updatedAt DateTime          @updatedAt @map("updated_at")
+  tabs      SchemaPresetTab[]
+  sessions  Session[]
+
+  @@map("schema_presets")
+}
+
+model SchemaPresetTab {
+  id        String              @id @default(uuid())
+  presetId  String              @map("preset_id")
+  name      String
+  sortOrder Int                 @default(0) @map("sort_order")
+  createdAt DateTime            @default(now()) @map("created_at")
+  updatedAt DateTime            @updatedAt @map("updated_at")
+  preset    SchemaPreset        @relation(fields: [presetId], references: [id], onDelete: Cascade)
+  fields    SchemaPresetField[]
+
+  @@index([presetId, sortOrder])
+  @@map("schema_preset_tabs")
+}
+
+model SchemaPresetField {
+  id                 String  @id @default(uuid())
+  tabId              String  @map("tab_id")
+  sortOrder          Int     @default(0) @map("sort_order")
+  label              String
+  fieldKey           String  @map("field_key")
+  regexRule          String  @default("") @map("regex_rule")
+  extractionStrategy String? @default("regex") @map("extraction_strategy")
+  dataType           String? @map("data_type")
+  pageRange          String? @map("page_range")
+  postProcessing     String? @default("[]") @map("post_processing")
+  altRegexRules      String? @default("[]") @map("alt_regex_rules")
+  sectionHint        String? @map("section_hint")
+  contextHint        String? @map("context_hint")
+  contextLabel       String? @map("context_label")
+  mandatory          Boolean @default(false)
+  expectedFormat     String? @map("expected_format")
+  minLength          Int?    @map("min_length")
+  maxLength          Int?    @map("max_length")
+  allowedValues      String? @default("[]") @map("allowed_values")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+  tab                SchemaPresetTab @relation(fields: [tabId], references: [id], onDelete: Cascade)
+
+  @@unique([tabId, fieldKey])
+  @@index([tabId, sortOrder])
+  @@map("schema_preset_fields")
+}
+
+model SessionSchemaField {
+  id         String   @id @default(uuid())
+  sessionId  String   @map("session_id")
+  sortOrder  Int      @default(0) @map("sort_order")
+  label      String
+  fieldKey   String   @map("field_key")
+  usualValue String   @default("") @map("usual_value")
+  regexRule  String   @default("") @map("regex_rule")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+  session    Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, fieldKey])
+  @@index([sessionId, sortOrder])
+  @@map("session_schema_fields")
 }
 
 model SessionPreset {

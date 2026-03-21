@@ -131,6 +131,43 @@ export const queueApi = {
 };
 
 // ─── Sessions ────────────────────────────────────────────
+export interface SessionSchemaFieldPayload {
+  label: string;
+  fieldKey: string;
+  usualValue: string;
+  regexRule: string;
+}
+
+export interface SchemaPresetFieldPayload {
+  label: string;
+  fieldKey: string;
+  regexRule: string;
+  extractionStrategy?: "regex" | "table_column" | "header_field" | "page_region";
+  dataType?: "string" | "currency" | "number" | "date" | "percentage";
+  pageRange?: string;
+  postProcessing?: string[];
+  altRegexRules?: string[];
+  sectionHint?: "RATES" | "ORIGIN_ARB" | "DEST_ARB" | "HEADER";
+  contextHint?: "same_line_after_label" | "next_line_after_label" | "table_cell";
+  contextLabel?: string;
+  mandatory?: boolean;
+  expectedFormat?: string;
+  minLength?: number;
+  maxLength?: number;
+  allowedValues?: string[];
+}
+
+export interface SchemaPresetTabPayload {
+  name: string;
+  fields: SchemaPresetFieldPayload[];
+}
+
+export interface SchemaPresetPayload {
+  id: string;
+  name: string;
+  tabs: SchemaPresetTabPayload[];
+}
+
 export const sessionsApi = {
   list: () => request<any[]>("/sessions"),
   get: (id: string) => request<any>(`/sessions/${id}`),
@@ -175,6 +212,44 @@ export const sessionsApi = {
       method: "PATCH",
       body: JSON.stringify({ extractionModel }),
     }),
+  getSchemaFields: (id: string) =>
+    request<SessionSchemaFieldPayload[]>(`/sessions/${id}/schema-fields`),
+  updateSchemaFields: (id: string, fields: SessionSchemaFieldPayload[]) =>
+    request<SessionSchemaFieldPayload[]>(`/sessions/${id}/schema-fields`, {
+      method: "PATCH",
+      body: JSON.stringify({ fields }),
+    }),
+  listSchemaPresets: () =>
+    request<Array<{ id: string; name: string }>>(`/sessions/schema-presets`),
+  getSchemaPreset: (presetId: string) =>
+    request<SchemaPresetPayload>(`/sessions/schema-presets/${presetId}`),
+  createSchemaPreset: (data: { name: string; tabs: SchemaPresetTabPayload[] }) =>
+    request<SchemaPresetPayload>(`/sessions/schema-presets`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  updateSchemaPreset: (
+    presetId: string,
+    data: { name: string; tabs: SchemaPresetTabPayload[] },
+  ) =>
+    request<SchemaPresetPayload>(`/sessions/schema-presets/${presetId}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+  deleteSchemaPreset: (presetId: string) =>
+    request<void>(`/sessions/schema-presets/${presetId}`, { method: "DELETE" }),
+  getSessionSchemaPreset: (id: string) =>
+    request<{ schemaPresetId: string | null; preset: SchemaPresetPayload | null }>(
+      `/sessions/${id}/schema-preset`,
+    ),
+  assignSessionSchemaPreset: (id: string, schemaPresetId?: string | null) =>
+    request<{ schemaPresetId: string | null; preset: SchemaPresetPayload | null }>(
+      `/sessions/${id}/schema-preset`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ schemaPresetId: schemaPresetId ?? null }),
+      },
+    ),
   duplicate: (
     id: string,
     data: { strategy: "FULL" | "COLUMNS_ONLY"; name?: string },

@@ -17,10 +17,41 @@ export interface ContractExtractionResult {
   rates: Record<string, string>[];
   originArbs: Record<string, string>[];
   destArbs: Record<string, string>[];
+  tabs?: Array<{ name: string; rows: Record<string, string>[] }>;
   rawPages: { page: number; text: string }[];
   pageCount: number;
   processingTime: number;
   warnings: string[];
+}
+
+interface SessionSchemaFieldRule {
+  label: string;
+  fieldKey: string;
+  regexRule: string;
+  extractionStrategy?: "regex" | "table_column" | "header_field" | "page_region";
+  dataType?: "string" | "currency" | "number" | "date" | "percentage";
+  pageRange?: string;
+  postProcessing?: string[];
+  altRegexRules?: string[];
+  sectionHint?: "RATES" | "ORIGIN_ARB" | "DEST_ARB" | "HEADER";
+  contextHint?: "same_line_after_label" | "next_line_after_label" | "table_cell";
+  contextLabel?: string;
+  mandatory?: boolean;
+  expectedFormat?: string;
+  minLength?: number;
+  maxLength?: number;
+  allowedValues?: string[];
+}
+
+interface SessionSchemaTabRule {
+  name: string;
+  fields: SessionSchemaFieldRule[];
+}
+
+interface SessionSchemaPresetRule {
+  id: string;
+  name: string;
+  tabs: SessionSchemaTabRule[];
 }
 
 @Injectable()
@@ -33,13 +64,7 @@ export class ContractExtractionService {
   ) {}
 
   private get scriptPath(): string {
-    return join(
-      process.cwd(),
-      "src",
-      "main",
-      "python",
-      "pdf_contract_extract.py",
-    );
+    return join(process.cwd(), "src", "main", "python", "pdf_contract_extract.py");
   }
 
   private resolvePythonExe(): string {
@@ -64,11 +89,8 @@ export class ContractExtractionService {
     return configured;
   }
 
-  /** Process a PDF_EXTRACT document through the Python sidecar */
   async process(documentId: string): Promise<ContractExtractionResult> {
-    const doc = await this.prisma.document.findUnique({
-      where: { id: documentId },
-    });
+    const doc = await this.prisma.document.findUnique({ where: { id: documentId } });
 
     if (!doc) {
       this.logger.warn(`Document ${documentId} no longer exists — skipping`);
@@ -80,9 +102,13 @@ export class ContractExtractionService {
       data: { status: "PROCESSING" },
     });
 
+    const schemaPreset = doc.sessionId
+      ? await this.getSessionSchemaPreset(doc.sessionId)
+      : null;
+
     let result: ContractExtractionResult;
     try {
-      result = await this.runPythonExtractor(doc.imagePath);
+      result = await this.runPythonExtractor(doc.imagePath, schemaPreset);
     } catch (err: any) {
       await this.prisma.document.updateMany({
         where: { id: documentId },
@@ -102,13 +128,13 @@ export class ContractExtractionService {
         ocrPageCount: result.pageCount,
         ocrProcessingTime: result.processingTime,
         ocrWarnings: JSON.stringify(result.warnings),
-        // Store the structured contract data in extractedJson
         extractedJson: JSON.stringify({
           type: "CONTRACT",
           header: result.header,
           rates: result.rates,
           originArbs: result.originArbs,
           destArbs: result.destArbs,
+          tabs: result.tabs ?? [],
           rawPages: result.rawPages ?? [],
         }),
       },
@@ -117,27 +143,30 @@ export class ContractExtractionService {
     return result;
   }
 
-  private runPythonExtractor(pdfPath: string): Promise<ContractExtractionResult> {
+  private runPythonExtractor(
+    pdfPath: string,
+    schemaPreset: SessionSchemaPresetRule | null,
+  ): Promise<ContractExtractionResult> {
     const pythonExe = this.resolvePythonExe();
     const script = this.scriptPath;
     const cfg = this.settings.getAll().ocr;
-    // Contract PDFs can be 100+ pages of dense tables; use a dedicated
-    // minimum of 600 s regardless of the OCR timeout setting.
     const CONTRACT_TIMEOUT_S = Math.max(cfg.timeout ?? 180, 600);
     const timeoutMs = CONTRACT_TIMEOUT_S * 1000;
 
     if (!existsSync(script)) {
-      return Promise.reject(
-        new Error(`Contract extraction script not found: ${script}`),
-      );
+      return Promise.reject(new Error(`Contract extraction script not found: ${script}`));
     }
 
     return new Promise((resolve, reject) => {
-      this.logger.log(
-        `Spawning: ${pythonExe} ${script} --pdf "${pdfPath}"`,
-      );
+      const args = ["-u", script, "--pdf", pdfPath];
+      if (schemaPreset && schemaPreset.tabs.length > 0) {
+        this.logger.log(
+          `Using schema preset '${schemaPreset.name}' with ${schemaPreset.tabs.length} tab(s) for extraction`,
+        );
+        args.push("--schema-json", JSON.stringify(schemaPreset));
+      }
 
-      const child = spawn(pythonExe, ["-u", script, "--pdf", pdfPath], {
+      const child = spawn(pythonExe, args, {
         windowsHide: true,
         env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
       });
@@ -163,13 +192,10 @@ export class ContractExtractionService {
           this.logger.warn(`[contract-extract stderr] ${stderr.trim()}`);
         }
 
-        // PyMuPDF may print informational lines to stdout before the JSON
-        // (e.g. "Consider using the pymupdf_layout package…").
-        // Find the first '{' to locate the start of our JSON payload.
-        const jsonStart = stdout.indexOf('{');
+        const jsonStart = stdout.indexOf("{");
         try {
           if (jsonStart < 0) {
-            throw new Error('No JSON object found in output');
+            throw new Error("No JSON object found in output");
           }
           const parsed = JSON.parse(stdout.slice(jsonStart));
           if (parsed.error) {
@@ -198,6 +224,160 @@ export class ContractExtractionService {
       pageCount: 0,
       processingTime: 0,
       warnings: [],
+    };
+  }
+
+  private async getSessionSchemaPreset(
+    sessionId: string,
+  ): Promise<SessionSchemaPresetRule | null> {
+    const sessionRows = await this.prisma.$queryRawUnsafe<
+      Array<{ schema_preset_id: string | null }>
+    >(`SELECT schema_preset_id FROM sessions WHERE id = ?`, sessionId);
+
+    const presetId = sessionRows[0]?.schema_preset_id;
+    if (!presetId) return null;
+
+    const presetRows = await this.prisma.$queryRawUnsafe<
+      Array<{ id: string; name: string }>
+    >(`SELECT id, name FROM schema_presets WHERE id = ?`, presetId);
+    if (presetRows.length === 0) return null;
+
+    const tabRows = await this.prisma.$queryRawUnsafe<
+      Array<{ id: string; name: string }>
+    >(
+      `
+      SELECT id, name
+      FROM schema_preset_tabs
+      WHERE preset_id = ?
+      ORDER BY sort_order ASC
+      `,
+      presetId,
+    );
+
+    const fieldRows = await this.prisma.$queryRawUnsafe<
+      Array<{
+        tab_id: string;
+        label: string;
+        field_key: string;
+        regex_rule: string;
+        extraction_strategy: string | null;
+        data_type: string | null;
+        page_range: string | null;
+        post_processing: string | null;
+        alt_regex_rules: string | null;
+        section_hint: string | null;
+        context_hint: string | null;
+        context_label: string | null;
+        mandatory: number | boolean | null;
+        expected_format: string | null;
+        min_length: number | null;
+        max_length: number | null;
+        allowed_values: string | null;
+      }>
+    >(
+      `
+      SELECT
+        tab_id,
+        label,
+        field_key,
+        regex_rule,
+        extraction_strategy,
+        data_type,
+        page_range,
+        post_processing,
+        alt_regex_rules,
+        section_hint,
+        context_hint,
+        context_label,
+        mandatory,
+        expected_format,
+        min_length,
+        max_length,
+        allowed_values
+      FROM schema_preset_fields
+      WHERE tab_id IN (SELECT id FROM schema_preset_tabs WHERE preset_id = ?)
+      ORDER BY sort_order ASC
+      `,
+      presetId,
+    );
+
+    return {
+      id: presetRows[0].id,
+      name: presetRows[0].name,
+      tabs: tabRows.map((tab) => ({
+        name: tab.name,
+        fields: fieldRows
+          .filter((f) => f.tab_id === tab.id)
+          .map((f) => {
+            const parseJsonArray = (raw: string | null): string[] | undefined => {
+              if (!raw) return undefined;
+              try {
+                const parsed = JSON.parse(raw);
+                return Array.isArray(parsed)
+                  ? parsed.map((v) => String(v).trim()).filter(Boolean)
+                  : undefined;
+              } catch {
+                return undefined;
+              }
+            };
+
+            const extractionStrategy =
+              f.extraction_strategy === "regex" ||
+              f.extraction_strategy === "table_column" ||
+              f.extraction_strategy === "header_field" ||
+              f.extraction_strategy === "page_region"
+                ? f.extraction_strategy
+                : undefined;
+
+            const dataType =
+              f.data_type === "string" ||
+              f.data_type === "currency" ||
+              f.data_type === "number" ||
+              f.data_type === "date" ||
+              f.data_type === "percentage"
+                ? f.data_type
+                : undefined;
+
+            const sectionHint =
+              f.section_hint === "RATES" ||
+              f.section_hint === "ORIGIN_ARB" ||
+              f.section_hint === "DEST_ARB" ||
+              f.section_hint === "HEADER"
+                ? f.section_hint
+                : undefined;
+
+            const contextHint =
+              f.context_hint === "same_line_after_label" ||
+              f.context_hint === "next_line_after_label" ||
+              f.context_hint === "table_cell"
+                ? f.context_hint
+                : undefined;
+
+            return {
+              label: f.label,
+              fieldKey: f.field_key,
+              regexRule: f.regex_rule,
+              extractionStrategy,
+              dataType,
+              pageRange: f.page_range ?? undefined,
+              postProcessing: parseJsonArray(f.post_processing),
+              altRegexRules: parseJsonArray(f.alt_regex_rules),
+              sectionHint,
+              contextHint,
+              contextLabel: f.context_label ?? undefined,
+              mandatory:
+                typeof f.mandatory === "boolean"
+                  ? f.mandatory
+                  : typeof f.mandatory === "number"
+                    ? f.mandatory !== 0
+                    : undefined,
+              expectedFormat: f.expected_format ?? undefined,
+              minLength: f.min_length ?? undefined,
+              maxLength: f.max_length ?? undefined,
+              allowedValues: parseJsonArray(f.allowed_values),
+            };
+          }),
+      })),
     };
   }
 }

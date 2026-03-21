@@ -37,6 +37,7 @@ import {
   ListFilter,
 } from "lucide-react";
 import type { DocumentRecord } from "@shared/types";
+import type { SchemaPresetTab } from "@/components/sessions/SchemaBuilderDialog";
 
 // ─── Registry types ──────────────────────────────────────────────────────────
 // To add support for a new document type:
@@ -668,6 +669,7 @@ function SectionTable({
 
 interface ExtractionViewProps {
   documentId: string;
+  schemaTabs?: SchemaPresetTab[];
   onClose: () => void;
   onRefresh?: () => void;
   onReprocess?: (doc: DocumentRecord) => Promise<void>;
@@ -682,6 +684,7 @@ interface ExtractionViewProps {
 
 export function ExtractionView({
   documentId,
+  schemaTabs = [],
   onClose,
   onRefresh,
   onReprocess,
@@ -773,11 +776,34 @@ export function ExtractionView({
     return () => window.clearInterval(timer);
   }, [doc, refreshCurrentDoc]);
 
-  // ── Reset column visibility and active tab when document changes ──────────
+  const extractedData = doc?.extractedJson as Record<string, unknown> | undefined;
+  const docType = extractedData?.type as string | undefined;
+  const renderer = useMemo(() => {
+    if (!extractedData) return null;
+
+    const dynamicTabs = Array.isArray(extractedData.tabs)
+      ? (extractedData.tabs as Array<Record<string, unknown>>)
+      : [];
+
+    if (docType === "CONTRACT" && dynamicTabs.length > 0) {
+      const base = DOC_TYPE_RENDERERS.CONTRACT;
+      return {
+        ...base,
+        sections: dynamicTabs.map((tab, idx) => ({
+          key: `tab_${idx}`,
+          label: String(tab.name ?? `Tab ${idx + 1}`),
+          getRows: () =>
+            (Array.isArray(tab.rows) ? (tab.rows as Record<string, string>[]) : []),
+          getColumns: colsFromRows,
+        })),
+      } as DocTypeRenderer;
+    }
+
+    return docType ? DOC_TYPE_RENDERERS[docType] : null;
+  }, [docType, extractedData]);
+
   useEffect(() => {
     const data = doc?.extractedJson as Record<string, unknown> | undefined;
-    const type = data?.type as string | undefined;
-    const renderer = type ? DOC_TYPE_RENDERERS[type] : null;
     if (!renderer) {
       setColVisibility({});
       setSectionOpen({});
@@ -790,7 +816,16 @@ export function ExtractionView({
     const initCols: Record<string, ColDef[]> = {};
     for (const section of renderer.sections) {
       const rows = section.getRows(data as Record<string, unknown>);
-      const cols = section.getColumns(rows);
+      const matchingTab = schemaTabs.find(
+        (t) => t.name.trim().toLowerCase() === section.label.trim().toLowerCase(),
+      );
+      const useSchemaCols = !!matchingTab && matchingTab.fields.length > 0;
+      const cols = useSchemaCols
+        ? matchingTab.fields.map((f: { fieldKey: string; label: string }) => ({
+            key: f.fieldKey,
+            label: f.fieldKey,
+          }))
+        : section.getColumns(rows);
       initCols[section.key] = cols;
       initVis[section.key] = {};
       initOpen[section.key] = true;
@@ -802,17 +837,15 @@ export function ExtractionView({
     setColVisibility(initVis);
     setSectionOpen(initOpen);
     setActiveTab(renderer.sections[0]?.key ?? "");
-  }, [doc?.id]);
+  }, [doc?.id, renderer, schemaTabs]);
 
   // Init tablesSection when the dialog is opened externally (hideTopBar mode)
   useEffect(() => {
     if (effectiveTablesOpen && !tablesSection) {
-      const data = doc?.extractedJson as Record<string, unknown> | undefined;
-      const type = data?.type as string | undefined;
-      const r = type ? DOC_TYPE_RENDERERS[type] : null;
+      const r = renderer;
       if (r) setTablesSection(r.sections[0]?.key ?? "");
     }
-  }, [effectiveTablesOpen, tablesSection, doc]);
+  }, [effectiveTablesOpen, tablesSection, renderer]);
 
   // ── Actions ───────────────────────────────────────────────────────────────
   const handleApprove = async () => {
@@ -839,11 +872,6 @@ export function ExtractionView({
   };
 
   // ── Derived ───────────────────────────────────────────────────────────────
-  const extractedData = doc?.extractedJson as
-    | Record<string, unknown>
-    | undefined;
-  const docType = extractedData?.type as string | undefined;
-  const renderer = docType ? DOC_TYPE_RENDERERS[docType] : null;
 
   const canApprove = doc?.status === "REVIEW" || doc?.status === "REJECTED";
   const canReject = doc?.status === "REVIEW" || doc?.status === "APPROVED";

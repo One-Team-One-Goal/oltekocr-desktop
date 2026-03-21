@@ -4,10 +4,21 @@ import { sessionsApi, exportApi, documentsApi, ocrApi } from "@/api/client";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { WindowControls } from "@/components/layout/SidebarContext";
 import { ExtractionView } from "./ExtractionPanel";
+import {
+  SchemaBuilderDialog,
+  type SchemaPresetDraft,
+} from "@/components/sessions/SchemaBuilderDialog";
 import { checkUnsaved, markSaved } from "@/lib/unsaved-sessions";
 import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   ArrowLeft,
   RefreshCw,
@@ -37,6 +48,11 @@ export function PdfSessionDetail() {
   const [isRenaming, setIsRenaming] = useState(false);
   const [rawOpen, setRawOpen] = useState(false);
   const [tablesOpen, setTablesOpen] = useState(false);
+  const [schemaBuilderOpen, setSchemaBuilderOpen] = useState(false);
+  const [schemaSubmitting, setSchemaSubmitting] = useState(false);
+  const [schemaPresets, setSchemaPresets] = useState<Array<{ id: string; name: string }>>([]);
+  const [selectedSchemaPresetId, setSelectedSchemaPresetId] = useState<string>("");
+  const [selectedSchemaPreset, setSelectedSchemaPreset] = useState<SchemaPresetDraft | null>(null);
   const isRunning = documents.some(
     (d) => d.status === "SCANNING" || d.status === "PROCESSING",
   );
@@ -96,6 +112,57 @@ export function PdfSessionDetail() {
     }, 2000);
     return () => window.clearInterval(timer);
   }, [isRunning, refresh]);
+
+  useEffect(() => {
+    if (!id) {
+      setSchemaPresets([]);
+      setSelectedSchemaPresetId("");
+      setSelectedSchemaPreset(null);
+      return;
+    }
+
+    let active = true;
+    Promise.all([
+      sessionsApi.listSchemaPresets(),
+      sessionsApi.getSessionSchemaPreset(id),
+    ])
+      .then(([presets, assignment]) => {
+        if (!active) return;
+        setSchemaPresets(presets);
+        setSelectedSchemaPresetId(assignment.schemaPresetId ?? "");
+        setSelectedSchemaPreset(
+          assignment.preset
+            ? {
+                id: assignment.preset.id,
+                name: assignment.preset.name,
+                tabs: assignment.preset.tabs,
+              }
+            : null,
+        );
+      })
+      .catch((err) => {
+        console.error("Failed to load schema presets:", err);
+        if (!active) return;
+        setSchemaPresets([]);
+        setSelectedSchemaPresetId("");
+        setSelectedSchemaPreset(null);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [id]);
+
+  const assignSchemaPreset = async (presetId: string) => {
+    if (!id) return;
+    const payload = await sessionsApi.assignSessionSchemaPreset(id, presetId || null);
+    setSelectedSchemaPresetId(payload.schemaPresetId ?? "");
+    setSelectedSchemaPreset(
+      payload.preset
+        ? { id: payload.preset.id, name: payload.preset.name, tabs: payload.preset.tabs }
+        : null,
+    );
+  };
 
   const handleSave = async () => {
     if (!id || !saveName.trim()) return;
@@ -255,6 +322,39 @@ export function PdfSessionDetail() {
           )}
         </div>
         <div className="flex items-center gap-1.5 shrink-0" style={noDrag}>
+          <Select
+            value={selectedSchemaPresetId || "none"}
+            onValueChange={(val) => {
+              if (val === "none") {
+                assignSchemaPreset("");
+                return;
+              }
+              assignSchemaPreset(val);
+            }}
+          >
+            <SelectTrigger className="h-8 w-[220px] text-xs">
+              <SelectValue placeholder="Select schema preset" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">No Schema Preset</SelectItem>
+              {schemaPresets.map((preset) => (
+                <SelectItem key={preset.id} value={preset.id}>
+                  {preset.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1.5 text-xs"
+            onClick={() => setSchemaBuilderOpen(true)}
+          >
+            <FileText className="h-3.5 w-3.5" />
+            {selectedSchemaPreset ? "Edit Schema" : "New Schema"}
+          </Button>
+
           <Button
             variant="outline"
             size="sm"
@@ -277,6 +377,7 @@ export function PdfSessionDetail() {
           <div className="w-full h-full min-h-0">
             <ExtractionView
               documentId={selectedDocId}
+              schemaTabs={selectedSchemaPreset?.tabs ?? []}
               onClose={handleBack}
               onRefresh={refresh}
               hideTopBar
@@ -293,6 +394,36 @@ export function PdfSessionDetail() {
           </div>
         )}
       </div>
+
+      <SchemaBuilderDialog
+        open={schemaBuilderOpen}
+        onClose={() => setSchemaBuilderOpen(false)}
+        initialPreset={selectedSchemaPreset}
+        submitting={schemaSubmitting}
+        onSubmit={async (preset: SchemaPresetDraft) => {
+          if (!id) return;
+          setSchemaSubmitting(true);
+          try {
+            const saved = preset.id
+              ? await sessionsApi.updateSchemaPreset(preset.id, {
+                  name: preset.name,
+                  tabs: preset.tabs,
+                })
+              : await sessionsApi.createSchemaPreset({
+                  name: preset.name,
+                  tabs: preset.tabs,
+                });
+
+            const presets = await sessionsApi.listSchemaPresets();
+            setSchemaPresets(presets);
+
+            await assignSchemaPreset(saved.id);
+            setSchemaBuilderOpen(false);
+          } finally {
+            setSchemaSubmitting(false);
+          }
+        }}
+      />
     </div>
   );
 }
