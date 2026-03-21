@@ -56,7 +56,9 @@ export class QueueService {
 
   /** Add a document ID to the queue */
   add(documentId: string): void {
-    if (this.queue.includes(documentId)) return;
+    if (this.queue.includes(documentId) || this.processing === documentId) {
+      return;
+    }
     this.queue.push(documentId);
     this.gateway.sendQueueUpdate(this.queue.length, this.processing);
     this.logger.log(
@@ -68,7 +70,7 @@ export class QueueService {
   /** Add multiple document IDs */
   addMany(documentIds: string[]): void {
     for (const id of documentIds) {
-      if (!this.queue.includes(id)) {
+      if (!this.queue.includes(id) && this.processing !== id) {
         this.queue.push(id);
       }
     }
@@ -104,7 +106,14 @@ export class QueueService {
     this.gateway.sendQueueUpdate(0, this.processing);
   }
 
-  /** Cancel specific documents — removes waiting ones and flags active docs to reset to QUEUED on finish */
+  /** Remove document IDs from waiting queue (used by delete flows). */
+  removeFromQueue(documentIds: string[]): void {
+    if (documentIds.length === 0) return;
+    this.queue = this.queue.filter((id) => !documentIds.includes(id));
+    this.gateway.sendQueueUpdate(this.queue.length, this.processing);
+  }
+
+  /** Cancel specific documents — remove waiting ones and immediately reset active docs to QUEUED. */
   async cancel(documentIds: string[]): Promise<void> {
     // Remove any docs still waiting in the queue
     this.queue = this.queue.filter((id) => !documentIds.includes(id));
@@ -120,14 +129,17 @@ export class QueueService {
       (id) => !inFlightIds.includes(id),
     );
 
-    // Active docs go CANCELLING while worker winds down.
+    // Active docs: attempt immediate process stop and reset status to QUEUED.
     if (inFlightIds.length > 0) {
+      for (const id of inFlightIds) {
+        this.ocrService.cancelActive(id);
+      }
       await this.prisma.document.updateMany({
         where: {
           id: { in: inFlightIds },
-          status: { in: ["SCANNING", "PROCESSING"] },
+          status: { in: ["SCANNING", "PROCESSING", "CANCELLING"] },
         },
-        data: { status: "CANCELLING" },
+        data: { status: "QUEUED" },
       });
     }
 
@@ -144,7 +156,7 @@ export class QueueService {
 
     const now = new Date().toISOString();
     for (const id of inFlightIds) {
-      this.gateway.sendDocumentStatus(id, "CANCELLING", now);
+      this.gateway.sendDocumentStatus(id, "QUEUED", now);
     }
     for (const id of immediateResetIds) {
       this.gateway.sendDocumentStatus(id, "QUEUED", now);
@@ -156,6 +168,7 @@ export class QueueService {
 
   // ─── Internal ──────────────────────────────────────────
   private async processNext(): Promise<void> {
+    await this.pruneDeletedFromQueue();
     if (this.paused || this.processing || this.queue.length === 0) return;
 
     const documentId = this.queue.shift()!;
@@ -290,6 +303,23 @@ export class QueueService {
       this.gateway.sendQueueUpdate(this.queue.length, null);
       // Process next in queue
       this.processNext();
+    }
+  }
+
+  /** Drop queue IDs that no longer exist in DB (e.g. deleted rows). */
+  private async pruneDeletedFromQueue(): Promise<void> {
+    if (this.queue.length === 0) return;
+    const ids = [...this.queue];
+    const found = await this.prisma.document.findMany({
+      where: { id: { in: ids } },
+      select: { id: true },
+    });
+    const keep = new Set(found.map((d) => d.id));
+    const next = ids.filter((id) => keep.has(id));
+    if (next.length !== this.queue.length) {
+      this.queue = next;
+      this.gateway.sendQueueUpdate(this.queue.length, this.processing);
+      this.logger.log("Pruned deleted document(s) from queue");
     }
   }
 }

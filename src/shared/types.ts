@@ -229,6 +229,8 @@ export interface AppSettings {
   };
   ocr: {
     language: string;
+    engine: string;
+    pdfModel: string;
     confidenceThreshold: number;
     extractTables: boolean;
     timeout: number;

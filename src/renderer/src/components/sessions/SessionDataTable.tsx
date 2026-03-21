@@ -1,14 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { OcrEngineDialog } from "./OcrEngineDialog";
-import { LlmDialog } from "./LlmDialog";
-import { PdfModelDialog } from "./PdfModelDialog";
 import { ProcessingLogSheet } from "./ProcessingLogSheet";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import {
   type ColumnDef,
   type ColumnFiltersState,
@@ -73,7 +64,7 @@ import {
   formatShortDateTime,
   formatTime,
 } from "@/lib/utils";
-import { documentsApi, exportApi, queueApi, settingsApi } from "@/api/client";
+import { documentsApi, exportApi, queueApi, sessionsApi } from "@/api/client";
 import {
   Eye,
   RotateCcw,
@@ -92,11 +83,11 @@ import {
   Loader2,
   ArrowUpDown,
   ChevronDown,
+  FilePlus,
   Clock,
   ScanLine,
   XCircle,
   AlertCircle,
-  ChevronsUpDown,
   Play,
   Square,
   Undo2,
@@ -109,12 +100,6 @@ import type {
   TextBlock,
 } from "@shared/types";
 import { ExtractionType } from "@shared/types";
-
-const MODEL_DISPLAY_NAMES: Record<string, string> = {
-  pdfplumber: "pdfplumber",
-  pymupdf: "PyMuPDF (fitz)",
-  unstructured: "Unstructured.io",
-};
 
 const EXTRACTION_TYPE_OPTIONS: {
   value: ExtractionType;
@@ -475,16 +460,6 @@ export function SessionDataTable({
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
   const [statusFilter, setStatusFilter] = useState("all");
-  const [ocrEngineOpen, setOcrEngineOpen] = useState(false);
-  const [llmOpen, setLlmOpen] = useState(false);
-  const [pdfModelOpen, setPdfModelOpen] = useState(false);
-  const [selectedOcrName, setSelectedOcrName] = useState("RapidOCR");
-  const [selectedLlmName, setSelectedLlmName] = useState("qwen2.5:3b");
-  const [selectedPdfModelName, setSelectedPdfModelName] = useState(
-    () =>
-      MODEL_DISPLAY_NAMES[session?.extractionModel ?? "pdfplumber"] ??
-      "pdfplumber",
-  );
   const [pendingDeleteDocId, setPendingDeleteDocId] = useState<string | null>(
     null,
   );
@@ -495,53 +470,10 @@ export function SessionDataTable({
     pageSize: DEFAULT_PAGE_SIZE,
   });
 
-  // Disable model selectors that are irrelevant to the current document set.
-  // AUTO rows are treated as unknown, so they don't force a disable.
-  const onlyImages = useMemo(
-    () =>
-      documents.length > 0 &&
-      documents.every(
-        (d) =>
-          d.extractionType === ExtractionType.IMAGE ||
-          d.extractionType === ExtractionType.EXCEL,
-      ),
-    [documents],
-  );
-  const onlyPdfs = useMemo(
-    () =>
-      documents.length > 0 &&
-      documents.every(
-        (d) =>
-          d.extractionType === ExtractionType.PDF_TEXT ||
-          d.extractionType === ExtractionType.PDF_IMAGE,
-      ),
-    [documents],
-  );
-
   const isPending = (doc: DocumentListItem) =>
     doc.status === "QUEUED" ||
     doc.status === "SCANNING" ||
     doc.status === "PROCESSING";
-
-  useEffect(() => {
-    let cancelled = false;
-
-    void settingsApi
-      .get()
-      .then((settings) => {
-        if (cancelled) return;
-        if (settings?.llm?.defaultModel) {
-          setSelectedLlmName(settings.llm.defaultModel);
-        }
-      })
-      .catch((err) => {
-        console.error("Failed to load selected LLM model:", err);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   // ── Shared doc action handler ─────────────────────────────────────
   const runDocAction = useCallback(
@@ -698,8 +630,14 @@ export function SessionDataTable({
         size: 72,
         cell: ({ row }) => {
           const t = row.original.ocrProcessingTime;
-          if (!t || t === 0) return <span className="font-mono text-xs text-muted-foreground">—</span>;
-          const display = t < 60 ? `${t.toFixed(1)}s` : `${Math.floor(t / 60)}m ${Math.round(t % 60)}s`;
+          if (!t || t === 0)
+            return (
+              <span className="font-mono text-xs text-muted-foreground">—</span>
+            );
+          const display =
+            t < 60
+              ? `${t.toFixed(1)}s`
+              : `${Math.floor(t / 60)}m ${Math.round(t % 60)}s`;
           return <span className="font-mono text-xs">{display}</span>;
         },
       },
@@ -946,71 +884,30 @@ export function SessionDataTable({
               ))}
           </DropdownMenuContent>
         </DropdownMenu>
-        <div className="ml-auto flex items-center gap-2">
-          <TooltipProvider delayDuration={300}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="gap-1.5 text-xs"
-                    disabled={onlyImages}
-                    onClick={() => setPdfModelOpen(true)}
-                  >
-                    {selectedPdfModelName}
-                    <ChevronsUpDown className="h-3.5 w-3.5" />
-                  </Button>
-                </span>
-              </TooltipTrigger>
-              <TooltipContent>
-                {onlyImages
-                  ? "Not used — session contains image files only."
-                  : "For extracting text inside of a PDF / Word."}
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
-          <TooltipProvider delayDuration={300}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="gap-1.5 text-xs"
-                    disabled={onlyPdfs}
-                    onClick={() => setOcrEngineOpen(true)}
-                  >
-                    {selectedOcrName}
-                    <ChevronsUpDown className="h-3.5 w-3.5" />
-                  </Button>
-                </span>
-              </TooltipTrigger>
-              <TooltipContent>
-                {onlyPdfs
-                  ? "Not used — session contains PDF files only."
-                  : "Image and PDF containing image only."}
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
-          <TooltipProvider delayDuration={300}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="gap-1.5 text-xs"
-                  onClick={() => setLlmOpen(true)}
-                >
-                  {selectedLlmName}
-                  <ChevronsUpDown className="h-3.5 w-3.5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>
-                For extracting and transforming data.
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
+        <div className="ml-auto">
+          <Button
+            variant="outline"
+            className="bg-card"
+            disabled={!session?.id}
+            onClick={async () => {
+              if (!session?.id) return;
+              try {
+                const picked = await window.api.openFileDialog({
+                  title: "Add Files to Session",
+                  properties: ["openFile", "multiSelections"],
+                });
+                if (!picked || picked.canceled || picked.filePaths.length === 0)
+                  return;
+                await sessionsApi.ingestFiles(session.id, picked.filePaths);
+                onRefresh();
+              } catch (err) {
+                console.error("Failed to add files to session:", err);
+              }
+            }}
+          >
+            <FilePlus className="mr-1 h-4 w-4" />
+            Add File
+          </Button>
         </div>
       </div>
 
@@ -1230,24 +1127,6 @@ export function SessionDataTable({
           }}
         />
       )}
-
-      <PdfModelDialog
-        open={pdfModelOpen}
-        onClose={() => setPdfModelOpen(false)}
-        sessionId={session?.id}
-        currentModel={session?.extractionModel}
-        onSelectionChange={setSelectedPdfModelName}
-      />
-      <OcrEngineDialog
-        open={ocrEngineOpen}
-        onClose={() => setOcrEngineOpen(false)}
-        onSelectionChange={setSelectedOcrName}
-      />
-      <LlmDialog
-        open={llmOpen}
-        onClose={() => setLlmOpen(false)}
-        onSelectionChange={setSelectedLlmName}
-      />
       <Dialog
         open={!!pendingDeleteDocId}
         onOpenChange={(open) => !open && setPendingDeleteDocId(null)}

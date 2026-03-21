@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException, Logger } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
+import { SettingsService } from "../settings/settings.service";
 import { ListDocumentsQueryDto, UpdateDocumentDto } from "./documents.dto";
 import type {
   DocumentRecord,
@@ -36,7 +37,10 @@ const SUPPORTED_EXTENSIONS = new Set([
 export class DocumentsService {
   private readonly logger = new Logger(DocumentsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly settings: SettingsService,
+  ) {}
 
   // ─── List ──────────────────────────────────────────────
   async findAll(
@@ -340,18 +344,54 @@ export class DocumentsService {
     const ext = extname(filePath).toLowerCase();
     if (ext === ".xlsx" || ext === ".xls") return "EXCEL";
     if (ext !== ".pdf") return "IMAGE";
-    // For PDFs: peek at the binary to see if embedded fonts/text operators exist.
-    // A scanned (image-only) PDF has no /Font resources; a digital PDF always does.
+    // For PDFs: use PyMuPDF to safely detect if the PDF has extractable text
+    // by sampling the first page. Falls back to PDF_IMAGE on error.
     try {
-      const fd = openSync(filePath, "r");
-      const buf = Buffer.alloc(65536); // read first 64 KB
-      const bytesRead = readSync(fd, buf, 0, 65536, 0);
-      closeSync(fd);
-      const chunk = buf.slice(0, bytesRead).toString("latin1");
-      return chunk.includes("/Font") ? "PDF_TEXT" : "PDF_IMAGE";
+      const { spawn } = require("child_process");
+      const pythonExe = this.resolvePythonExe(
+        this.settings.getAll().ocr.pythonPath || "python",
+      );
+      const script = join(
+        process.cwd(),
+        "src",
+        "main",
+        "python",
+        "pdf_text_detect.py",
+      );
+      const result = require("child_process").spawnSync(
+        pythonExe,
+        [script, filePath],
+        {
+          encoding: "utf8",
+          timeout: 10000, // 10 second timeout
+          stdio: ["pipe", "pipe", "ignore"],
+        },
+      );
+
+      if (result.status === 0 && result.stdout) {
+        const detected = result.stdout.trim();
+        if (detected === "PDF_TEXT" || detected === "PDF_IMAGE") {
+          return detected;
+        }
+      }
+      return "PDF_IMAGE"; // fallback on error
     } catch {
-      return "PDF_TEXT";
+      return "PDF_IMAGE"; // fallback if script execution fails
     }
+  }
+
+  private resolvePythonExe(configured: string): string {
+    const venvPath = join(process.cwd(), ".venv", "Scripts", "python.exe");
+    const venv312Path = join(
+      process.cwd(),
+      ".venv312",
+      "Scripts",
+      "python.exe",
+    );
+
+    if (existsSync(venvPath)) return venvPath;
+    if (existsSync(venv312Path)) return venv312Path;
+    return configured || "python";
   }
 
   private async ensureExists(id: string): Promise<void> {

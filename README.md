@@ -68,13 +68,16 @@ prisma/
 
 Before you begin, make sure the following are installed on your machine:
 
-| Requirement                                 | Version | Notes                        |
-| ------------------------------------------- | ------- | ---------------------------- |
-| [Node.js](https://nodejs.org)               | ≥ 18    | LTS recommended              |
-| [Python](https://www.python.org/downloads/) | ≥ 3.9   | Required for the OCR sidecar |
-| npm                                         | ≥ 9     | Comes with Node.js           |
+| Requirement                                 | Version   | Notes                                        |
+| ------------------------------------------- | --------- | -------------------------------------------- |
+| [Node.js](https://nodejs.org)               | ≥ 18      | LTS recommended                              |
+| [Python](https://www.python.org/downloads/) | 3.10-3.13 | Required for OCR sidecars (RapidOCR, MinerU) |
+| npm                                         | ≥ 9       | Comes with Node.js                           |
 
 > **Windows note**: During the Python install, check **"Add Python to PATH"**.
+>
+> **MinerU compatibility note**: MinerU currently requires Python `< 3.14`.
+> If your system Python is 3.14+, install Python 3.12 and create a dedicated venv for OCR.
 
 ---
 
@@ -113,8 +116,11 @@ python -m venv .venv
 # macOS / Linux:
 source .venv/bin/activate
 
-# Install the OCR dependency
+# Install OCR dependencies
 pip install rapidocr-onnxruntime
+
+# Optional fallback for PDF_IMAGE if MinerU fails
+pip install docling
 ```
 
 **Option B — global install**
@@ -124,6 +130,35 @@ pip install rapidocr-onnxruntime
 ```
 
 > If you use a venv, the app will automatically detect it at `.venv/Scripts/python.exe` (Windows) or `.venv/bin/python` (macOS/Linux). If not found, it falls back to the system `python` / `python3` on `PATH`.
+
+### 4.1 MinerU on Windows (recommended path)
+
+If your default Python is 3.14, use a separate Python 3.12 environment:
+
+```bash
+# Install Python 3.12 (one-time)
+winget install -e --id Python.Python.3.12 --scope user
+
+# Create and activate a dedicated env
+py -3.12 -m venv .venv312
+.venv312\Scripts\activate
+
+# Install sidecar dependencies
+python -m pip install -U pip setuptools wheel
+python -m pip install rapidocr-onnxruntime "mineru[all]" docling
+```
+
+Then point OltekOCR to this interpreter in Settings -> OCR Python Path:
+
+```text
+c:/.../oltekocr-desktop/.venv312/Scripts/python.exe
+```
+
+Quick verification:
+
+```bash
+.venv312\Scripts\mineru.exe -v
+```
 
 ---
 

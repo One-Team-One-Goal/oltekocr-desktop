@@ -9,6 +9,7 @@ import { EditColumnsDialog } from "./EditColumnsDialog";
 import { WindowControls } from "@/components/layout/SidebarContext";
 import { ExtractionView } from "./ExtractionPanel";
 import { checkUnsaved, markSaved } from "@/lib/unsaved-sessions";
+import { toast } from "@/hooks/use-toast";
 
 const drag = { WebkitAppRegion: "drag" } as React.CSSProperties;
 const noDrag = { WebkitAppRegion: "no-drag" } as React.CSSProperties;
@@ -98,6 +99,7 @@ export function SessionDetail() {
   const [reviewDocId, setReviewDocId] = useState<string | null>(null);
   const [editColumnsOpen, setEditColumnsOpen] = useState(false);
   const [isStopPending, setIsStopPending] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
   const [isUnsaved, setIsUnsaved] = useState(false);
   const [saveName, setSaveName] = useState("");
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
@@ -248,15 +250,60 @@ export function SessionDetail() {
   const handleExport = async () => {
     const ids = documents.map((d) => d.id);
     if (ids.length === 0) return;
+    setIsExporting(true);
     try {
       const result = await exportApi.exportDocuments(ids, "excel");
-      if (result?.exportPath) {
-        await window.api.showItemInFolder(result.exportPath).catch(() => {});
+
+      const exportPath = result?.exportPath;
+      if (!exportPath) {
+        throw new Error("No export path returned by server");
       }
+
+      if (session?.mode === "TABLE_EXTRACT") {
+        const sessionName = (session.name || "Session")
+          .replace(/[\\/:*?"<>|]/g, "_")
+          .trim()
+          .replace(/\s+/g, "_")
+          .replace(/_+/g, "_")
+          .slice(0, 120);
+        const suggestedName = `${sessionName || "Session"}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+
+        const picked = await window.api.saveFileDialog({
+          title: "Save Exported Excel",
+          defaultPath: suggestedName,
+          filters: [{ name: "Excel Workbook", extensions: ["xlsx"] }],
+        });
+
+        if (picked?.canceled || !picked?.filePath) {
+          toast({
+            title: "Export created",
+            description: "Saved in app exports folder.",
+            actionLabel: "Show in folder",
+            onAction: () => window.api.showItemInFolder(exportPath),
+          });
+        } else {
+          await window.api.copyFile(exportPath, picked.filePath);
+          toast({
+            title: "Export successful",
+            description: `Saved to: ${picked.filePath.split(/[\\/]/).pop()}`,
+            actionLabel: "Show in folder",
+            onAction: () => window.api.showItemInFolder(picked.filePath),
+          });
+        }
+      } else {
+        await window.api.showItemInFolder(exportPath).catch(() => {});
+      }
+
       refresh();
     } catch (err: any) {
       console.error("Export failed:", err);
-      alert(err?.message || "Export failed");
+      toast({
+        title: "Export failed",
+        description: err?.message || "Unknown error",
+        variant: "destructive",
+      });
+    } finally {
+      setIsExporting(false);
     }
   };
 
@@ -334,9 +381,10 @@ export function SessionDetail() {
             size="sm"
             className="gap-1.5 text-xs"
             onClick={handleExport}
+            disabled={isExporting}
           >
             <FileOutput className="h-3.5 w-3.5" />
-            Export
+            {isExporting ? "Exporting..." : "Export"}
           </Button>
 
           <Button variant="ghost" size="icon" onClick={refresh}>
