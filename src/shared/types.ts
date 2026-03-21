@@ -106,9 +106,9 @@ export interface QualityCheck {
 // ─── OCR Types ───────────────────────────────────────────
 export interface TextBlock {
   text: string;
-  confidence: number;
+  confidence?: number;
   blockType: "paragraph" | "heading" | "list" | "footer" | "header";
-  bbox: [number, number, number, number]; // x1, y1, x2, y2
+  bbox?: [number, number, number, number]; // x1, y1, x2, y2
   page: number;
 }
 
@@ -116,9 +116,9 @@ export interface TableCell {
   row: number;
   col: number;
   text: string;
-  confidence: number;
-  rowSpan: number;
-  colSpan: number;
+  confidence?: number;
+  rowSpan?: number;
+  colSpan?: number;
 }
 
 export interface ExtractedTable {
@@ -126,8 +126,8 @@ export interface ExtractedTable {
   rows: number;
   cols: number;
   cells: TableCell[];
-  caption: string;
-  bbox: [number, number, number, number];
+  caption?: string;
+  bbox?: [number, number, number, number];
 }
 
 export interface OcrResult {

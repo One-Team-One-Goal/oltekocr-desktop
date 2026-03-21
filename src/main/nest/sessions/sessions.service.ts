@@ -262,14 +262,8 @@ export class SessionsService {
       data: { columns: JSON.stringify(dto.columns) },
     });
 
-    // Clear extracted data for all documents so stale values don't persist
-    await this.prisma.document.updateMany({
-      where: { sessionId: id },
-      data: { extractedRow: "{}" },
-    });
-
     this.logger.log(
-      `Updated columns for session ${id}; cleared extractedRow on all documents`,
+      `Updated columns for session ${id}; preserved extractedRow`,
     );
     return this.findOne(id);
   }

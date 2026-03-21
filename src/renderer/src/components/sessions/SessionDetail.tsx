@@ -263,6 +263,16 @@ export function SessionDetail() {
     );
   }
 
+  const selectedReviewDocument = reviewDocId
+    ? (documents.find((d) => d.id === reviewDocId) ?? null)
+    : null;
+
+  const modeToRoute: Record<string, string> = {
+    PDF_EXTRACT: "/",
+    OCR_EXTRACT: "/ocr-extract",
+    TABLE_EXTRACT: "/keyword-extract",
+  };
+
   return (
     <div className="flex flex-col h-full bg-background">
       {/* Header */}
@@ -419,6 +429,8 @@ export function SessionDetail() {
           open={!!reviewDocId}
           onClose={() => setReviewDocId(null)}
           onRefresh={refresh}
+          session={session}
+          selectedDocument={selectedReviewDocument}
         />
       )}
 

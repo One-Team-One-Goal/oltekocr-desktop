@@ -1,4 +1,12 @@
 import { useState } from "react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -25,12 +33,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import {
-  statusLabel,
-  formatConfidence,
-  formatDate,
-  cn,
-} from "@/lib/utils";
+import { statusLabel, formatConfidence, formatDate, cn } from "@/lib/utils";
 import { documentsApi, exportApi } from "@/api/client";
 import {
   Eye,
@@ -117,6 +120,9 @@ export function DocumentTable({
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [localSearch, setLocalSearch] = useState(searchQuery);
+  const [pendingDeleteDocId, setPendingDeleteDocId] = useState<string | null>(
+    null,
+  );
 
   const handleTabChange = (value: string) => {
     setPage(1);
@@ -185,10 +191,7 @@ export function DocumentTable({
           onRefresh();
           break;
         case "delete":
-          if (confirm("Delete this document? This cannot be undone.")) {
-            await documentsApi.delete(docId);
-            onRefresh();
-          }
+          setPendingDeleteDocId(docId);
           break;
       }
     } catch (err) {
@@ -487,6 +490,47 @@ export function DocumentTable({
           </div>
         </>
       )}
+
+      <Dialog
+        open={!!pendingDeleteDocId}
+        onOpenChange={(open) => !open && setPendingDeleteDocId(null)}
+      >
+        <DialogContent className="sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle>Delete document?</DialogTitle>
+            <DialogDescription>
+              This will permanently delete
+              {pendingDeleteDocId
+                ? ` ${documents.find((doc) => doc.id === pendingDeleteDocId)?.filename ?? "this document"}`
+                : " this document"}
+              . This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setPendingDeleteDocId(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={async () => {
+                if (!pendingDeleteDocId) return;
+                try {
+                  await documentsApi.delete(pendingDeleteDocId);
+                  setPendingDeleteDocId(null);
+                  onRefresh();
+                } catch (err) {
+                  console.error("Delete document failed:", err);
+                }
+              }}
+            >
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

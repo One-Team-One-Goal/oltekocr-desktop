@@ -99,8 +99,8 @@ export function EditColumnsDialog({
             <DialogHeader className="px-6 pt-5 pb-4 border-b">
               <DialogTitle>Edit Columns</DialogTitle>
               <p className="text-xs text-muted-foreground mt-1">
-                Saving changes will clear all previously extracted data for
-                every document in this session.
+                Saving changes keeps existing extracted rows. New or renamed
+                columns may need reprocessing before values appear.
               </p>
             </DialogHeader>
 
@@ -195,13 +195,12 @@ export function EditColumnsDialog({
 
             <div className="px-6 py-5 space-y-2">
               <p className="text-sm">
-                Saving will permanently clear{" "}
-                <strong>all previously extracted field data</strong> for every
-                document in this session.
+                Saving will keep existing extracted rows for documents in this
+                session.
               </p>
               <p className="text-sm text-muted-foreground">
-                Documents will need to be reprocessed to populate the updated
-                columns. This cannot be undone.
+                Added or renamed columns may need reprocessing to populate new
+                values.
               </p>
             </div>
 
@@ -214,16 +213,11 @@ export function EditColumnsDialog({
               >
                 Go Back
               </Button>
-              <Button
-                size="sm"
-                variant="destructive"
-                disabled={saving}
-                onClick={handleSave}
-              >
+              <Button size="sm" disabled={saving} onClick={handleSave}>
                 {saving && (
                   <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
                 )}
-                Yes, Clear &amp; Save
+                Save Columns
               </Button>
             </DialogFooter>
           </>

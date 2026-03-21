@@ -224,16 +224,75 @@ export interface ModelStatus {
   size: string;
 }
 
+export interface LlmModelStatus {
+  id: string;
+  name: string;
+  description: string;
+  recommended: boolean;
+  downloaded: boolean;
+  size: string;
+}
+
+export interface LlmRecommendation {
+  recommendedId: string;
+  ramGb: number;
+  logicalCores: number;
+  reason: string;
+}
+
+export interface LlmInstallProgress {
+  modelId: string;
+  active: boolean;
+  percent: number | null;
+  downloadedMb: number | null;
+  totalMb: number | null;
+  speedMbps: number | null;
+  eta: string | null;
+  lastLine: string | null;
+}
+
 export const modelsApi = {
   list: () => request<ModelStatus[]>("/models"),
   install: (id: string) =>
     request<{ ok: boolean; log: string }>(`/models/${id}/install`, {
       method: "POST",
     }),
+  cancelInstall: (id: string) =>
+    request<{ ok: boolean; log: string }>(`/models/${id}/install/cancel`, {
+      method: "POST",
+    }),
   uninstall: (id: string) =>
     request<{ ok: boolean; log: string }>(`/models/${id}`, {
       method: "DELETE",
     }),
+  listLlm: () => request<LlmModelStatus[]>("/models/llm"),
+  llmRecommendation: () =>
+    request<LlmRecommendation>("/models/llm/recommendation"),
+  installLlm: (id: string) =>
+    request<{ ok: boolean; log: string }>(
+      `/models/llm/${encodeURIComponent(id)}/install`,
+      {
+        method: "POST",
+      },
+    ),
+  installLlmProgress: (id: string) =>
+    request<LlmInstallProgress>(
+      `/models/llm/${encodeURIComponent(id)}/install/progress`,
+    ),
+  cancelInstallLlm: (id: string) =>
+    request<{ ok: boolean; log: string }>(
+      `/models/llm/${encodeURIComponent(id)}/install/cancel`,
+      {
+        method: "POST",
+      },
+    ),
+  uninstallLlm: (id: string) =>
+    request<{ ok: boolean; log: string }>(
+      `/models/llm/${encodeURIComponent(id)}`,
+      {
+        method: "DELETE",
+      },
+    ),
 };
 
 // ─── Swagger ─────────────────────────────────────────────
