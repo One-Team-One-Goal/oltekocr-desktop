@@ -295,8 +295,7 @@ export function NewSessionDialog({
     setColumns((prev) => {
       const next = [...prev];
       next[i] = { ...next[i], [field]: value };
-      // Auto-fill key from label if key hasn't been manually edited
-      if (field === "label" && !next[i].key) {
+      if (field === "label") {
         next[i].key = toKey(value);
       }
       return next;
