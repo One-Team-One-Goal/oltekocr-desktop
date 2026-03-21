@@ -65,7 +65,7 @@ export function EditColumnsDialog({
     setColumns((prev) => {
       const next = [...prev];
       next[i] = { ...next[i], [field]: value };
-      if (field === "label" && !next[i].key) {
+      if (field === "label") {
         next[i].key = toKey(value);
       }
       return next;

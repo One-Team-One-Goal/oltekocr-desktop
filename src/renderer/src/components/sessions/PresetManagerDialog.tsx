@@ -85,9 +85,11 @@ export function PresetManagerDialog({
       return;
     }
     setName(selectedPreset.name);
-    setMode(selectedPreset.mode);
+    const presetMode: SessionMode =
+      selectedPreset.mode === "TABLE_EXTRACT" ? "TABLE_EXTRACT" : "OCR_EXTRACT";
+    setMode(presetMode);
     setColumns(
-      selectedPreset.mode === "TABLE_EXTRACT" && selectedPreset.columns.length > 0
+      presetMode === "TABLE_EXTRACT" && selectedPreset.columns.length > 0
         ? selectedPreset.columns
         : [emptyColumn()],
     );
@@ -103,7 +105,7 @@ export function PresetManagerDialog({
     setColumns((prev) => {
       const next = [...prev];
       next[index] = { ...next[index], [field]: value };
-      if (field === "label" && !next[index].key) {
+      if (field === "label") {
         next[index].key = toKey(value);
       }
       return next;
