@@ -2,11 +2,17 @@ const BASE_URL = "http://localhost:3847/api";
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const url = `${BASE_URL}${path}`;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(options.headers as Record<string, string> | undefined),
+  };
+
+  if (options.body instanceof FormData) {
+    delete headers["Content-Type"];
+  }
+
   const res = await fetch(url, {
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
+    headers,
     ...options,
   });
 
@@ -127,6 +133,85 @@ export const queueApi = {
     request<any>("/queue/cancel", {
       method: "POST",
       body: JSON.stringify({ documentIds }),
+    }),
+};
+
+// ─── Auto Schemas ───────────────────────────────────────
+export interface AutoSchemaRecord {
+  id: string;
+  name: string;
+  documentId: string;
+  uploadedFileName: string;
+  rawJson: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+  source?: string;
+  isAutoSchema?: boolean;
+}
+
+export interface AutoSchemaLlmParsed {
+  documentId: string;
+  company: string;
+  sections: Array<{
+    id: string;
+    label: string;
+    fields: Array<{
+      id: string;
+      label: string;
+      fieldKey: string;
+      regexRule: string;
+      extractionStrategy: "regex" | "table_column" | "header_field" | "page_region";
+      dataType: "string";
+    }>;
+  }>;
+  tables: Array<{
+    id: string;
+    label: string;
+    columns: Array<{
+      id: string;
+      label: string;
+      fieldKey: string;
+      regexRule: string;
+      extractionStrategy: "regex" | "table_column" | "header_field" | "page_region";
+      dataType: "string";
+    }>;
+  }>;
+  tabs: Array<{
+    name: string;
+    fields: Array<{
+      id: string;
+      label: string;
+      fieldKey: string;
+      regexRule: string;
+      extractionStrategy: "regex" | "table_column" | "header_field" | "page_region";
+      dataType: "string";
+    }>;
+  }>;
+}
+
+export const autoSchemasApi = {
+  list: () => request<AutoSchemaRecord[]>("/auto-schemas"),
+  get: (id: string) => request<AutoSchemaRecord>(`/auto-schemas/${id}`),
+  create: (data: {
+    name: string;
+    documentId: string;
+    uploadedFileName: string;
+    rawJson: Record<string, unknown>;
+  }) =>
+    request<AutoSchemaRecord>("/auto-schemas", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  generateLlm: (id: string, data?: { model?: string; baseUrl?: string }) =>
+    request<{
+      autoSchemaId: string;
+      documentId: string;
+      uploadedFileName: string;
+      llmJson: Record<string, unknown>;
+      parsed: AutoSchemaLlmParsed;
+    }>(`/auto-schemas/${id}/llm-extract`, {
+      method: "POST",
+      body: JSON.stringify(data || {}),
     }),
 };
 

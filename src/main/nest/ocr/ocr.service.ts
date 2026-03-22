@@ -168,10 +168,7 @@ export class OcrService {
     // Default to global settings model; PDF_EXTRACT sessions can override per session.
     const globalPdfModel = this.settings.getAll().ocr?.pdfModel || "pdfplumber";
     let extractionModel = globalPdfModel;
-    if (
-      freshDoc?.session?.mode === "PDF_EXTRACT" &&
-      freshDoc?.session?.extractionModel
-    ) {
+    if (freshDoc?.session?.extractionModel) {
       extractionModel = freshDoc.session.extractionModel;
     }
 
@@ -192,10 +189,10 @@ export class OcrService {
       // IMAGE -> Docling (fallback rapidocr)
       if (sessionMode === "TABLE_EXTRACT") {
         if (resolvedType === "PDF_TEXT") {
-          scanModel = "pdfplumber";
+          scanModel = extractionModel;
           ocrResult = await this.runPdfExtractor(
             doc.imagePath,
-            "pdfplumber",
+            extractionModel,
             "text",
           );
         } else if (resolvedType === "PDF_IMAGE") {

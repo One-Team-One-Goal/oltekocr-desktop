@@ -1221,55 +1221,144 @@ export function SchemaBuilderDialog({
 
   return (
     <Dialog open={open} onOpenChange={(isOpen) => !isOpen && onClose()}>
-      <DialogContent className="sm:max-w-[1100px] max-h-[90vh] overflow-hidden">
+      <DialogContent className="sm:max-w-[1100px] h-[90vh] overflow-hidden flex flex-col">
         <DialogHeader>
           <DialogTitle>Schema Builder</DialogTitle>
           <DialogDescription>
-            Label is the document label from the PDF. Field Key is the column
-            name shown in Contract Review.
+            Label is the document label from the PDF. Field Key is the column name shown in Contract Review.
           </DialogDescription>
         </DialogHeader>
 
-        <ScrollArea className="max-h-[64vh] pr-3">
-          <div className="space-y-4 py-1">
-            <div>
-              <Label>Schema Name</Label>
-              <Input
-                value={schemaName}
-                onChange={(e) => setSchemaName(e.target.value)}
-                placeholder="Contracts"
-              />
-            </div>
+        <ScrollArea className="flex-1 overflow-hidden">
+              <div className="space-y-4 py-4 px-6">
+                <div>
+                  <Label>Schema Name</Label>
+                  <Input
+                    value={schemaName}
+                    onChange={(e) => setSchemaName(e.target.value)}
+                    placeholder="Contracts"
+                  />
+                </div>
 
-            <div className="space-y-3">
-              <div className="flex items-center gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={loadContractTemplate}
-                >
-                  Load Contract Fields Template
-                </Button>
-                <span className="text-xs text-muted-foreground">
-                  Uses PDF-contract field names, section hints, and table/header
-                  strategies.
-                </span>
-              </div>
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={loadContractTemplate}
+                    >
+                      Load Contract Fields Template
+                    </Button>
+                    <span className="text-xs text-muted-foreground">
+                      Uses PDF-contract field names, section hints, and table/header
+                      strategies.
+                    </span>
+                  </div>
 
-              <div>
-                <div className="flex flex-wrap items-end gap-1 border-b pb-0">
-                  {tabs.map((tab, idx) => {
-                    const isActive = idx === activeTabIndex;
-                    const isEditingThisTab =
-                      isTabEditorOpen && editingTabIndex === idx;
+                  <div>
+                    <div className="flex flex-wrap items-end gap-1 border-b pb-0">
+                      {tabs.map((tab, idx) => {
+                        const isActive = idx === activeTabIndex;
+                        const isEditingThisTab =
+                          isTabEditorOpen && editingTabIndex === idx;
 
-                    if (isEditingThisTab) {
-                      return (
-                        <div
-                          key={`${tab.name}-${idx}`}
-                          className="-mb-px flex h-9 items-center gap-1 rounded-t-md border border-border border-b-background bg-background px-2"
-                        >
+                        if (isEditingThisTab) {
+                          return (
+                            <div
+                              key={`${tab.name}-${idx}`}
+                              className="-mb-px flex h-9 items-center gap-1 rounded-t-md border border-border border-b-background bg-background px-2"
+                            >
+                              <Input
+                                value={tabDraft}
+                                onChange={(e) => setTabDraft(e.target.value)}
+                                placeholder="Tab Name"
+                                className="h-6 w-36"
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") {
+                                    e.preventDefault();
+                                    upsertTab();
+                                  }
+                                  if (e.key === "Escape") {
+                                    e.preventDefault();
+                                    cancelTabEditor();
+                                  }
+                                }}
+                                autoFocus
+                              />
+                              <Button
+                                type="button"
+                                size="icon"
+                                variant="ghost"
+                                className="h-7 w-7"
+                                onClick={upsertTab}
+                                aria-label={`Confirm ${tab.name} tab edit`}
+                              >
+                                <Check className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                type="button"
+                                size="icon"
+                                variant="ghost"
+                                className="h-7 w-7"
+                                onClick={cancelTabEditor}
+                                aria-label={`Cancel ${tab.name} tab edit`}
+                              >
+                                <X className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <button
+                            key={`${tab.name}-${idx}`}
+                            type="button"
+                            onClick={() => setActiveTabIndex(idx)}
+                            className={`group relative -mb-px rounded-t-md border px-3 py-1.5 pr-16 text-sm transition-colors ${
+                              isActive
+                                ? "border-border border-b-background bg-background font-medium text-foreground"
+                                : "border-transparent bg-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                            }`}
+                          >
+                            {tab.name}
+                            <span className="ml-1 text-xs text-muted-foreground">
+                              ({tab.fields.length})
+                            </span>
+                            <span className="absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                              <Button
+                                type="button"
+                                size="icon"
+                                variant="ghost"
+                                className="h-6 w-6"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  editTab(idx);
+                                }}
+                                aria-label={`Edit ${tab.name} tab`}
+                              >
+                                <Pencil className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button
+                                type="button"
+                                size="icon"
+                                variant="ghost"
+                                className="h-6 w-6 text-destructive hover:text-destructive"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  removeTab(idx);
+                                }}
+                                aria-label={`Delete ${tab.name} tab`}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            </span>
+                          </button>
+                        );
+                      })}
+
+                      {isTabEditorOpen && editingTabIndex === null && (
+                        <div className="-mb-px flex h-9 items-center gap-1 rounded-t-md border border-border border-b-background bg-background px-2">
                           <Input
                             value={tabDraft}
                             onChange={(e) => setTabDraft(e.target.value)}
@@ -1293,7 +1382,7 @@ export function SchemaBuilderDialog({
                             variant="ghost"
                             className="h-7 w-7"
                             onClick={upsertTab}
-                            aria-label={`Confirm ${tab.name} tab edit`}
+                            aria-label="Confirm new tab"
                           >
                             <Check className="h-4 w-4" />
                           </Button>
@@ -1303,265 +1392,175 @@ export function SchemaBuilderDialog({
                             variant="ghost"
                             className="h-7 w-7"
                             onClick={cancelTabEditor}
-                            aria-label={`Cancel ${tab.name} tab edit`}
+                            aria-label="Cancel new tab"
                           >
                             <X className="h-4 w-4" />
                           </Button>
                         </div>
-                      );
-                    }
-
-                    return (
-                      <button
-                        key={`${tab.name}-${idx}`}
-                        type="button"
-                        onClick={() => setActiveTabIndex(idx)}
-                        className={`group relative -mb-px rounded-t-md border px-3 py-1.5 pr-16 text-sm transition-colors ${
-                          isActive
-                            ? "border-border border-b-background bg-background font-medium text-foreground"
-                            : "border-transparent bg-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-                        }`}
-                      >
-                        {tab.name}
-                        <span className="ml-1 text-xs text-muted-foreground">
-                          ({tab.fields.length})
-                        </span>
-                        <span className="absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-                          <Button
-                            type="button"
-                            size="icon"
-                            variant="ghost"
-                            className="h-6 w-6"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              editTab(idx);
-                            }}
-                            aria-label={`Edit ${tab.name} tab`}
-                          >
-                            <Pencil className="h-3.5 w-3.5" />
-                          </Button>
-                          <Button
-                            type="button"
-                            size="icon"
-                            variant="ghost"
-                            className="h-6 w-6 text-destructive hover:text-destructive"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              removeTab(idx);
-                            }}
-                            aria-label={`Delete ${tab.name} tab`}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </Button>
-                        </span>
-                      </button>
-                    );
-                  })}
-
-                  {isTabEditorOpen && editingTabIndex === null && (
-                    <div className="-mb-px flex h-9 items-center gap-1 rounded-t-md border border-border border-b-background bg-background px-2">
-                      <Input
-                        value={tabDraft}
-                        onChange={(e) => setTabDraft(e.target.value)}
-                        placeholder="Tab Name"
-                        className="h-6 w-36"
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            e.preventDefault();
-                            upsertTab();
-                          }
-                          if (e.key === "Escape") {
-                            e.preventDefault();
-                            cancelTabEditor();
-                          }
-                        }}
-                        autoFocus
-                      />
-                      <Button
-                        type="button"
-                        size="icon"
-                        variant="ghost"
-                        className="h-7 w-7"
-                        onClick={upsertTab}
-                        aria-label="Confirm new tab"
-                      >
-                        <Check className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        type="button"
-                        size="icon"
-                        variant="ghost"
-                        className="h-7 w-7"
-                        onClick={cancelTabEditor}
-                        aria-label="Cancel new tab"
-                      >
-                        <X className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  )}
-
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="-mb-px h-9 w-9 rounded-t-md border border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-                    onClick={startAddTab}
-                    disabled={isTabEditorOpen}
-                    aria-label="Add tab"
-                  >
-                    <Plus className="h-4 w-4" />
-                  </Button>
-                </div>
-
-                {activeTab ? (
-                  <div className="space-y-3 border p-3 border-border rounded-md border-t-0 rounded-t-none">
-                    <div className="rounded-md border bg-background p-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="min-w-0 text-sm">
-                          <div className="font-medium">New field</div>
-                          <div className="text-muted-foreground truncate text-xs">
-                            Add a field to this tab.
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-1 shrink-0">
-                          <Button
-                            type="button"
-                            size="sm"
-                            onClick={
-                              isAddingField ? upsertField : startAddField
-                            }
-                          >
-                            {isAddingField ? "Save" : "Add Field"}
-                          </Button>
-                          {isAddingField && (
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              onClick={cancelFieldEditor}
-                            >
-                              Cancel
-                            </Button>
-                          )}
-                        </div>
-                      </div>
-                      {isAddingField && (
-                        <div className="mt-3">{renderFieldEditor()}</div>
                       )}
+
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="-mb-px h-9 w-9 rounded-t-md border border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                        onClick={startAddTab}
+                        disabled={isTabEditorOpen}
+                        aria-label="Add tab"
+                      >
+                        <Plus className="h-4 w-4" />
+                      </Button>
                     </div>
 
-                    <div className="space-y-2">
-                      {activeTab.fields.length === 0 ? (
-                        <div className="rounded-md border bg-background p-3 text-sm text-muted-foreground">
-                          No fields in this tab.
-                        </div>
-                      ) : (
-                        activeTab.fields.map((field, idx) => (
-                          <div
-                            key={`${field.fieldKey}-${idx}`}
-                            className="rounded-md border bg-background p-2"
-                          >
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="min-w-0 text-sm">
-                                <div className="font-medium truncate">
-                                  {field.fieldKey}
-                                </div>
-                                <div className="text-muted-foreground truncate text-xs">
-                                  Document Label: {field.label} |{" "}
-                                  {field.dataType || "string"} |{" "}
-                                  {field.regexRule || "(no regex)"}
-                                </div>
+                    {activeTab ? (
+                      <div className="space-y-3 border p-3 border-border rounded-md border-t-0 rounded-t-none">
+                        <div className="rounded-md border bg-background p-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="min-w-0 text-sm">
+                              <div className="font-medium">New field</div>
+                              <div className="text-muted-foreground truncate text-xs">
+                                Add a field to this tab.
                               </div>
-                              <div className="flex items-center gap-1 shrink-0">
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <Button
+                                type="button"
+                                size="sm"
+                                onClick={
+                                  isAddingField ? upsertField : startAddField
+                                }
+                              >
+                                {isAddingField ? "Save" : "Add Field"}
+                              </Button>
+                              {isAddingField && (
                                 <Button
                                   type="button"
                                   size="sm"
                                   variant="outline"
-                                  onClick={() =>
-                                    editingFieldIndex === idx
-                                      ? upsertField()
-                                      : editField(idx)
-                                  }
+                                  onClick={cancelFieldEditor}
                                 >
-                                  {editingFieldIndex === idx ? "Save" : "Edit"}
+                                  Cancel
                                 </Button>
-                                {editingFieldIndex === idx && (
-                                  <Button
-                                    type="button"
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={cancelFieldEditor}
-                                  >
-                                    Cancel
-                                  </Button>
-                                )}
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="destructive"
-                                  onClick={() => removeField(idx)}
-                                >
-                                  Delete
-                                </Button>
-                              </div>
+                              )}
                             </div>
-
-                            {editingFieldIndex === idx && (
-                              <div className="mt-3">{renderFieldEditor()}</div>
-                            )}
                           </div>
-                        ))
-                      )}
+                          {isAddingField && (
+                            <div className="mt-3">{renderFieldEditor()}</div>
+                          )}
+                        </div>
+
+                        <div className="space-y-2">
+                          {activeTab.fields.length === 0 ? (
+                            <div className="rounded-md border bg-background p-3 text-sm text-muted-foreground">
+                              No fields in this tab.
+                            </div>
+                          ) : (
+                            activeTab.fields.map((field, idx) => (
+                              <div
+                                key={`${field.fieldKey}-${idx}`}
+                                className="rounded-md border bg-background p-2"
+                              >
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="min-w-0 text-sm">
+                                    <div className="font-medium truncate">
+                                      {field.fieldKey}
+                                    </div>
+                                    <div className="text-muted-foreground truncate text-xs">
+                                      Document Label: {field.label} |{" "}
+                                      {field.dataType || "string"} |{" "}
+                                      {field.regexRule || "(no regex)"}
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center gap-1 shrink-0">
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() =>
+                                        editingFieldIndex === idx
+                                          ? upsertField()
+                                          : editField(idx)
+                                      }
+                                    >
+                                      {editingFieldIndex === idx ? "Save" : "Edit"}
+                                    </Button>
+                                    {editingFieldIndex === idx && (
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={cancelFieldEditor}
+                                      >
+                                        Cancel
+                                      </Button>
+                                    )}
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="destructive"
+                                      onClick={() => removeField(idx)}
+                                    >
+                                      Delete
+                                    </Button>
+                                  </div>
+                                </div>
+
+                                {editingFieldIndex === idx && (
+                                  <div className="mt-3">{renderFieldEditor()}</div>
+                                )}
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="rounded-md border bg-background p-3 text-sm text-muted-foreground">
+                        No tabs added yet. Click the plus icon to create one.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <Label>Payload Preview (Editable JSON)</Label>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          setPayloadEditor(payloadPreview);
+                          setPayloadDirty(false);
+                          setErrors([]);
+                        }}
+                      >
+                        Reset from Form
+                      </Button>
+                      <Button type="button" size="sm" onClick={applyPayloadEditor}>
+                        Apply JSON
+                      </Button>
                     </div>
                   </div>
-                ) : (
-                  <div className="rounded-md border bg-background p-3 text-sm text-muted-foreground">
-                    No tabs added yet. Click the plus icon to create one.
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <Label>Payload Preview (Editable JSON)</Label>
-                <div className="flex items-center gap-2">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={() => {
-                      setPayloadEditor(payloadPreview);
-                      setPayloadDirty(false);
-                      setErrors([]);
+                  <textarea
+                    value={payloadEditor}
+                    onChange={(e) => {
+                      setPayloadEditor(e.target.value);
+                      setPayloadDirty(true);
                     }}
-                  >
-                    Reset from Form
-                  </Button>
-                  <Button type="button" size="sm" onClick={applyPayloadEditor}>
-                    Apply JSON
-                  </Button>
+                    className="max-h-[720px] min-h-[500px] w-full overflow-auto rounded-md border bg-muted/40 p-3 text-xs font-mono"
+                  />
                 </div>
               </div>
-              <textarea
-                value={payloadEditor}
-                onChange={(e) => {
-                  setPayloadEditor(e.target.value);
-                  setPayloadDirty(true);
-                }}
-                className="max-h-[720px] min-h-[500px] w-full overflow-auto rounded-md border bg-muted/40 p-3 text-xs font-mono"
-              />
-            </div>
-          </div>
         </ScrollArea>
 
         {errors.length > 0 && (
-          <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+          <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive mx-6 flex-shrink-0">
             {errors.join(" ")}
           </div>
         )}
 
-        <DialogFooter>
+        <DialogFooter className="px-6 flex-shrink-0 border-t pt-4">
           <Button variant="outline" onClick={onClose} disabled={submitting}>
             Cancel
           </Button>

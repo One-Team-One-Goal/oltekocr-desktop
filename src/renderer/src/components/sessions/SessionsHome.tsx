@@ -31,6 +31,12 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   CirclePlus,
   Copy,
   Plus,
@@ -55,6 +61,11 @@ import {
 import type { SessionListItem, SessionMode } from "@shared/types";
 import { WindowControls } from "@/components/layout/SidebarContext";
 import { markUnsaved, nextUnnamedName } from "@/lib/unsaved-sessions";
+import {
+  SchemaBuilderDialog,
+  type SchemaPresetDraft,
+} from "./SchemaBuilderDialog";
+import { AutoSchemaBuilderDialog } from "./AutoSchemaBuilderDialog";
 
 // Load all file-type icons via glob (handles special chars in filenames)
 const _svgModules = import.meta.glob("../../assets/icons/*.svg", {
@@ -167,7 +178,7 @@ const PDF_NEW_CARDS = [
     Icon: HelpCircle,
     label: "Other",
     desc: "Any other document type",
-    placeholder: true,
+    placeholder: false,
   },
 ];
 
@@ -193,6 +204,11 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
   const [pdfRenameValue, setPdfRenameValue] = useState("");
   const [starredIds, setStarredIds] = useState<Set<string>>(new Set());
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [schemaModeDialogOpen, setSchemaModeDialogOpen] = useState(false);
+  const [manualSchemaBuilderOpen, setManualSchemaBuilderOpen] =
+    useState(false);
+  const [autoSchemaBuilderOpen, setAutoSchemaBuilderOpen] = useState(false);
+  const [schemaBuilderSubmitting, setSchemaBuilderSubmitting] = useState(false);
 
   const toggleActionMode = (nextMode: "delete" | "duplicate") => {
     setActionMode((prev) => (prev === nextMode ? "none" : nextMode));
@@ -248,7 +264,7 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
     }
   };
 
-  const handleNewPdfSession = async (docType: string) => {
+  const createPdfSession = async (docType: string, schemaPresetId?: string) => {
     try {
       const result = await window.api.openFileDialog();
       if (result.canceled || result.filePaths.length === 0) return;
@@ -270,6 +286,10 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
         documentType: docType,
         columns: [],
       });
+      if (schemaPresetId) {
+        await sessionsApi.assignSessionSchemaPreset(session.id, schemaPresetId);
+      }
+
       const docs = await sessionsApi.ingestFiles(session.id, selectedFiles);
       const docIds = docs.map((d: { id: string }) => d.id);
       if (docIds.length > 0) {
@@ -282,6 +302,66 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
       console.error("Failed to create PDF session:", err);
     } finally {
       setCreating(null);
+    }
+  };
+
+  const handleNewPdfSession = async (docType: string) => {
+    if (docType === "OTHER") {
+      setSchemaModeDialogOpen(true);
+      return;
+    }
+    await createPdfSession(docType);
+  };
+
+  const saveSchemaPreset = async (preset: SchemaPresetDraft) => {
+    const trimmedName = preset.name.trim();
+    if (!trimmedName) {
+      throw new Error("Schema name is required.");
+    }
+
+    return sessionsApi.createSchemaPreset({
+      name: trimmedName,
+      extractionMode: preset.extractionMode,
+      recordStartRegex: preset.recordStartRegex,
+      tabs: preset.tabs.map((tab) => ({
+        name: tab.name,
+        fields: tab.fields.map((field) => ({
+          label: field.label,
+          fieldKey: field.fieldKey,
+          regexRule: field.regexRule,
+          extractionStrategy: field.extractionStrategy,
+          dataType: field.dataType,
+          pageRange: field.pageRange,
+          postProcessing: field.postProcessing,
+          altRegexRules: field.altRegexRules,
+          sectionHint: field.sectionHint,
+          sectionIndicatorKey: field.sectionIndicatorKey,
+          contextHint: field.contextHint,
+          contextLabel: field.contextLabel,
+          mandatory: field.mandatory,
+          expectedFormat: field.expectedFormat,
+          minLength: field.minLength,
+          maxLength: field.maxLength,
+          allowedValues: field.allowedValues,
+        })),
+      })),
+    });
+  };
+
+  const handleSchemaBuilderSubmit = async (preset: SchemaPresetDraft, modeType: "manual" | "auto") => {
+    setSchemaBuilderSubmitting(true);
+    try {
+      const created = await saveSchemaPreset(preset);
+      if (modeType === "manual") {
+        setManualSchemaBuilderOpen(false);
+      } else {
+        setAutoSchemaBuilderOpen(false);
+      }
+      await createPdfSession("OTHER", created.id);
+    } catch (err) {
+      console.error("Failed to create schema for OTHER document type:", err);
+    } finally {
+      setSchemaBuilderSubmitting(false);
     }
   };
 
@@ -664,6 +744,62 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
+
+        <Dialog
+          open={schemaModeDialogOpen}
+          onOpenChange={(isOpen) => setSchemaModeDialogOpen(isOpen)}
+        >
+          <DialogContent className="sm:max-w-[440px]">
+            <DialogHeader>
+              <DialogTitle>Choose Schema Builder</DialogTitle>
+            </DialogHeader>
+            <p className="text-sm text-muted-foreground">
+              For Other document types, choose how you want to create the schema.
+            </p>
+            <div className="grid grid-cols-1 gap-2 pt-1">
+              <Button
+                type="button"
+                variant="outline"
+                className="justify-start"
+                onClick={() => {
+                  setSchemaModeDialogOpen(false);
+                  setManualSchemaBuilderOpen(true);
+                }}
+              >
+                Manual Schema Builder
+              </Button>
+              <Button
+                type="button"
+                className="justify-start"
+                onClick={() => {
+                  setSchemaModeDialogOpen(false);
+                  setAutoSchemaBuilderOpen(true);
+                }}
+              >
+                Auto Schema Builder
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        <SchemaBuilderDialog
+          open={manualSchemaBuilderOpen}
+          onClose={() => setManualSchemaBuilderOpen(false)}
+          initialPreset={{
+            name: "Other Document Schema",
+            extractionMode: "GENERIC",
+            tabs: [],
+          }}
+          submitting={schemaBuilderSubmitting}
+          onSubmit={(preset) => handleSchemaBuilderSubmit(preset, "manual")}
+        />
+
+        <AutoSchemaBuilderDialog
+          open={autoSchemaBuilderOpen}
+          onClose={() => setAutoSchemaBuilderOpen(false)}
+          submitting={schemaBuilderSubmitting}
+          onSubmit={(preset) => handleSchemaBuilderSubmit(preset, "auto")}
+        />
       </>
     );
   }
