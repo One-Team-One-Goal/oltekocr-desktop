@@ -1,9 +1,12 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { getDataPath } from "../../data-dirs";
-import { join } from "path";
 import { writeFileSync } from "fs";
-import type { ExportFormat, ExportHistoryRecord } from "@shared/types";
+import type {
+  ExportFormat,
+  ExportHistoryRecord,
+  SessionColumn,
+} from "@shared/types";
 
 @Injectable()
 export class ExportService {
@@ -24,6 +27,25 @@ export class ExportService {
     }
 
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const firstSessionId = documents[0]?.sessionId ?? null;
+    const hasSingleSession =
+      !!firstSessionId &&
+      documents.every(
+        (doc) => doc.sessionId && doc.sessionId === firstSessionId,
+      );
+
+    const session = hasSingleSession
+      ? await this.prisma.session.findUnique({
+          where: { id: firstSessionId },
+          select: {
+            id: true,
+            name: true,
+            mode: true,
+            columns: true,
+          },
+        })
+      : null;
+
     let exportPath: string;
 
     switch (format) {
@@ -35,7 +57,7 @@ export class ExportService {
         break;
       case "excel":
       default:
-        exportPath = await this.exportExcel(documents, timestamp);
+        exportPath = await this.exportExcel(documents, timestamp, session);
         break;
     }
 
@@ -146,7 +168,10 @@ export class ExportService {
     documents: any[],
     timestamp: string,
   ): Promise<string> {
-    const exportPath = getDataPath("exports", `contract_export_${timestamp}.xlsx`);
+    const exportPath = getDataPath(
+      "exports",
+      `contract_export_${timestamp}.xlsx`,
+    );
 
     try {
       const ExcelJS = require("exceljs");
@@ -167,7 +192,11 @@ export class ExportService {
 
       const HEADER_STYLE = {
         font: { bold: true, color: { argb: "FFFFFFFF" } },
-        fill: { type: "pattern", pattern: "solid", fgColor: { argb: "FF1E293B" } } as any,
+        fill: {
+          type: "pattern",
+          pattern: "solid",
+          fgColor: { argb: "FF1E293B" },
+        } as any,
       };
 
       const buildSheet = (
@@ -190,7 +219,10 @@ export class ExportService {
           sheet.addRow(
             keys.map((k) => {
               const value = row[k] ?? "";
-              if ((k === "effective_date" || k === "expiration_date") && value) {
+              if (
+                (k === "effective_date" || k === "expiration_date") &&
+                value
+              ) {
                 const parsed = new Date(String(value));
                 if (!Number.isNaN(parsed.getTime())) return parsed;
               }
@@ -220,26 +252,63 @@ export class ExportService {
       };
 
       const RATES_COLS = [
-        "Carrier", "Contract ID", "effective_date", "expiration_date",
-        "commodity", "origin_city", "origin_via_city", "destination_city", "destination_via_city",
-        "service", "Remarks", "SCOPE",
-        "BaseRate 20", "BaseRate 40", "BaseRate 40H", "BaseRate 45",
-        "AMS(CHINA & JAPAN)", "(HEA) Heavy Surcharge", "AGW", "RED SEA DIVERSION CHARGE(RDS).",
+        "Carrier",
+        "Contract ID",
+        "effective_date",
+        "expiration_date",
+        "commodity",
+        "origin_city",
+        "origin_via_city",
+        "destination_city",
+        "destination_via_city",
+        "service",
+        "Remarks",
+        "SCOPE",
+        "BaseRate 20",
+        "BaseRate 40",
+        "BaseRate 40H",
+        "BaseRate 45",
+        "AMS(CHINA & JAPAN)",
+        "(HEA) Heavy Surcharge",
+        "AGW",
+        "RED SEA DIVERSION CHARGE(RDS).",
       ];
 
       const ORIGIN_ARB_COLS = [
-        "Carrier", "Contract ID", "effective_date", "expiration_date",
-        "commodity", "origin_city", "origin_via_city",
-        "service", "Remarks", "Scope",
-        "BaseRate 20", "BaseRate 40", "BaseRate 40H", "BaseRate 45",
-        "20' AGW", "40' AGW", "45' AGW",
+        "Carrier",
+        "Contract ID",
+        "effective_date",
+        "expiration_date",
+        "commodity",
+        "origin_city",
+        "origin_via_city",
+        "service",
+        "Remarks",
+        "Scope",
+        "BaseRate 20",
+        "BaseRate 40",
+        "BaseRate 40H",
+        "BaseRate 45",
+        "20' AGW",
+        "40' AGW",
+        "45' AGW",
       ];
 
       const DEST_ARB_COLS = [
-        "Carrier", "Contract ID", "effective_date", "expiration_date",
-        "commodity", "destination_city", "destination_via_city",
-        "service", "Remarks", "Scope",
-        "BaseRate 20", "BaseRate 40", "BaseRate 40H", "BaseRate 45",
+        "Carrier",
+        "Contract ID",
+        "effective_date",
+        "expiration_date",
+        "commodity",
+        "destination_city",
+        "destination_via_city",
+        "service",
+        "Remarks",
+        "Scope",
+        "BaseRate 20",
+        "BaseRate 40",
+        "BaseRate 40H",
+        "BaseRate 45",
       ];
 
       buildSheet("Rates", allRates, RATES_COLS);
@@ -248,7 +317,10 @@ export class ExportService {
 
       await workbook.xlsx.writeFile(exportPath);
     } catch (err) {
-      this.logger.error("Contract Excel export failed, falling back to JSON", err);
+      this.logger.error(
+        "Contract Excel export failed, falling back to JSON",
+        err,
+      );
       return this.exportJson(documents, timestamp);
     }
 
@@ -258,7 +330,17 @@ export class ExportService {
   private async exportExcel(
     documents: any[],
     timestamp: string,
+    session?: {
+      id: string;
+      name: string;
+      mode: string;
+      columns: string;
+    } | null,
   ): Promise<string> {
+    if (session?.mode === "TABLE_EXTRACT" && documents.length > 0) {
+      return this.exportTableExtractExcel(documents, timestamp, session);
+    }
+
     // If all selected documents are PDF_EXTRACT contracts, use the contract-specific exporter
     const allAreContracts = documents.every((doc) => {
       try {
@@ -354,5 +436,222 @@ export class ExportService {
     }
 
     return exportPath;
+  }
+
+  private async exportTableExtractExcel(
+    documents: any[],
+    timestamp: string,
+    session: {
+      id: string;
+      name: string;
+      mode: string;
+      columns: string;
+    },
+  ): Promise<string> {
+    const dateStamp = new Date().toISOString().slice(0, 10);
+    const safeSessionName = this.sanitizeFilenamePart(
+      session.name || "Session",
+    );
+    const exportPath = getDataPath(
+      "exports",
+      `${safeSessionName}_${dateStamp || timestamp}.xlsx`,
+    );
+
+    try {
+      const ExcelJS = require("exceljs");
+      const workbook = new ExcelJS.Workbook();
+
+      const sessionColumns = this.parseJson<SessionColumn[]>(
+        session.columns,
+        [],
+      );
+      const fixedHeaders = [
+        "Filename",
+        "Status",
+        "Scanned",
+        "Time",
+        "Confidence",
+        "Page",
+        "Time",
+        "Ext. Type",
+      ];
+      const dynamicHeaders = sessionColumns.map((c) => c.label || c.key);
+      const headers = [...fixedHeaders, ...dynamicHeaders];
+
+      const rowsSheet = workbook.addWorksheet("Rows");
+      rowsSheet.columns = headers.map((header, index) => ({
+        header,
+        key: `col_${index}`,
+        width: header.length > 20 ? header.length + 4 : 18,
+      }));
+
+      for (const doc of documents) {
+        const extractedRow = this.parseJson<
+          Record<string, { answer?: string; score?: number }>
+        >(doc.extractedRow || "{}", {});
+
+        const dynamicValues = sessionColumns.map(
+          (col) => extractedRow[col.key]?.answer ?? "",
+        );
+
+        rowsSheet.addRow([
+          doc.filename ?? "",
+          this.statusLabel(doc.status),
+          this.formatShortDateTime(doc.createdAt),
+          this.formatShortTime(doc.ocrProcessingTime),
+          this.formatConfidence(doc.ocrAvgConfidence),
+          doc.ocrPageCount || "—",
+          this.formatReadableTime(doc.ocrProcessingTime),
+          this.extractionTypeLabel(doc.extractionType),
+          ...dynamicValues,
+        ]);
+      }
+
+      const headerRow = rowsSheet.getRow(1);
+      headerRow.font = { bold: true, color: { argb: "FFFFFFFF" } };
+      headerRow.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FF1E293B" },
+      };
+      rowsSheet.autoFilter = {
+        from: { row: 1, column: 1 },
+        to: { row: 1, column: headers.length },
+      };
+
+      const summary = workbook.addWorksheet("Summary");
+      const total = documents.length;
+      const avgConfidence =
+        total > 0
+          ? documents.reduce(
+              (acc, doc) => acc + Number(doc.ocrAvgConfidence || 0),
+              0,
+            ) / total
+          : 0;
+      const statusCounts = documents.reduce(
+        (acc: Record<string, number>, doc) => {
+          const key = String(doc.status || "UNKNOWN");
+          acc[key] = (acc[key] ?? 0) + 1;
+          return acc;
+        },
+        {},
+      );
+
+      summary.columns = [
+        { header: "Metric", key: "metric", width: 32 },
+        { header: "Value", key: "value", width: 48 },
+      ];
+      summary.addRows([
+        { metric: "Session", value: session.name || "Session" },
+        {
+          metric: "Generated At",
+          value: this.formatShortDateTime(new Date().toISOString()),
+        },
+        { metric: "Documents", value: total },
+        { metric: "Average Confidence", value: `${avgConfidence.toFixed(1)}%` },
+        { metric: "", value: "" },
+      ]);
+
+      Object.entries(statusCounts)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .forEach(([status, count]) => {
+          summary.addRow({
+            metric: `Status: ${this.statusLabel(status)}`,
+            value: count,
+          });
+        });
+
+      const summaryHeader = summary.getRow(1);
+      summaryHeader.font = { bold: true, color: { argb: "FFFFFFFF" } };
+      summaryHeader.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FF1E293B" },
+      };
+
+      await workbook.xlsx.writeFile(exportPath);
+    } catch (err) {
+      this.logger.error(
+        "TABLE_EXTRACT Excel export failed, falling back to JSON",
+        err,
+      );
+      return this.exportJson(documents, timestamp);
+    }
+
+    return exportPath;
+  }
+
+  private parseJson<T>(raw: string, fallback: T): T {
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      return fallback;
+    }
+  }
+
+  private formatShortDateTime(value: Date | string): string {
+    if (!value) return "—";
+    const date = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(date.getTime())) return "—";
+    const dd = String(date.getDate()).padStart(2, "0");
+    const mm = String(date.getMonth() + 1).padStart(2, "0");
+    const yy = String(date.getFullYear()).slice(-2);
+    const HH = String(date.getHours()).padStart(2, "0");
+    const min = String(date.getMinutes()).padStart(2, "0");
+    return `${dd}/${mm}/${yy} ${HH}:${min}`;
+  }
+
+  private formatShortTime(seconds: number): string {
+    if (!seconds || Number(seconds) === 0) return "—";
+    return `${Number(seconds).toFixed(1)}s`;
+  }
+
+  private formatReadableTime(seconds: number): string {
+    const value = Number(seconds || 0);
+    if (!value) return "—";
+    if (value < 60) return `${value.toFixed(1)}s`;
+    return `${Math.floor(value / 60)}m ${Math.round(value % 60)}s`;
+  }
+
+  private formatConfidence(confidence: number): string {
+    const value = Number(confidence || 0);
+    if (!value) return "—";
+    return `${value.toFixed(1)}%`;
+  }
+
+  private extractionTypeLabel(type: string): string {
+    const map: Record<string, string> = {
+      AUTO: "Auto",
+      IMAGE: "Image",
+      PDF_TEXT: "PDF (Text)",
+      PDF_IMAGE: "PDF (Scanned)",
+      EXCEL: "Excel",
+    };
+    return map[type] ?? type ?? "—";
+  }
+
+  private statusLabel(status: string): string {
+    const map: Record<string, string> = {
+      QUEUED: "Queued",
+      SCANNING: "Scanning",
+      PROCESSING: "Processing",
+      CANCELLING: "Cancelling",
+      REVIEW: "Review",
+      APPROVED: "Approved",
+      REJECTED: "Rejected",
+      EXPORTED: "Exported",
+      ERROR: "Error",
+    };
+    return map[status] ?? status ?? "Unknown";
+  }
+
+  private sanitizeFilenamePart(name: string): string {
+    const clean = (name || "Session")
+      .replace(/[\\/:*?"<>|]/g, "_")
+      .trim()
+      .replace(/\s+/g, "_")
+      .replace(/_+/g, "_")
+      .slice(0, 120);
+    return clean || "Session";
   }
 }

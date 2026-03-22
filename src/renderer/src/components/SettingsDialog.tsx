@@ -7,7 +7,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
@@ -19,7 +19,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { settingsApi, modelsApi } from "@/api/client";
-import type { ModelStatus } from "@/api/client";
+import type { LlmModelStatus, ModelStatus } from "@/api/client";
 import {
   Save,
   RotateCcw,
@@ -40,7 +40,10 @@ interface SettingsDialogProps {
   onClose: () => void;
 }
 
+type SettingsTab = "scanner" | "ocr" | "storage" | "export" | "models";
+
 export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
+  const [activeTab, setActiveTab] = useState<SettingsTab>("scanner");
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [defaults, setDefaults] = useState<AppSettings | null>(null);
   const [loading, setLoading] = useState(false);
@@ -49,6 +52,7 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
 
   // Models tab state
   const [models, setModels] = useState<ModelStatus[]>([]);
+  const [llmModels, setLlmModels] = useState<LlmModelStatus[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [installing, setInstalling] = useState<
     Record<string, "installing" | "uninstalling">
@@ -57,15 +61,18 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
 
   const refreshModels = useCallback(() => {
     setModelsLoading(true);
-    modelsApi
-      .list()
-      .then(setModels)
+    Promise.all([modelsApi.list(), modelsApi.listLlm()])
+      .then(([extractionModels, llmModelList]) => {
+        setModels(extractionModels);
+        setLlmModels(llmModelList);
+      })
       .catch(console.error)
       .finally(() => setModelsLoading(false));
   }, []);
 
   useEffect(() => {
     if (open) {
+      setActiveTab("scanner");
       setLoading(true);
       Promise.all([settingsApi.get(), settingsApi.getDefaults()])
         .then(([s, d]) => {
@@ -153,9 +160,25 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
 
   if (!settings) return null;
 
+  const pdfDownloadedOptions = Array.from(
+    new Set([
+      settings.ocr.pdfModel || "pdfplumber",
+      ...models.filter((m) => m.downloaded).map((m) => m.id),
+      "pdfplumber",
+    ]),
+  );
+
+  const llmDownloadedOptions = Array.from(
+    new Set([
+      settings.llm.defaultModel || "qwen2.5:1.5b",
+      ...llmModels.filter((m) => m.downloaded).map((m) => m.id),
+      "qwen2.5:1.5b",
+    ]),
+  );
+
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col p-0 gap-0">
+      <DialogContent className="max-w-2xl h-[760px] max-h-[90vh] flex flex-col p-0 gap-0 overflow-hidden">
         <DialogHeader className="p-4 pb-2">
           <DialogTitle>Settings</DialogTitle>
         </DialogHeader>
@@ -168,26 +191,53 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
           </div>
         ) : (
           <Tabs
-            defaultValue="scanner"
+            value={activeTab}
+            onValueChange={(value) => setActiveTab(value as SettingsTab)}
             className="flex-1 flex flex-col overflow-hidden"
           >
-            <TabsList className="mx-4 mt-2 justify-start">
-              <TabsTrigger value="scanner" className="text-xs gap-1">
-                <ScanLine className="h-3 w-3" /> Scanner
-              </TabsTrigger>
-              <TabsTrigger value="ocr" className="text-xs gap-1">
-                <FileText className="h-3 w-3" /> OCR
-              </TabsTrigger>
-              <TabsTrigger value="storage" className="text-xs gap-1">
-                <Database className="h-3 w-3" /> Storage
-              </TabsTrigger>
-              <TabsTrigger value="export" className="text-xs gap-1">
-                <FileOutput className="h-3 w-3" /> Export
-              </TabsTrigger>
-              <TabsTrigger value="models" className="text-xs gap-1">
-                <Package className="h-3 w-3" /> Models
-              </TabsTrigger>
-            </TabsList>
+            <div className="flex gap-0 border-b mt-3 px-4 shrink-0">
+              {[
+                {
+                  value: "scanner",
+                  label: "Scanner",
+                  icon: <ScanLine className="h-3 w-3" />,
+                },
+                {
+                  value: "ocr",
+                  label: "OCR",
+                  icon: <FileText className="h-3 w-3" />,
+                },
+                {
+                  value: "storage",
+                  label: "Storage",
+                  icon: <Database className="h-3 w-3" />,
+                },
+                {
+                  value: "export",
+                  label: "Export",
+                  icon: <FileOutput className="h-3 w-3" />,
+                },
+                {
+                  value: "models",
+                  label: "Models",
+                  icon: <Package className="h-3 w-3" />,
+                },
+              ].map((tab) => (
+                <button
+                  key={tab.value}
+                  type="button"
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors whitespace-nowrap ${
+                    activeTab === tab.value
+                      ? "border-primary text-foreground"
+                      : "border-transparent text-muted-foreground hover:text-foreground"
+                  }`}
+                  onClick={() => setActiveTab(tab.value as SettingsTab)}
+                >
+                  {tab.icon}
+                  {tab.label}
+                </button>
+              ))}
+            </div>
 
             {/* Scanner Settings */}
             <TabsContent
@@ -464,6 +514,73 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
             <TabsContent value="models" className="flex-1 mt-0 overflow-hidden">
               <ScrollArea className="h-full">
                 <div className="p-4 space-y-3">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <SettingGroup label="OCR Engine (Downloaded)">
+                      <div className="rounded-md border bg-background p-2 space-y-1.5">
+                        <button
+                          type="button"
+                          className="w-full text-left px-2 py-1.5 rounded text-xs border border-primary text-foreground"
+                          onClick={() => update("ocr", "engine", "rapidocr")}
+                        >
+                          RapidOCR
+                        </button>
+                        <p className="text-[11px] text-muted-foreground px-1">
+                          Version history for OCR engines will appear here as
+                          downloadable versions are added.
+                        </p>
+                      </div>
+                    </SettingGroup>
+
+                    <SettingGroup label="PDF Model Versions (Downloaded)">
+                      <div className="rounded-md border bg-background p-2 space-y-1.5">
+                        {pdfDownloadedOptions.map((modelId) => {
+                          const active =
+                            (settings.ocr.pdfModel || "pdfplumber") === modelId;
+                          return (
+                            <button
+                              key={modelId}
+                              type="button"
+                              className={`w-full text-left px-2 py-1.5 rounded text-xs border transition-colors ${
+                                active
+                                  ? "border-primary text-foreground"
+                                  : "border-transparent text-muted-foreground hover:text-foreground"
+                              }`}
+                              onClick={() => update("ocr", "pdfModel", modelId)}
+                            >
+                              {modelId}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </SettingGroup>
+
+                    <SettingGroup label="LLM Versions (Downloaded)">
+                      <div className="rounded-md border bg-background p-2 space-y-1.5">
+                        {llmDownloadedOptions.map((modelId) => {
+                          const active =
+                            (settings.llm.defaultModel || "qwen2.5:1.5b") ===
+                            modelId;
+                          return (
+                            <button
+                              key={modelId}
+                              type="button"
+                              className={`w-full text-left px-2 py-1.5 rounded text-xs border transition-colors ${
+                                active
+                                  ? "border-primary text-foreground"
+                                  : "border-transparent text-muted-foreground hover:text-foreground"
+                              }`}
+                              onClick={() =>
+                                update("llm", "defaultModel", modelId)
+                              }
+                            >
+                              {modelId}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </SettingGroup>
+                  </div>
+
                   <div className="flex items-center justify-between">
                     <p className="text-xs text-muted-foreground">
                       Install or remove extraction model packages. Large models

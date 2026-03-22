@@ -29,6 +29,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   },
   ocr: {
     language: "en",
+    engine: "rapidocr",
+    pdfModel: "pdfplumber",
     confidenceThreshold: 85,
     extractTables: true,
     timeout: 120,
@@ -51,7 +53,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   },
   llm: {
     provider: "groq",
-    defaultModel: "llama-3.3-70b-versatile",
+    defaultModel: "qwen2.5:1.5b",
     temperature: 0.2,
   },
 };

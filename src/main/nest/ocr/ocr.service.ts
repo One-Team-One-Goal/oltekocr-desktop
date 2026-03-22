@@ -29,6 +29,8 @@ export class OcrService {
 
   /** The document ID currently being processed (for log routing). */
   private activeDocId: string | null = null;
+  /** Active child process per document ID for immediate cancellation. */
+  private activeChildren = new Map<string, ReturnType<typeof spawn>>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -41,6 +43,38 @@ export class OcrService {
   /** Return the absolute path to the Python OCR script */
   private get scriptPath(): string {
     return join(process.cwd(), "src", "main", "python", "ocr_rapidocr.py");
+  }
+
+  /** Try to cancel a currently running OCR sidecar for a document. */
+  cancelActive(documentId: string): boolean {
+    const child = this.activeChildren.get(documentId);
+    if (!child || child.killed) return false;
+    try {
+      child.kill();
+      this.emitLog(`Cancellation requested — stopped active OCR process`);
+      this.logger.warn(`Killed active OCR child for document ${documentId}`);
+      return true;
+    } catch (err: any) {
+      this.logger.warn(
+        `Failed to kill active OCR child for ${documentId}: ${String(err?.message ?? err)}`,
+      );
+      return false;
+    }
+  }
+
+  /** Track a spawned child for the active document and auto-cleanup on exit. */
+  private trackActiveChild(child: ReturnType<typeof spawn>): void {
+    const docId = this.activeDocId;
+    if (!docId) return;
+    this.activeChildren.set(docId, child);
+    const clear = () => {
+      if (this.activeChildren.get(docId) === child) {
+        this.activeChildren.delete(docId);
+      }
+    };
+    child.once("close", clear);
+    child.once("error", clear);
+    child.once("exit", clear);
   }
 
   /** Return the absolute path to the unified extraction sidecar */
@@ -82,12 +116,22 @@ export class OcrService {
       } as OcrResult;
     }
 
-    // If extractionType is AUTO, detect it now and persist so downstream
-    // processors (PDF vs image vs excel) know which pipeline to run.
-    if (!doc.extractionType || doc.extractionType === "AUTO") {
-      const detected = this.documentsService.detectExtractionType(
-        doc.imagePath,
+    // Always re-detect PDF extraction type on processing (fast text/font check).
+    // For non-PDFs, only detect if AUTO or not set.
+    let detected: "IMAGE" | "PDF_TEXT" | "PDF_IMAGE" | "EXCEL" | undefined;
+    if (doc.imagePath.toLowerCase().endsWith(".pdf")) {
+      // PDFs: always re-detect to ensure correct routing even on reprocess
+      detected = this.documentsService.detectExtractionType(doc.imagePath);
+      await this.prisma.document.updateMany({
+        where: { id: documentId },
+        data: { extractionType: detected },
+      });
+      this.logger.log(
+        `Re-detected PDF extractionType=${detected} for ${documentId}`,
       );
+    } else if (!doc.extractionType || doc.extractionType === "AUTO") {
+      // Non-PDFs: detect only if not already set
+      detected = this.documentsService.detectExtractionType(doc.imagePath);
       await this.prisma.document.updateMany({
         where: { id: documentId },
         data: { extractionType: detected },
@@ -106,18 +150,29 @@ export class OcrService {
     // Re-read the document to get the resolved extractionType
     const freshDoc = await this.prisma.document.findUnique({
       where: { id: documentId },
-      select: { extractionType: true, imagePath: true, sessionId: true },
+      select: {
+        extractionType: true,
+        imagePath: true,
+        sessionId: true,
+        session: {
+          select: {
+            mode: true,
+            extractionModel: true,
+          },
+        },
+      },
     });
     const resolvedType = freshDoc?.extractionType ?? "IMAGE";
+    const sessionMode = freshDoc?.session?.mode ?? null;
 
-    // Look up the session's chosen extraction model (defaults to "pdfplumber")
-    let extractionModel = "pdfplumber";
-    if (freshDoc?.sessionId) {
-      const sess = await this.prisma.session.findUnique({
-        where: { id: freshDoc.sessionId },
-        select: { extractionModel: true },
-      });
-      if (sess?.extractionModel) extractionModel = sess.extractionModel;
+    // Default to global settings model; PDF_EXTRACT sessions can override per session.
+    const globalPdfModel = this.settings.getAll().ocr?.pdfModel || "pdfplumber";
+    let extractionModel = globalPdfModel;
+    if (
+      freshDoc?.session?.mode === "PDF_EXTRACT" &&
+      freshDoc?.session?.extractionModel
+    ) {
+      extractionModel = freshDoc.session.extractionModel;
     }
 
     if (!this.allowedPdfModels.has(extractionModel)) {
@@ -131,7 +186,72 @@ export class OcrService {
     let scanModel = "rapidocr";
     this.activeDocId = documentId;
     try {
-      if (resolvedType === "PDF_TEXT" || resolvedType === "PDF_IMAGE") {
+      // TABLE_EXTRACT-only routing strategy:
+      // PDF_TEXT -> pdfplumber
+      // PDF_IMAGE -> Docling (fallback rapidocr)
+      // IMAGE -> Docling (fallback rapidocr)
+      if (sessionMode === "TABLE_EXTRACT") {
+        if (resolvedType === "PDF_TEXT") {
+          scanModel = "pdfplumber";
+          ocrResult = await this.runPdfExtractor(
+            doc.imagePath,
+            "pdfplumber",
+            "text",
+          );
+        } else if (resolvedType === "PDF_IMAGE") {
+          // Skip Marker (too slow on CPU). Go straight to Docling → RapidOCR fallback.
+          try {
+            scanModel = "docling";
+            ocrResult = await this.runPdfExtractor(
+              doc.imagePath,
+              "docling",
+              "ocr",
+            );
+          } catch (doclingErr: any) {
+            const fallbackMsg = `Docling failed for PDF_IMAGE; falling back to RapidOCR. Reason: ${String(
+              doclingErr?.message ?? doclingErr,
+            )}`;
+            this.emitLog(fallbackMsg);
+            this.logger.warn(fallbackMsg);
+            scanModel = "rapidocr(fallback)";
+            ocrResult = await this.runPythonOcr(doc.imagePath);
+            ocrResult.warnings = [...(ocrResult.warnings || []), fallbackMsg];
+          }
+        } else if (resolvedType === "IMAGE") {
+          // Use Docling for images (ocr mode) → RapidOCR fallback
+          try {
+            scanModel = "docling";
+            ocrResult = await this.runPdfExtractor(
+              doc.imagePath,
+              "docling",
+              "ocr",
+            );
+          } catch (doclingErr: any) {
+            const fallbackMsg = `Docling failed for IMAGE; falling back to RapidOCR. Reason: ${String(
+              doclingErr?.message ?? doclingErr,
+            )}`;
+            this.emitLog(fallbackMsg);
+            this.logger.warn(fallbackMsg);
+            scanModel = "rapidocr(fallback)";
+            ocrResult = await this.runPythonOcr(doc.imagePath);
+            ocrResult.warnings = [...(ocrResult.warnings || []), fallbackMsg];
+          }
+        } else if (
+          resolvedType === "PDF_TEXT" ||
+          resolvedType === "PDF_IMAGE"
+        ) {
+          // Defensive fallback path, should already be covered above.
+          const mode = resolvedType === "PDF_IMAGE" ? "ocr" : "text";
+          scanModel = extractionModel;
+          ocrResult = await this.runPdfExtractor(
+            doc.imagePath,
+            extractionModel,
+            mode,
+          );
+        } else {
+          ocrResult = await this.runPythonOcr(doc.imagePath);
+        }
+      } else if (resolvedType === "PDF_TEXT" || resolvedType === "PDF_IMAGE") {
         const mode = resolvedType === "PDF_IMAGE" ? "ocr" : "text";
         scanModel = extractionModel;
         ocrResult = await this.runPdfExtractor(
@@ -157,11 +277,11 @@ export class OcrService {
       this.activeDocId = null;
     }
 
-    // Persist OCR result — updateMany is a no-op if doc was deleted mid-flight
+    // Persist OCR result but keep status PROCESSING until field extraction completes
     await this.prisma.document.updateMany({
       where: { id: documentId },
       data: {
-        status: "REVIEW",
+        status: "PROCESSING", // Keep processing until LLM is done
         processedAt: new Date(),
         ocrFullText: ocrResult.fullText,
         ocrMarkdown: ocrResult.markdown,
@@ -180,6 +300,12 @@ export class OcrService {
       documentId,
       ocrResult.markdown || ocrResult.fullText,
     );
+
+    // Now mark REVIEW only after field extraction completes
+    await this.prisma.document.updateMany({
+      where: { id: documentId },
+      data: { status: "REVIEW" },
+    });
 
     const scanTime = Number(ocrResult.processingTime ?? 0);
     const llmTime = Number(llmMeta.durationSec ?? 0);
@@ -219,6 +345,10 @@ export class OcrService {
 
     return ocrResult;
   }
+
+  /**
+   * Spawn the Marker sidecar for image-heavy PDFs and standalone images.
+   */
 
   /**
    * Resolve the Python executable: prefer the local .venv, then the configured
@@ -301,6 +431,7 @@ export class OcrService {
       const child = spawn(pythonExe, [script, "--image", imagePath], {
         windowsHide: true,
       });
+      this.trackActiveChild(child);
 
       let stdout = "";
       let stderrBuf = "";
@@ -405,6 +536,7 @@ export class OcrService {
       const child = spawn(pythonExe, args, {
         windowsHide: true,
       });
+      this.trackActiveChild(child);
 
       let stdout = "";
       let stderrBuf = "";

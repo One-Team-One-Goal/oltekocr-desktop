@@ -322,7 +322,6 @@ def extract_unstructured(pdf_path: str) -> dict:
     text_parts: list[str] = []
 
     try:
-        # strategy="fast" uses pdfminer (pure-Python, no model downloads).
         # strategy="hi_res" would use detectron2/YOLO and requires a network
         # download on first use — that download hangs silently and triggers
         # the 60s idle watchdog.  Use "fast" by default; callers that truly
