@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { sessionsApi, queueApi, exportApi } from "@/api/client";
 import { useWebSocket } from "@/hooks/useWebSocket";
@@ -6,6 +6,7 @@ import { SessionDataTable } from "./SessionDataTable";
 import { ReviewDialog } from "@/components/ReviewDialog";
 import { ContractReviewDialog } from "./ContractReviewDialog";
 import { EditColumnsDialog } from "./EditColumnsDialog";
+import { QueueMonitor } from "./QueueMonitor";
 import { WindowControls } from "@/components/layout/SidebarContext";
 import { ExtractionView } from "./ExtractionPanel";
 import { checkUnsaved, markSaved } from "@/lib/unsaved-sessions";
@@ -103,6 +104,16 @@ export function SessionDetail() {
   const [isUnsaved, setIsUnsaved] = useState(false);
   const [saveName, setSaveName] = useState("");
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
+  const [queueState, setQueueState] = useState<{
+    size: number;
+    processing: string | null;
+  }>({ size: 0, processing: null });
+  const [progressByDocId, setProgressByDocId] = useState<
+    Record<string, { progress: number; message: string }>
+  >({});
+  const prevQueueActiveRef = useRef(false);
+  const statusMapRef = useRef<Record<string, string>>({});
+  const statusInitializedRef = useRef(false);
   // Derived — true while any doc is actively running (not counting CANCELLING, so
   // pressing Stop flips the button to Play immediately even if Python is still finishing up)
   const isRunning = documents.some(
@@ -152,6 +163,25 @@ export function SessionDetail() {
   }, [refresh]);
 
   useEffect(() => {
+    let active = true;
+    queueApi
+      .status()
+      .then((data) => {
+        if (!active) return;
+        setQueueState({
+          size: Number(data?.size ?? 0),
+          processing: data?.processing ?? null,
+        });
+      })
+      .catch((err) => {
+        console.warn("Failed to load queue status:", err);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
     if (session?.mode === "PDF_EXTRACT" && id) {
       navigate(`/pdf-sessions/${id}`, { replace: true });
     }
@@ -182,13 +212,61 @@ export function SessionDetail() {
   // ── WebSocket ──────────────────────────────────────────
   const handleWsEvent = useCallback(
     (event: WsEvent) => {
-      if (event.event === "document:status" || event.event === "queue:update") {
+      if (event.event === "queue:update") {
+        setQueueState({
+          size: Number(event.data.size ?? 0),
+          processing: event.data.processing ?? null,
+        });
+        refresh();
+        return;
+      }
+      if (event.event === "processing:progress") {
+        const { id: docId, progress, message } = event.data;
+        setProgressByDocId((prev) => ({
+          ...prev,
+          [docId]: { progress, message },
+        }));
+        return;
+      }
+      if (event.event === "document:status") {
         refresh();
       }
     },
     [refresh],
   );
   useWebSocket(handleWsEvent);
+
+  useEffect(() => {
+    const isQueueActive = queueState.size > 0 || !!queueState.processing;
+    if (prevQueueActiveRef.current && !isQueueActive) {
+      toast({
+        title: "Queue complete",
+        description: "All queued files finished processing.",
+      });
+    }
+    prevQueueActiveRef.current = isQueueActive;
+  }, [queueState]);
+
+  useEffect(() => {
+    if (!statusInitializedRef.current) {
+      for (const doc of documents) {
+        statusMapRef.current[doc.id] = doc.status;
+      }
+      statusInitializedRef.current = true;
+      return;
+    }
+
+    for (const doc of documents) {
+      const prevStatus = statusMapRef.current[doc.id];
+      if (prevStatus && prevStatus !== doc.status && doc.status === "REVIEW") {
+        toast({
+          title: "File processed",
+          description: doc.filename,
+        });
+      }
+      statusMapRef.current[doc.id] = doc.status;
+    }
+  }, [documents]);
 
   useEffect(() => {
     if (!isRunning) return;
@@ -333,12 +411,13 @@ export function SessionDetail() {
         className="flex items-stretch h-14 pl-4 border-b shrink-0"
         style={drag}
       >
-        <div className="flex items-center gap-3 min-w-0 flex-1" style={noDrag}>
+        <div className="flex items-center gap-3 min-w-0 flex-1">
           <Button
             variant="ghost"
             size="icon"
             className="shrink-0"
             onClick={handleBack}
+            style={noDrag}
           >
             <ArrowLeft className="h-4 w-4" />
           </Button>
@@ -501,6 +580,13 @@ export function SessionDetail() {
           onSaved={refresh}
         />
       )}
+
+      <QueueMonitor
+        documents={documents}
+        queueSize={queueState.size}
+        processingId={queueState.processing}
+        progressByDocId={progressByDocId}
+      />
     </div>
   );
 }

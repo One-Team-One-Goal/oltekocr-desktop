@@ -320,11 +320,13 @@ function RowActions({
 function BatchToolbar({
   count,
   ids,
+  names,
   onClear,
   onRefresh,
 }: {
   count: number;
   ids: string[];
+  names: string[];
   onClear: () => void;
   onRefresh: () => void;
 }) {
@@ -332,6 +334,7 @@ function BatchToolbar({
     ExtractionType.AUTO,
   );
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmQueue, setConfirmQueue] = useState(false);
 
   return (
     <>
@@ -342,14 +345,56 @@ function BatchToolbar({
         variant="outline"
         size="sm"
         className="gap-1.5 text-xs h-8"
-        onClick={async () => {
-          await queueApi.add(ids);
-          onClear();
-          onRefresh();
-        }}
+        onClick={() => setConfirmQueue(true)}
       >
         <Play className="h-3.5 w-3.5 text-green-500" />
       </Button>
+
+      <Dialog
+        open={confirmQueue}
+        onOpenChange={(v) => !v && setConfirmQueue(false)}
+      >
+        <DialogContent className="sm:max-w-[520px]">
+          <DialogHeader>
+            <DialogTitle>
+              Queue {count} document{count !== 1 ? "s" : ""}?
+            </DialogTitle>
+            <DialogDescription>
+              The files below will be processed sequentially.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="max-h-56 overflow-auto rounded-md border bg-muted/30">
+            <ul className="divide-y">
+              {names.map((name, idx) => (
+                <li key={`${name}-${idx}`} className="px-3 py-2 text-sm">
+                  <span className="truncate" title={name}>
+                    {name}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmQueue(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={async () => {
+                setConfirmQueue(false);
+                await queueApi.add(ids);
+                await queueApi.resume();
+                onClear();
+                onRefresh();
+              }}
+            >
+              Queue And Start
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Button
         variant="outline"
         size="sm"
@@ -829,6 +874,9 @@ export function SessionDataTable({
             ids={table
               .getFilteredSelectedRowModel()
               .rows.map((r) => r.original.id)}
+            names={table
+              .getFilteredSelectedRowModel()
+              .rows.map((r) => r.original.filename)}
             onClear={() => setRowSelection({})}
             onRefresh={onRefresh}
           />
@@ -898,7 +946,15 @@ export function SessionDataTable({
                 });
                 if (!picked || picked.canceled || picked.filePaths.length === 0)
                   return;
-                await sessionsApi.ingestFiles(session.id, picked.filePaths);
+                const docs = await sessionsApi.ingestFiles(
+                  session.id,
+                  picked.filePaths,
+                );
+                const docIds = (docs ?? []).map((d: { id: string }) => d.id);
+                if (docIds.length > 0) {
+                  await queueApi.add(docIds);
+                  await queueApi.resume();
+                }
                 onRefresh();
               } catch (err) {
                 console.error("Failed to add files to session:", err);
@@ -1998,10 +2054,10 @@ function MiniOcrPicker({
                             "leading-relaxed rounded px-0.5 transition-colors",
                             highlightedBlock === i && "font-medium",
                             blockFieldLookup.has(i) && "font-medium",
-                            block.confidence < 70 &&
+                            (block.confidence ?? 0) < 70 &&
                               "text-red-400 underline decoration-dotted",
-                            block.confidence >= 70 &&
-                              block.confidence < 90 &&
+                            (block.confidence ?? 0) >= 70 &&
+                              (block.confidence ?? 0) < 90 &&
                               "text-amber-400",
                           )}
                           style={
