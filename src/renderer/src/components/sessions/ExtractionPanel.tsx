@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import { QueueMonitor } from "./QueueMonitor";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -35,11 +36,10 @@ import {
   FileText,
   Filter as Funnel,
   ListFilter,
-  Table,
   FileTypeIcon,
   FileType,
 } from "lucide-react";
-import type { DocumentRecord } from "@shared/types";
+import type { DocumentListItem, DocumentRecord } from "@shared/types";
 import type { SchemaPresetTab } from "@/components/sessions/SchemaBuilderDialog";
 
 // ─── Registry types ──────────────────────────────────────────────────────────
@@ -676,6 +676,10 @@ interface ExtractionViewProps {
   onClose: () => void;
   onRefresh?: () => void;
   onReprocess?: (doc: DocumentRecord) => Promise<void>;
+  queueDocuments?: DocumentListItem[];
+  queueSize?: number;
+  queueProcessingId?: string | null;
+  queueProgressByDocId?: Record<string, { progress: number; message: string }>;
   onPrevFile?: () => void;
   hasPrevFile?: boolean;
   prevFileLabel?: string;
@@ -685,8 +689,6 @@ interface ExtractionViewProps {
   hideTopBar?: boolean;
   rawOpen?: boolean;
   onRawOpenChange?: (open: boolean) => void;
-  tablesOpen?: boolean;
-  onTablesOpenChange?: (open: boolean) => void;
 }
 
 // ─── ExtractionView ───────────────────────────────────────────────────────────
@@ -697,6 +699,10 @@ export function ExtractionView({
   onClose,
   onRefresh,
   onReprocess,
+  queueDocuments,
+  queueSize = 0,
+  queueProcessingId = null,
+  queueProgressByDocId = {},
   onPrevFile,
   hasPrevFile = false,
   prevFileLabel,
@@ -706,8 +712,6 @@ export function ExtractionView({
   hideTopBar,
   rawOpen: rawOpenProp,
   onRawOpenChange,
-  tablesOpen: tablesOpenProp,
-  onTablesOpenChange,
 }: ExtractionViewProps) {
   const [doc, setDoc] = useState<DocumentRecord | null>(null);
   const [loading, setLoading] = useState(false);
@@ -740,20 +744,12 @@ export function ExtractionView({
   const [viewName, setViewName] = useState("");
   const [rawOpenInternal, setRawOpenInternal] = useState(false);
   const [rawTab, setRawTab] = useState<"text" | "json">("text");
-  const [tablesOpenInternal, setTablesOpenInternal] = useState(false);
-  const [tablesSection, setTablesSection] = useState("");
 
   const effectiveRawOpen =
     rawOpenProp !== undefined ? rawOpenProp : rawOpenInternal;
   const setEffectiveRawOpen = (v: boolean) => {
     setRawOpenInternal(v);
     onRawOpenChange?.(v);
-  };
-  const effectiveTablesOpen =
-    tablesOpenProp !== undefined ? tablesOpenProp : tablesOpenInternal;
-  const setEffectiveTablesOpen = (v: boolean) => {
-    setTablesOpenInternal(v);
-    onTablesOpenChange?.(v);
   };
   // sectionCols[sectionKey] = derived ColDef[] from actual extracted rows
   const [sectionCols, setSectionCols] = useState<Record<string, ColDef[]>>({});
@@ -859,14 +855,6 @@ export function ExtractionView({
     setActiveTab(renderer.sections[0]?.key ?? "");
   }, [doc?.id, renderer, schemaTabs]);
 
-  // Init tablesSection when the dialog is opened externally (hideTopBar mode)
-  useEffect(() => {
-    if (effectiveTablesOpen && !tablesSection) {
-      const r = renderer;
-      if (r) setTablesSection(r.sections[0]?.key ?? "");
-    }
-  }, [effectiveTablesOpen, tablesSection, renderer]);
-
   // ── Actions ───────────────────────────────────────────────────────────────
   const handleApprove = async () => {
     if (!doc) return;
@@ -956,6 +944,7 @@ export function ExtractionView({
         (c) => colVisibility[activeSection.key]?.[c.key] !== false,
       )
     : [];
+  const isBatchProcess = (queueDocuments?.length ?? 0) > 1;
 
   const getCell = (row: Record<string, string>, key: string) =>
     String(row[key] ?? "").trim();
@@ -1227,21 +1216,6 @@ export function ExtractionView({
                 <FileText className="h-3 w-3" />
                 Raw
               </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7 text-xs gap-1"
-                onClick={() => {
-                  if (renderer)
-                    setTablesSection(renderer.sections[0]?.key ?? "");
-                  setEffectiveTablesOpen(true);
-                }}
-                title="Preview extracted tables per section"
-                disabled={!renderer}
-              >
-                <FileText className="h-3 w-3" />
-                Tables
-              </Button>
               <Separator orientation="vertical" className="h-5" />
               <Button
                 variant="outline"
@@ -1322,35 +1296,19 @@ export function ExtractionView({
 
               {hideTopBar && (
                 <div className="flex items-center gap-2 shrink-0 ml-auto">
-                  <div className="inline-flex items-stretch rounded-md border bg-background">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-8 text-xs rounded-none border-r px-3"
-                      onClick={() => {
-                        setRawTab("text");
-                        setEffectiveRawOpen(true);
-                      }}
-                      disabled={!doc}
-                    >
-                      <FileType className="h-3 w-3 mr-1.5" />
-                      Raw
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-8 text-xs rounded-none px-3"
-                      onClick={() => {
-                        if (renderer)
-                          setTablesSection(renderer.sections[0]?.key ?? "");
-                        setEffectiveTablesOpen(true);
-                      }}
-                      disabled={!renderer}
-                    >
-                      <Table className="h-3 w-3 mr-1.5" />
-                      Tables
-                    </Button>
-                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 text-xs gap-1"
+                    onClick={() => {
+                      setRawTab("text");
+                      setEffectiveRawOpen(true);
+                    }}
+                    disabled={!doc}
+                  >
+                    <FileType className="h-3 w-3 mr-1.5" />
+                    Raw
+                  </Button>
                   <Button
                     variant="outline"
                     size="sm"
@@ -1361,39 +1319,52 @@ export function ExtractionView({
                     <RotateCcw className="h-3 w-3" />
                     Reprocess
                   </Button>
-                  {onPrevFile && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-8 text-xs gap-1"
-                      onClick={onPrevFile}
-                      disabled={!hasPrevFile}
-                      title={
-                        hasPrevFile
-                          ? `Show previous file: ${prevFileLabel ?? "previous"}`
-                          : "No previous file"
-                      }
-                    >
-                      <ChevronLeft className="h-3.5 w-3.5" />
-                      Back
-                    </Button>
-                  )}
-                  {onNextFile && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-8 text-xs gap-1"
-                      onClick={onNextFile}
-                      disabled={!hasNextFile}
-                      title={
-                        hasNextFile
-                          ? `Show next file: ${nextFileLabel ?? "next"}`
-                          : "No more files"
-                      }
-                    >
-                      Next
-                      <ChevronRight className="h-3.5 w-3.5" />
-                    </Button>
+                  {(queueDocuments || (isBatchProcess && (onPrevFile || onNextFile))) && (
+                    <div className="inline-flex items-stretch rounded-md border bg-background overflow-hidden">
+                      {isBatchProcess && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 rounded-none border-r"
+                          onClick={onPrevFile}
+                          disabled={!onPrevFile || !hasPrevFile}
+                          title={
+                            hasPrevFile
+                              ? `Show previous file: ${prevFileLabel ?? "previous"}`
+                              : "No previous file"
+                          }
+                        >
+                          <ChevronLeft className="h-3.5 w-3.5" />
+                        </Button>
+                      )}
+                      {queueDocuments && (
+                        <QueueMonitor
+                          mode="button"
+                          buttonStyle="icon-progress"
+                          documents={queueDocuments}
+                          queueSize={queueSize}
+                          processingId={queueProcessingId}
+                          progressByDocId={queueProgressByDocId}
+                          buttonClassName={`h-8 rounded-none px-2 text-xs gap-1.5 ${isBatchProcess ? "border-r" : ""}`}
+                        />
+                      )}
+                      {isBatchProcess && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 rounded-none"
+                          onClick={onNextFile}
+                          disabled={!onNextFile || !hasNextFile}
+                          title={
+                            hasNextFile
+                              ? `Show next file: ${nextFileLabel ?? "next"}`
+                              : "No more files"
+                          }
+                        >
+                          <ChevronRight className="h-3.5 w-3.5" />
+                        </Button>
+                      )}
+                    </div>
                   )}
                 </div>
               )}
@@ -1447,44 +1418,6 @@ export function ExtractionView({
                 )}
               </div>
 
-              {hideTopBar && (onPrevFile || onNextFile) && (
-                <div className="mt-2 flex items-center justify-end gap-2 border-t pt-2">
-                  {onPrevFile && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-8 text-xs gap-1"
-                      onClick={onPrevFile}
-                      disabled={!hasPrevFile}
-                      title={
-                        hasPrevFile
-                          ? `Show previous file: ${prevFileLabel ?? "previous"}`
-                          : "No previous file"
-                      }
-                    >
-                      <ChevronLeft className="h-3.5 w-3.5" />
-                      Back
-                    </Button>
-                  )}
-                  {onNextFile && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-8 text-xs gap-1"
-                      onClick={onNextFile}
-                      disabled={!hasNextFile}
-                      title={
-                        hasNextFile
-                          ? `Show next file: ${nextFileLabel ?? "next"}`
-                          : "No more files"
-                      }
-                    >
-                      Next
-                      <ChevronRight className="h-3.5 w-3.5" />
-                    </Button>
-                  )}
-                </div>
-              )}
             </div>
           </div>
         )}
@@ -2015,76 +1948,6 @@ export function ExtractionView({
           </div>
         </ScrollArea>
       </div>
-
-      {/* ── Tables preview dialog ─────────────────────────────────────────── */}
-      {renderer && (
-        <Dialog
-          open={effectiveTablesOpen}
-          onOpenChange={setEffectiveTablesOpen}
-        >
-          <DialogContent className="max-w-5xl w-full h-[80vh] flex flex-col p-0 gap-0">
-            <DialogHeader className="px-4 pt-4 pb-0 shrink-0">
-              <DialogTitle className="text-sm font-semibold">
-                Extracted Tables —{" "}
-                <span className="text-muted-foreground font-normal">
-                  {doc?.filename ?? ""}
-                </span>
-              </DialogTitle>
-            </DialogHeader>
-
-            {/* Section switcher buttons */}
-            <div className="flex gap-0 border-b mt-3 px-4 shrink-0">
-              {renderer.sections.map((s) => {
-                const count = s.getRows(extractedData!).length;
-                return (
-                  <button
-                    key={s.key}
-                    onClick={() => setTablesSection(s.key)}
-                    className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors ${
-                      tablesSection === s.key
-                        ? "border-primary text-foreground"
-                        : "border-transparent text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    {s.label}
-                    <span className="ml-1.5 text-[10px] opacity-60">
-                      ({count})
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Table content — all columns visible in this preview */}
-            <ScrollArea className="flex-1 min-h-0">
-              <div className="px-4 py-3">
-                {renderer.sections
-                  .filter((s) => s.key === tablesSection)
-                  .map((s) => {
-                    const rows = s.getRows(extractedData!);
-                    return (
-                      <div key={s.key}>
-                        {rows.length === 0 ? (
-                          <p className="text-xs text-muted-foreground italic py-4 text-center">
-                            No rows extracted for this section. Reprocess the
-                            document if expected.
-                          </p>
-                        ) : (
-                          <div className="overflow-x-scroll rounded-md border [&::-webkit-scrollbar]:h-3 [&::-webkit-scrollbar-track]:bg-muted/30 [&::-webkit-scrollbar-thumb]:bg-border [&::-webkit-scrollbar-thumb]:rounded-full">
-                            <SectionTable
-                              rows={rows}
-                              cols={sectionCols[s.key] ?? s.getColumns(rows)}
-                            />
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-              </div>
-            </ScrollArea>
-          </DialogContent>
-        </Dialog>
-      )}
 
       {/* ── Raw preview dialog ────────────────────────────────────────────── */}
       <Dialog open={effectiveRawOpen} onOpenChange={setEffectiveRawOpen}>

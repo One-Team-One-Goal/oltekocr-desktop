@@ -4,13 +4,11 @@ import {
   sessionsApi,
   exportApi,
   documentsApi,
-  ocrApi,
   queueApi,
 } from "@/api/client";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { WindowControls } from "@/components/layout/SidebarContext";
 import { ExtractionView } from "./ExtractionPanel";
-import { QueueMonitor } from "./QueueMonitor";
 import {
   SchemaBuilderDialog,
   type SchemaPresetDraft,
@@ -56,7 +54,6 @@ export function PdfSessionDetail() {
   const [isExporting, setIsExporting] = useState(false);
   const [isRenaming, setIsRenaming] = useState(false);
   const [rawOpen, setRawOpen] = useState(false);
-  const [tablesOpen, setTablesOpen] = useState(false);
   const [schemaBuilderOpen, setSchemaBuilderOpen] = useState(false);
   const [schemaSubmitting, setSchemaSubmitting] = useState(false);
   const [schemaPresets, setSchemaPresets] = useState<Array<{ id: string; name: string }>>([]);
@@ -321,7 +318,7 @@ export function PdfSessionDetail() {
     setIsReprocessing(true);
     try {
       await documentsApi.reprocess(selectedDocId);
-      await ocrApi.process(selectedDocId);
+      await queueApi.add([selectedDocId]);
       refresh();
     } finally {
       setIsReprocessing(false);
@@ -491,6 +488,10 @@ export function PdfSessionDetail() {
               onRefresh={refresh}
               hideTopBar
               onReprocess={handleReprocess}
+              queueDocuments={documents}
+              queueSize={queueState.size}
+              queueProcessingId={queueState.processing}
+              queueProgressByDocId={progressByDocId}
               onPrevFile={handlePrevFile}
               hasPrevFile={!!prevDoc}
               prevFileLabel={prevDoc?.filename}
@@ -499,8 +500,6 @@ export function PdfSessionDetail() {
               nextFileLabel={nextDoc?.filename}
               rawOpen={rawOpen}
               onRawOpenChange={setRawOpen}
-              tablesOpen={tablesOpen}
-              onTablesOpenChange={setTablesOpen}
             />
           </div>
         ) : (
@@ -540,12 +539,6 @@ export function PdfSessionDetail() {
         }}
       />
 
-      <QueueMonitor
-        documents={documents}
-        queueSize={queueState.size}
-        processingId={queueState.processing}
-        progressByDocId={progressByDocId}
-      />
     </div>
   );
 }

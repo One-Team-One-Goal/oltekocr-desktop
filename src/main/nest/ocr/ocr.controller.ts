@@ -3,6 +3,7 @@ import { ApiTags, ApiOperation, ApiResponse, ApiParam } from "@nestjs/swagger";
 import { OcrService } from "./ocr.service";
 import { PrismaService } from "../prisma/prisma.service";
 import { ContractExtractionService } from "../contract-extraction/contract-extraction.service";
+import { DocumentsGateway } from "../documents/documents.gateway";
 
 @ApiTags("ocr")
 @Controller("ocr")
@@ -11,6 +12,7 @@ export class OcrController {
     private readonly ocrService: OcrService,
     private readonly prisma: PrismaService,
     private readonly contractExtractionService: ContractExtractionService,
+    private readonly gateway: DocumentsGateway,
   ) {}
 
   @Get("status")
@@ -31,7 +33,14 @@ export class OcrController {
     });
 
     if (doc?.session?.mode === "PDF_EXTRACT") {
-      return this.contractExtractionService.process(id);
+      const result = await this.contractExtractionService.process(
+        id,
+        (progress, message) => {
+          this.gateway.sendProcessingProgress(id, progress, message);
+        },
+      );
+      this.gateway.sendDocumentStatus(id, "REVIEW", new Date().toISOString());
+      return result;
     }
 
     return this.ocrService.process(id);

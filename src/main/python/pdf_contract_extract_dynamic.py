@@ -39,6 +39,7 @@ def main() -> None:
 
     start = time.time()
     warnings: List[str] = []
+    legacy.log_progress(5, "Opening PDF")
 
     schema_preset = legacy._parse_schema_preset(args.schema_json, warnings)
     if not schema_preset:
@@ -54,18 +55,25 @@ def main() -> None:
         sys.exit(1)
 
     page_count = len(doc)
+    legacy.log_progress(12, f"Loaded PDF with {page_count} page(s)")
 
     try:
+        legacy.log_progress(18, "Extracting header fields")
         header = legacy._legacy_extract_header(doc)
+        legacy.log_progress(25, "Extracting schema tabs")
         rates, origin_arbs, dest_arbs, tabs_out, tbl_warnings = legacy.extract_tables_from_schema(
             doc,
             header,
             schema_preset,
         )
         raw_pages: List[Dict[str, Any]] = [
-            {"page": i + 1, "text": doc[i].get_text("text")}
+            {
+                "page": i + 1,
+                "text": doc[i].get_text("text"),
+            }
             for i in range(page_count)
         ]
+        legacy.log_progress(90, "Finalizing extraction output")
         warnings.extend(tbl_warnings)
     except Exception as exc:  # pragma: no cover - subprocess guard
         print(json.dumps({"error": f"Extraction failed: {exc}"}))
@@ -88,6 +96,7 @@ def main() -> None:
         "warnings": warnings,
     }
 
+    legacy.log_progress(100, "Complete")
     print(json.dumps(result, ensure_ascii=False))
     sys.stdout.flush()
 

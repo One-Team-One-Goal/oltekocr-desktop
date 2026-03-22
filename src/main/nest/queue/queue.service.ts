@@ -190,21 +190,45 @@ export class QueueService {
 
     try {
       this.logger.log(`Processing document: ${documentId} [${sessionMode}]`);
-      this.gateway.sendProcessingProgress(
-        documentId,
-        0,
-        isPdfExtract ? "Extracting contract data..." : "Starting OCR...",
-      );
+      let latestProgress = 0;
+      let latestMessage = isPdfExtract
+        ? "Extracting contract data..."
+        : "Starting OCR...";
+      let lastRealProgressAt = Date.now();
+
+      const sendProgress = (progress: number, message: string): void => {
+        latestProgress = Math.max(0, Math.min(100, Number(progress) || 0));
+        latestMessage = message || latestMessage;
+        this.gateway.sendProcessingProgress(documentId, latestProgress, latestMessage);
+      };
+
+      sendProgress(0, latestMessage);
+
+      const syntheticTimer = setInterval(() => {
+        // If no real update arrives for a while, advance gradually so UI does not look frozen.
+        if (Date.now() - lastRealProgressAt < 3000) return;
+        if (latestProgress >= 95) return;
+        sendProgress(latestProgress + 1, latestMessage || "Processing...");
+      }, 1000);
+
       this.gateway.sendProcessingLog(
         documentId,
         `Starting processing for ${documentId}...`,
       );
 
-      const result = isPdfExtract
-        ? await this.contractExtractionService.process(documentId)
-        : await this.ocrService.process(documentId);
+      let result: any;
+      try {
+        result = isPdfExtract
+          ? await this.contractExtractionService.process(documentId, (progress, message) => {
+              lastRealProgressAt = Date.now();
+              sendProgress(progress, message);
+            })
+          : await this.ocrService.process(documentId);
+      } finally {
+        clearInterval(syntheticTimer);
+      }
 
-      this.gateway.sendProcessingProgress(documentId, 100, "Complete");
+      sendProgress(100, "Complete");
 
       if (this.cancelledDocs.has(documentId)) {
         // User cancelled mid-flight — reset status back to QUEUED

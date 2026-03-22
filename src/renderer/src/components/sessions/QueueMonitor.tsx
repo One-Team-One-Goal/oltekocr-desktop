@@ -17,6 +17,9 @@ interface QueueMonitorProps {
   queueSize: number;
   processingId: string | null;
   progressByDocId: Record<string, { progress: number; message: string }>;
+  mode?: "floating" | "button";
+  buttonClassName?: string;
+  buttonStyle?: "label" | "icon-progress";
 }
 
 export function QueueMonitor({
@@ -24,6 +27,9 @@ export function QueueMonitor({
   queueSize,
   processingId,
   progressByDocId,
+  mode = "floating",
+  buttonClassName,
+  buttonStyle = "label",
 }: QueueMonitorProps) {
   const [sheetOpen, setSheetOpen] = useState(false);
   const isActive = queueSize > 0 || !!processingId;
@@ -51,11 +57,17 @@ export function QueueMonitor({
   );
 
   const currentlyRunning = useMemo(
-    () =>
-      documents.filter(
+    () => {
+      const running = documents.filter(
         (doc) => doc.status === "SCANNING" || doc.status === "PROCESSING",
-      ),
-    [documents],
+      );
+      if (!processingId) return running;
+      if (running.some((doc) => doc.id === processingId)) return running;
+
+      const processingDocById = documents.find((doc) => doc.id === processingId);
+      return processingDocById ? [processingDocById, ...running] : running;
+    },
+    [documents, processingId],
   );
 
   const currentProgress = processingId ? progressByDocId[processingId] : undefined;
@@ -64,10 +76,14 @@ export function QueueMonitor({
     (processingDoc ? "Extracting data..." : "Waiting for next document...");
 
   const currentName = processingDoc?.filename || "Preparing next document";
+  const ringRadius = 7;
+  const ringCircumference = 2 * Math.PI * ringRadius;
+  const ringOffset =
+    ringCircumference - (progressValue / 100) * ringCircumference;
 
   return (
     <>
-      {isActive && (
+      {mode === "floating" && isActive && (
         <div className="fixed bottom-4 left-1/2 z-40 w-[min(760px,calc(100vw-2rem))] -translate-x-1/2 rounded-xl border border-border bg-card/95 px-4 py-3 shadow-lg backdrop-blur-sm">
           <div className="flex items-center gap-3">
             <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />
@@ -91,6 +107,55 @@ export function QueueMonitor({
             </Button>
           </div>
         </div>
+      )}
+
+      {mode === "button" && (
+        buttonStyle === "icon-progress" ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => setSheetOpen(true)}
+            className={buttonClassName}
+            title={`View queue (${Math.round(progressValue)}%)`}
+          >
+            <span className="relative inline-flex h-4 w-4 items-center justify-center">
+              <svg className="h-4 w-4 -rotate-90" viewBox="0 0 20 20" aria-hidden>
+                <circle
+                  cx="10"
+                  cy="10"
+                  r={ringRadius}
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  className="text-muted-foreground/30"
+                />
+                <circle
+                  cx="10"
+                  cy="10"
+                  r={ringRadius}
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeDasharray={ringCircumference}
+                  strokeDashoffset={ringOffset}
+                  className="text-primary transition-all duration-300"
+                />
+              </svg>
+            </span>
+            <span>Queue</span>
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setSheetOpen(true)}
+            className={buttonClassName}
+          >
+            <ListOrdered className="mr-1.5 h-3.5 w-3.5" />
+            View Queue
+          </Button>
+        )
       )}
 
       <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>

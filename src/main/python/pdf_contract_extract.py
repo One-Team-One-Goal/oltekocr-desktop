@@ -27,6 +27,14 @@ for _stream_name in ("stdout", "stderr"):
             pass
 
 
+def log_progress(percent: int, msg: str) -> None:
+    pct = max(0, min(100, int(percent)))
+    sys.stderr.buffer.write(
+        (f"[progress] {pct}% {msg}\n").encode("utf-8", errors="replace")
+    )
+    sys.stderr.buffer.flush()
+
+
 class _FitzStdoutGuard:
     """No-op context manager kept for backward compatibility."""
     def __enter__(self):
@@ -245,7 +253,7 @@ def _norm_col(raw: str) -> str:
 
 # ─── Header extraction ─────────────────────────────────────────────────────────
 
-_CONTRACT_ID_RE    = re.compile(r"\bATL\w+\b|Contract\s+(?:No\.?|Number|ID)[:\s]+([A-Z0-9\-]+)", re.IGNORECASE)
+_CONTRACT_ID_RE    = re.compile(r"\b[A-Z]{3}\d{4}[A-Z]\d{2,4}\b", re.IGNORECASE)
 _DATE_RE           = re.compile(r"(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})")
 _EFF_LABEL_RE      = re.compile(r"effective\s+date[:\s]+", re.IGNORECASE)
 _EXP_LABEL_RE      = re.compile(r"expir(?:ation|y)\s+date[:\s]+", re.IGNORECASE)
@@ -266,14 +274,9 @@ def extract_header(doc: Any) -> Dict:
     for page_no in range(min(2, len(doc))):
         text += doc[page_no].get_text("text") + "\n"
 
-    # Contract ID  — look for "ATLxxxxx" pattern first, then labelled field
-    m = re.search(r"\b(ATL\d+[A-Z]\d*)\b", text)
-    if m:
-        header["contractId"] = m.group(1)
-    else:
-        m = re.search(r"Contract\s+(?:No\.?|Number|ID)[:\s]+([A-Z0-9\-]+)", text, re.IGNORECASE)
-        if m:
-            header["contractId"] = m.group(1).strip()
+    # Contract ID — resilient parser for variants like:
+    # "CONTRACT NO. NYC0154N25", "Contract ID: NYC0154N25", and spaced/hyphenated layouts.
+    header["contractId"] = _extract_contract_id(text)
 
     # Dates — find all date-like strings then assign by proximity to labels
     dates_in_text = _DATE_RE.findall(text)
@@ -1796,7 +1799,11 @@ LEGACY_SECTION_PATTERNS: List[Tuple[re.Pattern, str]] = [
     (re.compile(r"6\s*[-.]\s*5|g\.?o\.?h", re.IGNORECASE), "STOP"),
 ]
 
-LEGACY_CONTRACT_ID_RE = re.compile(r"\bATL\w+\b", re.IGNORECASE)
+LEGACY_CONTRACT_ID_RE = re.compile(r"\b[A-Z]{3}\d{4}[A-Z]\d{2,4}\b", re.IGNORECASE)
+LEGACY_CONTRACT_LABEL_RE = re.compile(
+    r"contract\s*(?:no\.?|number|id|i\s*d)\s*[:#\-.]?\s*([A-Z0-9\-\s]{6,})",
+    re.IGNORECASE,
+)
 LEGACY_COMMODITY_RE = re.compile(r"COMMODITY\s*:\s*(.+)", re.IGNORECASE)
 LEGACY_ORIGIN_RE = re.compile(r"\bORIGIN\s*:\s*(.+)", re.IGNORECASE)
 LEGACY_ORIGIN_VIA_RE = re.compile(r"\bORIGIN\s+VIA\s*:\s*(.+)", re.IGNORECASE)
@@ -2024,14 +2031,40 @@ def _legacy_parse_scope_unbracketed(text: str) -> str:
     return _legacy_clean_text(match.group(1)) if match else ""
 
 
+def _normalize_contract_id(raw: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", str(raw or "").upper())
+
+
+def _extract_contract_id(text: str) -> str:
+    text_u = str(text or "").upper()
+
+    # 1) Prefer explicit labelled fields, then normalize and validate.
+    for match in LEGACY_CONTRACT_LABEL_RE.finditer(text_u):
+        candidate_raw = match.group(1).strip()
+        compact = _normalize_contract_id(candidate_raw)
+        id_match = re.search(r"[A-Z]{3}\d{4}[A-Z]\d{2,4}", compact)
+        if id_match:
+            return id_match.group(0)
+
+    # 2) Direct token match in original text (works for normal non-fragmented layout).
+    direct = LEGACY_CONTRACT_ID_RE.search(text_u)
+    if direct:
+        return _normalize_contract_id(direct.group(0))
+
+    # 3) Fallback for fragmented text where tokens include spaces/hyphens/newlines.
+    compact_text = _normalize_contract_id(text_u)
+    fallback = re.search(r"[A-Z]{3}\d{4}[A-Z]\d{2,4}", compact_text)
+    if fallback:
+        return fallback.group(0)
+
+    return ""
+
+
 def _legacy_extract_header(doc: Any) -> Dict[str, str]:
     texts = [doc[i].get_text("text") for i in range(min(len(doc), 12))]
     text = "\n".join(texts)
 
-    contract_id = ""
-    match = LEGACY_CONTRACT_ID_RE.search(text)
-    if match:
-        contract_id = match.group(0).upper()
+    contract_id = _extract_contract_id(text)
 
     pairs = _legacy_parse_date_pairs("\n".join(doc[i].get_text("text") for i in range(len(doc))))
     if not pairs:
@@ -2198,6 +2231,9 @@ def _legacy_extract_tables(
     current_dates = (header["effectiveDate"], header["expirationDate"])
 
     for page_no in range(len(doc)):
+        progress = 20 + int(((page_no + 1) / max(1, len(doc))) * 60)
+        log_progress(progress, f"Reading tables page {page_no + 1}/{len(doc)}")
+
         page = doc[page_no]
         page_text = doc[page_no].get_text("text")
         raw_pages.append({"page": page_no + 1, "text": page_text})
@@ -2383,6 +2419,7 @@ def main():
 
     start = time.time()
     warnings: List[str] = []
+    log_progress(5, "Opening PDF")
 
     try:
         doc = open_pdf_document(args.pdf)
@@ -2392,14 +2429,18 @@ def main():
         sys.exit(1)
 
     page_count = len(doc)
+    log_progress(12, f"Loaded PDF with {page_count} page(s)")
 
     try:
         # Legacy-only path: keep this script focused on standard hardcoded extraction.
+        log_progress(16, "Extracting header fields")
         header = _legacy_extract_header(doc)
+        log_progress(20, "Extracting tables")
         rates, origin_arbs, dest_arbs, tbl_warnings, raw_pages = _legacy_extract_tables(
             doc,
             header,
         )
+        log_progress(90, "Finalizing extraction output")
         tabs_out = [
             {"name": "Rates", "rows": rates},
             {"name": "Origin Arbitraries", "rows": origin_arbs},
@@ -2428,6 +2469,7 @@ def main():
         "warnings":      warnings,
     }
 
+    log_progress(100, "Complete")
     print(json.dumps(result, ensure_ascii=False))
     sys.stdout.flush()
 

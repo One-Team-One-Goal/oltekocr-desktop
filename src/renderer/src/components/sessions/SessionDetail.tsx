@@ -6,7 +6,6 @@ import { SessionDataTable } from "./SessionDataTable";
 import { ReviewDialog } from "@/components/ReviewDialog";
 import { ContractReviewDialog } from "./ContractReviewDialog";
 import { EditColumnsDialog } from "./EditColumnsDialog";
-import { QueueMonitor } from "./QueueMonitor";
 import { WindowControls } from "@/components/layout/SidebarContext";
 import { ExtractionView } from "./ExtractionPanel";
 import { checkUnsaved, markSaved } from "@/lib/unsaved-sessions";
@@ -581,12 +580,6 @@ export function SessionDetail() {
         />
       )}
 
-      <QueueMonitor
-        documents={documents}
-        queueSize={queueState.size}
-        processingId={queueState.processing}
-        progressByDocId={progressByDocId}
-      />
     </div>
   );
 }

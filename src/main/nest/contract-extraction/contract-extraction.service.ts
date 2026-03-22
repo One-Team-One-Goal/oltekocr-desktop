@@ -62,6 +62,25 @@ interface SessionSchemaPresetRule {
 export class ContractExtractionService {
   private readonly logger = new Logger(ContractExtractionService.name);
 
+  private parseProgressLine(
+    line: string,
+  ): { progress: number; message: string } | null {
+    const trimmed = line.trim();
+    if (!trimmed) return null;
+    const match = trimmed.match(/^\[progress\]\s*(.*)$/i);
+    if (!match) return null;
+
+    const payload = match[1].trim();
+    const pctMatch = payload.match(/^([0-9]{1,3})(?:\.[0-9]+)?\s*%\s*(.*)$/);
+    if (pctMatch) {
+      const pct = Math.max(0, Math.min(100, Number(pctMatch[1])));
+      const msg = (pctMatch[2] || "Processing...").trim() || "Processing...";
+      return { progress: pct, message: msg };
+    }
+
+    return { progress: 0, message: payload || "Processing..." };
+  }
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly settings: SettingsService,
@@ -97,7 +116,10 @@ export class ContractExtractionService {
     return configured;
   }
 
-  async process(documentId: string): Promise<ContractExtractionResult> {
+  async process(
+    documentId: string,
+    onProgress?: (progress: number, message: string) => void,
+  ): Promise<ContractExtractionResult> {
     const doc = await this.prisma.document.findUnique({ where: { id: documentId } });
 
     if (!doc) {
@@ -116,7 +138,11 @@ export class ContractExtractionService {
 
     let result: ContractExtractionResult;
     try {
-      result = await this.runPythonExtractor(doc.imagePath, schemaPreset);
+      result = await this.runPythonExtractor(
+        doc.imagePath,
+        schemaPreset,
+        onProgress,
+      );
     } catch (err: any) {
       await this.prisma.document.updateMany({
         where: { id: documentId },
@@ -157,6 +183,7 @@ export class ContractExtractionService {
   private runPythonExtractor(
     pdfPath: string,
     schemaPreset: SessionSchemaPresetRule | null,
+    onProgress?: (progress: number, message: string) => void,
   ): Promise<ContractExtractionResult> {
     const pythonExe = this.resolvePythonExe();
     const useDynamic = Boolean(schemaPreset && schemaPreset.tabs.length > 0);
@@ -187,12 +214,28 @@ export class ContractExtractionService {
 
       let stdout = "";
       let stderr = "";
+      let stderrRemainder = "";
 
       child.stdout.on("data", (chunk: Buffer) => {
         stdout += chunk.toString();
       });
       child.stderr.on("data", (chunk: Buffer) => {
-        stderr += chunk.toString();
+        const text = chunk.toString();
+        stderr += text;
+        stderrRemainder += text;
+
+        const lines = stderrRemainder.split(/\r?\n/);
+        stderrRemainder = lines.pop() ?? "";
+
+        for (const rawLine of lines) {
+          const parsed = this.parseProgressLine(rawLine);
+          if (parsed) {
+            this.logger.log(
+              `[progress] ${parsed.progress}% ${parsed.message}`,
+            );
+            onProgress?.(parsed.progress, parsed.message);
+          }
+        }
       });
 
       const timer = setTimeout(() => {
@@ -202,6 +245,17 @@ export class ContractExtractionService {
 
       child.on("close", (code) => {
         clearTimeout(timer);
+
+        if (stderrRemainder.trim()) {
+          const parsed = this.parseProgressLine(stderrRemainder);
+          if (parsed) {
+            this.logger.log(
+              `[progress] ${parsed.progress}% ${parsed.message}`,
+            );
+            onProgress?.(parsed.progress, parsed.message);
+          }
+        }
+
         if (stderr) {
           this.logger.warn(`[contract-extract stderr] ${stderr.trim()}`);
         }
