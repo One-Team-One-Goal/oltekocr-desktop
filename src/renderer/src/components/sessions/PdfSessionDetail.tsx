@@ -4,6 +4,7 @@ import { sessionsApi, exportApi, documentsApi, ocrApi } from "@/api/client";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { WindowControls } from "@/components/layout/SidebarContext";
 import { ExtractionView } from "./ExtractionPanel";
+import { SchemaBuilderDialog } from "./SchemaBuilderDialog";
 import { checkUnsaved, markSaved } from "@/lib/unsaved-sessions";
 import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -13,6 +14,7 @@ import {
   RefreshCw,
   FileOutput,
   FileText,
+  WandSparkles,
   SaveOff,
   Pencil,
   X,
@@ -35,6 +37,13 @@ export function PdfSessionDetail() {
   const [isReprocessing, setIsReprocessing] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [isRenaming, setIsRenaming] = useState(false);
+  const [schemaBuilderOpen, setSchemaBuilderOpen] = useState(false);
+  const [schemaRawPages, setSchemaRawPages] = useState<
+    Array<{ page: number; text: string }>
+  >([]);
+  const [schemaPromptedDocIds, setSchemaPromptedDocIds] = useState<Set<string>>(
+    new Set(),
+  );
   const [rawOpen, setRawOpen] = useState(false);
   const [tablesOpen, setTablesOpen] = useState(false);
   const isRunning = documents.some(
@@ -175,6 +184,56 @@ export function PdfSessionDetail() {
     }
   };
 
+  const openSchemaBuilderForSelectedDoc = useCallback(async () => {
+    if (!selectedDocId) return;
+    try {
+      const doc = await documentsApi.get(selectedDocId);
+      const extracted = (doc?.extractedJson ?? {}) as Record<string, unknown>;
+      const rawPages = Array.isArray(extracted.rawPages)
+        ? (extracted.rawPages as Array<{ page: number; text: string }>).filter(
+            (p) => p && typeof p.text === "string",
+          )
+        : [];
+
+      if (rawPages.length === 0) {
+        toast({
+          title: "Schema builder unavailable",
+          description:
+            "No extracted page text found yet. Reprocess and try again.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      setSchemaRawPages(rawPages);
+      setSchemaBuilderOpen(true);
+      setSchemaPromptedDocIds((prev) => {
+        const next = new Set(prev);
+        next.add(selectedDocId);
+        return next;
+      });
+    } catch (err) {
+      console.error("Failed to load extracted raw pages", err);
+    }
+  }, [selectedDocId]);
+
+  useEffect(() => {
+    if (session?.documentType !== "OTHER") return;
+    if (!selectedDocId) return;
+
+    const selectedDoc = documents.find((d) => d.id === selectedDocId);
+    if (!selectedDoc || selectedDoc.status !== "REVIEW") return;
+    if (schemaPromptedDocIds.has(selectedDocId)) return;
+
+    openSchemaBuilderForSelectedDoc();
+  }, [
+    session?.documentType,
+    documents,
+    selectedDocId,
+    schemaPromptedDocIds,
+    openSchemaBuilderForSelectedDoc,
+  ]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full text-muted-foreground">
@@ -255,6 +314,18 @@ export function PdfSessionDetail() {
           )}
         </div>
         <div className="flex items-center gap-1.5 shrink-0" style={noDrag}>
+          {session?.documentType === "OTHER" && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5 text-xs"
+              onClick={openSchemaBuilderForSelectedDoc}
+              disabled={!selectedDocId}
+            >
+              <WandSparkles className="h-3.5 w-3.5" />
+              Schema Builder
+            </Button>
+          )}
           <Button
             variant="outline"
             size="sm"
@@ -293,6 +364,14 @@ export function PdfSessionDetail() {
           </div>
         )}
       </div>
+
+      <SchemaBuilderDialog
+        open={schemaBuilderOpen}
+        onOpenChange={setSchemaBuilderOpen}
+        sessionName={session?.name ?? "Other PDF"}
+        documentType={session?.documentType || "OTHER"}
+        rawPages={schemaRawPages}
+      />
     </div>
   );
 }

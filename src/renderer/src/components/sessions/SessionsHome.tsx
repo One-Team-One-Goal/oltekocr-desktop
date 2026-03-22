@@ -167,7 +167,7 @@ const PDF_NEW_CARDS = [
     Icon: HelpCircle,
     label: "Other",
     desc: "Any other document type",
-    placeholder: true,
+    placeholder: false,
   },
 ];
 

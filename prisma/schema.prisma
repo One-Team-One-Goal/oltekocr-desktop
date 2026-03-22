@@ -147,3 +147,17 @@ model DocumentSummary {
   @@index([documentId])
   @@map("document_summaries")
 }
+
+model ContractExtractionSchema {
+  id            String   @id @default(uuid())
+  name          String
+  documentType  String   @default("CONTRACT") @map("document_type")
+  isActive      Boolean  @default(false) @map("is_active")
+  definitionsJson String @default("{}") @map("definitions_json")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@index([documentType, isActive])
+  @@index([updatedAt])
+  @@map("contract_extraction_schemas")
+}

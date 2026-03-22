@@ -214,6 +214,47 @@ export const sessionPresetsApi = {
     request<void>(`/session-presets/${id}`, { method: "DELETE" }),
 };
 
+// ─── Contract Schemas ───────────────────────────────────
+export const contractSchemasApi = {
+  list: (params?: { documentType?: string; active?: boolean }) => {
+    const qs = new URLSearchParams();
+    if (params?.documentType) qs.set("documentType", params.documentType);
+    if (params?.active !== undefined) qs.set("active", String(params.active));
+    const query = qs.toString();
+    return request<any[]>(`/contract-schemas${query ? `?${query}` : ""}`);
+  },
+  get: (id: string) => request<any>(`/contract-schemas/${id}`),
+  getActive: (documentType: string) =>
+    request<any | null>(`/contract-schemas/active/${encodeURIComponent(documentType)}`),
+  create: (data: {
+    name: string;
+    documentType?: string;
+    isActive?: boolean;
+    definitions?: Record<string, unknown>;
+  }) =>
+    request<any>("/contract-schemas", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  update: (
+    id: string,
+    data: {
+      name?: string;
+      documentType?: string;
+      isActive?: boolean;
+      definitions?: Record<string, unknown>;
+    },
+  ) =>
+    request<any>(`/contract-schemas/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+  activate: (id: string) =>
+    request<any>(`/contract-schemas/${id}/activate`, { method: "POST" }),
+  remove: (id: string) =>
+    request<void>(`/contract-schemas/${id}`, { method: "DELETE" }),
+};
+
 // ─── Models ──────────────────────────────────────────────
 export interface ModelStatus {
   id: string;

@@ -99,28 +99,25 @@ This also runs `electron-builder install-app-deps` automatically via the `postin
 
 ### 4. Set up the Python OCR environment
 
-The OCR engine runs as a Python sidecar. You need `rapidocr-onnxruntime` available.
+The OCR and extraction engines run as Python sidecars. Install all Python dependencies with the project bootstrap script.
 
 **Option A — virtual environment (recommended)**
 
 ```bash
-# Create a venv inside the project (git-ignored)
-python -m venv .venv
+# Run one command from project root (Windows PowerShell)
+powershell -ExecutionPolicy Bypass -File .\scripts\setup-python.ps1
 
-# Activate it
-# Windows:
-.venv\Scripts\activate
-# macOS / Linux:
-source .venv/bin/activate
-
-# Install the OCR dependency
-pip install rapidocr-onnxruntime
+# Optional: activate after setup
+.venv\Scripts\Activate.ps1
 ```
 
 **Option B — global install**
 
 ```bash
-pip install rapidocr-onnxruntime
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip setuptools wheel
+pip install -r requirements-python.txt
 ```
 
 > If you use a venv, the app will automatically detect it at `.venv/Scripts/python.exe` (Windows) or `.venv/bin/python` (macOS/Linux). If not found, it falls back to the system `python` / `python3` on `PATH`.

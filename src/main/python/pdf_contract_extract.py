@@ -158,31 +158,27 @@ def short_commodity(value: str) -> str:
     return clean_text(value.rstrip(":;,.- "))
 
 
-SECTION_PATTERNS: List[Tuple[re.Pattern, str]] = [
-    (re.compile(r"6\s*[-.]\s*1|general\s+rate", re.IGNORECASE), "RATES"),
-    (re.compile(r"6\s*[-.]\s*3|origin\s+arbitrary", re.IGNORECASE), "ORIGIN_ARB"),
-    (re.compile(r"6\s*[-.]\s*4|destination\s+arbitrary", re.IGNORECASE), "DEST_ARB"),
-    (re.compile(r"6\s*[-.]\s*5|g\.?o\.?h", re.IGNORECASE), "STOP"),
+DEFAULT_SECTION_PATTERNS = [
+    {"section": "RATES", "pattern": r"6\s*[-.]\s*1|general\s+rate"},
+    {"section": "ORIGIN_ARB", "pattern": r"6\s*[-.]\s*3|origin\s+arbitrary"},
+    {"section": "DEST_ARB", "pattern": r"6\s*[-.]\s*4|destination\s+arbitrary"},
+    {"section": "STOP", "pattern": r"6\s*[-.]\s*5|g\.?o\.?h"},
 ]
 
-CONTRACT_ID_RE = re.compile(r"\bATL\w+\b", re.IGNORECASE)
-COMMODITY_RE = re.compile(r"COMMODITY\s*:\s*(.+)", re.IGNORECASE)
-ORIGIN_RE = re.compile(r"\bORIGIN\s*:\s*(.+)", re.IGNORECASE)
-ORIGIN_VIA_RE = re.compile(r"\bORIGIN\s+VIA\s*:\s*(.+)", re.IGNORECASE)
-RATE_OVER_RE = re.compile(r"RATE\s+APPLICABLE\s+OVER\s*:\s*(.+)", re.IGNORECASE)
-SCOPE_RE = re.compile(r"\[([^\]]*\(WB\)[^\]]*)\]", re.IGNORECASE)
-DATE_TOKEN_RE = re.compile(
-    r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}-\d{2}-\d{2}|\d{8}|\d{1,2}\s+[A-Za-z]{3,9},?\s+\d{4})"
-)
-VALID_RANGE_RE = re.compile(
-    r"valid\s*(?:from)?\s*(\d{4}-\d{2}-\d{2}|\d{8}|\d{1,2}\s+[A-Za-z]{3,9},?\s+\d{4})\s*(?:to|through|thru)\s*(\d{4}-\d{2}-\d{2}|\d{8}|\d{1,2}\s+[A-Za-z]{3,9},?\s+\d{4})",
-    re.IGNORECASE,
-)
-EFFECTIVE_RE = re.compile(r"effective\s+date\s*[:\-]?\s*([^\n\r]+)", re.IGNORECASE)
-EXPIRATION_RE = re.compile(r"expir(?:ation|y)\s+date\s*[:\-]?\s*([^\n\r]+)", re.IGNORECASE)
+DEFAULT_REGEX_BY_FIELD = {
+    "contractId": r"\bATL\w+\b",
+    "commodity": r"COMMODITY\s*:\s*(.+)",
+    "origin": r"\bORIGIN\s*:\s*(.+)",
+    "originVia": r"\bORIGIN\s+VIA\s*:\s*(.+)",
+    "rateApplicableOver": r"RATE\s+APPLICABLE\s+OVER\s*:\s*(.+)",
+    "scope": r"\[([^\]]*\(WB\)[^\]]*)\]",
+    "dateToken": r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}-\d{2}-\d{2}|\d{8}|\d{1,2}\s+[A-Za-z]{3,9},?\s+\d{4})",
+    "validRange": r"valid\s*(?:from)?\s*(\d{4}-\d{2}-\d{2}|\d{8}|\d{1,2}\s+[A-Za-z]{3,9},?\s+\d{4})\s*(?:to|through|thru)\s*(\d{4}-\d{2}-\d{2}|\d{8}|\d{1,2}\s+[A-Za-z]{3,9},?\s+\d{4})",
+    "effectiveDate": r"effective\s+date\s*[:\-]?\s*([^\n\r]+)",
+    "expirationDate": r"expir(?:ation|y)\s+date\s*[:\-]?\s*([^\n\r]+)",
+}
 
-
-HEADER_MAP = {
+DEFAULT_HEADER_MAP = {
     "destination": "destination_city",
     "destination city": "destination_city",
     "destination via": "destination_via_city",
@@ -209,6 +205,140 @@ HEADER_MAP = {
     "40' agw": "agw40",
     "45' agw": "agw45",
 }
+
+
+def _compile_regex(pattern: str, fallback: str) -> re.Pattern:
+    try:
+        return re.compile(pattern, re.IGNORECASE)
+    except re.error:
+        return re.compile(fallback, re.IGNORECASE)
+
+
+def _compile_section_patterns(defs: List[Dict[str, str]]) -> List[Tuple[re.Pattern, str]]:
+    out: List[Tuple[re.Pattern, str]] = []
+    for entry in defs:
+        section = clean_text(entry.get("section", "")).upper()
+        pattern = entry.get("pattern", "")
+        if section not in {"RATES", "ORIGIN_ARB", "DEST_ARB", "STOP"}:
+            continue
+        if not pattern:
+            continue
+        try:
+            out.append((re.compile(pattern, re.IGNORECASE), section))
+        except re.error:
+            continue
+    return out
+
+
+def _schema_field_regex(schema: Dict[str, Any], key: str) -> Optional[str]:
+    field_defs = schema.get("fieldDefinitions")
+    if isinstance(field_defs, dict):
+        value = field_defs.get(key)
+        if isinstance(value, dict):
+            regex = value.get("regex")
+            if isinstance(regex, str) and regex.strip():
+                return regex
+        if isinstance(value, str) and value.strip():
+            return value
+
+    regex_by_field = schema.get("regexByField")
+    if isinstance(regex_by_field, dict):
+        value = regex_by_field.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+
+    return None
+
+
+def load_runtime_patterns(schema: Optional[Dict[str, Any]]) -> Tuple[
+    List[Tuple[re.Pattern, str]],
+    re.Pattern,
+    re.Pattern,
+    re.Pattern,
+    re.Pattern,
+    re.Pattern,
+    re.Pattern,
+    re.Pattern,
+    re.Pattern,
+    re.Pattern,
+    re.Pattern,
+    Dict[str, str],
+]:
+    section_defs = DEFAULT_SECTION_PATTERNS
+    header_map = dict(DEFAULT_HEADER_MAP)
+
+    if isinstance(schema, dict):
+        schema_sections = schema.get("sectionDefinitions")
+        if isinstance(schema_sections, list):
+            candidate_defs: List[Dict[str, str]] = []
+            for item in schema_sections:
+                if not isinstance(item, dict):
+                    continue
+                section = clean_text(item.get("section") or item.get("name") or "").upper()
+                pattern = item.get("startRegex") or item.get("pattern") or ""
+                if isinstance(pattern, str) and section:
+                    candidate_defs.append({"section": section, "pattern": pattern})
+            if candidate_defs:
+                section_defs = candidate_defs
+        elif isinstance(schema.get("sectionPatterns"), list):
+            section_defs = [
+                {
+                    "section": clean_text((item or {}).get("section", "")).upper(),
+                    "pattern": str((item or {}).get("pattern", "")),
+                }
+                for item in schema.get("sectionPatterns", [])
+                if isinstance(item, dict)
+            ]
+
+        aliases = schema.get("headerAliases")
+        if isinstance(aliases, dict):
+            for key, value in aliases.items():
+                if isinstance(key, str) and isinstance(value, str):
+                    header_map[key.lower().strip()] = value.strip()
+        elif isinstance(schema.get("headerMap"), dict):
+            for key, value in schema.get("headerMap", {}).items():
+                if isinstance(key, str) and isinstance(value, str):
+                    header_map[key.lower().strip()] = value.strip()
+
+    compiled_sections = _compile_section_patterns(section_defs)
+    if not compiled_sections:
+        compiled_sections = _compile_section_patterns(DEFAULT_SECTION_PATTERNS)
+
+    def rx(field_key: str) -> re.Pattern:
+        fallback = DEFAULT_REGEX_BY_FIELD[field_key]
+        custom = _schema_field_regex(schema or {}, field_key) if isinstance(schema, dict) else None
+        return _compile_regex(custom or fallback, fallback)
+
+    return (
+        compiled_sections,
+        rx("contractId"),
+        rx("commodity"),
+        rx("origin"),
+        rx("originVia"),
+        rx("rateApplicableOver"),
+        rx("scope"),
+        rx("dateToken"),
+        rx("validRange"),
+        rx("effectiveDate"),
+        rx("expirationDate"),
+        header_map,
+    )
+
+
+(
+    SECTION_PATTERNS,
+    CONTRACT_ID_RE,
+    COMMODITY_RE,
+    ORIGIN_RE,
+    ORIGIN_VIA_RE,
+    RATE_OVER_RE,
+    SCOPE_RE,
+    DATE_TOKEN_RE,
+    VALID_RANGE_RE,
+    EFFECTIVE_RE,
+    EXPIRATION_RE,
+    HEADER_MAP,
+) = load_runtime_patterns(None)
 
 
 def normalize_header(cell: str) -> str:
@@ -619,11 +749,46 @@ def extract_tables(doc: fitz.Document, header: Dict[str, str]) -> Tuple[List[Dic
 
 
 def main() -> None:
+    global SECTION_PATTERNS
+    global CONTRACT_ID_RE
+    global COMMODITY_RE
+    global ORIGIN_RE
+    global ORIGIN_VIA_RE
+    global RATE_OVER_RE
+    global SCOPE_RE
+    global DATE_TOKEN_RE
+    global VALID_RANGE_RE
+    global EFFECTIVE_RE
+    global EXPIRATION_RE
+    global HEADER_MAP
+
     parser = argparse.ArgumentParser(description="Extract freight contract tables from a PDF")
     parser.add_argument("--pdf", required=True, help="Absolute path to the PDF file")
+    parser.add_argument("--schema-json", default="", help="JSON string containing extraction field definitions")
     args = parser.parse_args()
 
     started = time.time()
+
+    schema_warnings: List[str] = []
+    if args.schema_json:
+        try:
+            schema_obj = json.loads(args.schema_json)
+            (
+                SECTION_PATTERNS,
+                CONTRACT_ID_RE,
+                COMMODITY_RE,
+                ORIGIN_RE,
+                ORIGIN_VIA_RE,
+                RATE_OVER_RE,
+                SCOPE_RE,
+                DATE_TOKEN_RE,
+                VALID_RANGE_RE,
+                EFFECTIVE_RE,
+                EXPIRATION_RE,
+                HEADER_MAP,
+            ) = load_runtime_patterns(schema_obj)
+        except Exception as exc:
+            schema_warnings.append(f"Invalid schema JSON; using defaults ({exc})")
 
     try:
         doc = fitz.open(args.pdf)
@@ -642,7 +807,7 @@ def main() -> None:
             "rawPages": raw_pages,
             "pageCount": len(doc),
             "processingTime": round(time.time() - started, 2),
-            "warnings": warnings,
+            "warnings": [*schema_warnings, *warnings],
         }
         print(json.dumps(result, ensure_ascii=False))
         sys.stdout.flush()

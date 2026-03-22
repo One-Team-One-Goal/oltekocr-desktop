@@ -23,6 +23,13 @@ export interface ContractExtractionResult {
   warnings: string[];
 }
 
+interface ActiveContractSchema {
+  id: string;
+  name: string;
+  documentType: string;
+  definitions: Record<string, unknown>;
+}
+
 @Injectable()
 export class ContractExtractionService {
   private readonly logger = new Logger(ContractExtractionService.name);
@@ -68,6 +75,11 @@ export class ContractExtractionService {
   async process(documentId: string): Promise<ContractExtractionResult> {
     const doc = await this.prisma.document.findUnique({
       where: { id: documentId },
+      select: {
+        id: true,
+        imagePath: true,
+        session: { select: { documentType: true } },
+      },
     });
 
     if (!doc) {
@@ -81,8 +93,14 @@ export class ContractExtractionService {
     });
 
     let result: ContractExtractionResult;
+    const documentType = (doc.session?.documentType || "CONTRACT").trim();
+    const extractionType = documentType || "CONTRACT";
+    const activeSchema = await this.getActiveSchema(documentType);
     try {
-      result = await this.runPythonExtractor(doc.imagePath);
+      result = await this.runPythonExtractor(
+        doc.imagePath,
+        activeSchema?.definitions,
+      );
     } catch (err: any) {
       await this.prisma.document.updateMany({
         where: { id: documentId },
@@ -104,7 +122,14 @@ export class ContractExtractionService {
         ocrWarnings: JSON.stringify(result.warnings),
         // Store the structured contract data in extractedJson
         extractedJson: JSON.stringify({
-          type: "CONTRACT",
+          type: extractionType,
+          schema: activeSchema
+            ? {
+                id: activeSchema.id,
+                name: activeSchema.name,
+                documentType: activeSchema.documentType,
+              }
+            : null,
           header: result.header,
           rates: result.rates,
           originArbs: result.originArbs,
@@ -117,7 +142,45 @@ export class ContractExtractionService {
     return result;
   }
 
-  private runPythonExtractor(pdfPath: string): Promise<ContractExtractionResult> {
+  private async getActiveSchema(
+    documentType: string,
+  ): Promise<ActiveContractSchema | null> {
+    const lookupTypes = [documentType, "CONTRACT"].filter(
+      (value, index, arr) => value && arr.indexOf(value) === index,
+    );
+
+    for (const type of lookupTypes) {
+      const row = await this.prisma.contractExtractionSchema.findFirst({
+        where: { documentType: type, isActive: true },
+        orderBy: { updatedAt: "desc" },
+      });
+      if (!row) continue;
+
+      try {
+        const parsed = JSON.parse(row.definitionsJson || "{}");
+        if (!parsed || typeof parsed !== "object") {
+          throw new Error("definitionsJson must be a JSON object");
+        }
+        return {
+          id: row.id,
+          name: row.name,
+          documentType: row.documentType,
+          definitions: parsed as Record<string, unknown>,
+        };
+      } catch (err) {
+        this.logger.warn(
+          `Skipping invalid schema ${row.id} (${row.name}): ${String(err)}`,
+        );
+      }
+    }
+
+    return null;
+  }
+
+  private runPythonExtractor(
+    pdfPath: string,
+    schemaDefinitions?: Record<string, unknown>,
+  ): Promise<ContractExtractionResult> {
     const pythonExe = this.resolvePythonExe();
     const script = this.scriptPath;
     const cfg = this.settings.getAll().ocr;
@@ -137,7 +200,12 @@ export class ContractExtractionService {
         `Spawning: ${pythonExe} ${script} --pdf "${pdfPath}"`,
       );
 
-      const child = spawn(pythonExe, ["-u", script, "--pdf", pdfPath], {
+      const args = ["-u", script, "--pdf", pdfPath];
+      if (schemaDefinitions) {
+        args.push("--schema-json", JSON.stringify(schemaDefinitions));
+      }
+
+      const child = spawn(pythonExe, args, {
         windowsHide: true,
         env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
       });
