@@ -18,6 +18,7 @@ export interface ContractExtractionResult {
   originArbs: Record<string, string>[];
   destArbs: Record<string, string>[];
   tabs?: Array<{ name: string; rows: Record<string, string>[] }>;
+  schemaName?: string;
   rawPages: { page: number; text: string }[];
   pageCount: number;
   processingTime: number;
@@ -130,6 +131,9 @@ export class ContractExtractionService {
         ocrWarnings: JSON.stringify(result.warnings),
         extractedJson: JSON.stringify({
           type: "CONTRACT",
+          schemaName:
+            result.schemaName ??
+            (schemaPreset?.name?.trim() || "STANDARD_CONTRACT_SCHEMA"),
           header: result.header,
           rates: result.rates,
           originArbs: result.originArbs,

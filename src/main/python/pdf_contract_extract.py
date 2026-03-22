@@ -25,6 +25,7 @@ import json
 import argparse
 import time
 import re
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 # Force UTF-8 stdout/stderr so non-ASCII city names don't cause encoding errors
@@ -1003,6 +1004,654 @@ def extract_tables_from_schema(
     return rates, origin_arbs, dest_arbs, tabs_out, warnings
 
 
+# ─── Legacy hardcoded fallback (used when no schema is assigned) ────────────
+
+LEGACY_RATES_COLS = [
+    "Carrier",
+    "Contract ID",
+    "effective_date",
+    "expiration_date",
+    "commodity",
+    "origin_city",
+    "origin_via_city",
+    "destination_city",
+    "destination_via_city",
+    "service",
+    "Remarks",
+    "SCOPE",
+    "BaseRate 20",
+    "BaseRate 40",
+    "BaseRate 40H",
+    "BaseRate 45",
+    "AMS(CHINA & JAPAN)",
+    "(HEA) Heavy Surcharge",
+    "AGW",
+    "RED SEA DIVERSION CHARGE(RDS).",
+]
+
+LEGACY_ORIGIN_ARB_COLS = [
+    "Carrier",
+    "Contract ID",
+    "effective_date",
+    "expiration_date",
+    "commodity",
+    "origin_city",
+    "origin_via_city",
+    "service",
+    "Remarks",
+    "Scope",
+    "BaseRate 20",
+    "BaseRate 40",
+    "BaseRate 40H",
+    "BaseRate 45",
+    "20' AGW",
+    "40' AGW",
+    "45' AGW",
+]
+
+LEGACY_DEST_ARB_COLS = [
+    "Carrier",
+    "Contract ID",
+    "effective_date",
+    "expiration_date",
+    "commodity",
+    "destination_city",
+    "destination_via_city",
+    "service",
+    "Remarks",
+    "Scope",
+    "BaseRate 20",
+    "BaseRate 40",
+    "BaseRate 40H",
+    "BaseRate 45",
+]
+
+
+def _legacy_blank_row(cols: List[str]) -> Dict[str, str]:
+    return {col: "" for col in cols}
+
+
+def _legacy_clean_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _legacy_to_iso_date(value: str) -> str:
+    value = _legacy_clean_text(value)
+    for fmt in (
+        "%d/%m/%Y",
+        "%d-%m-%Y",
+        "%m/%d/%Y",
+        "%m-%d-%Y",
+        "%Y-%m-%d",
+        "%Y%m%d",
+        "%d %b, %Y",
+        "%d %B, %Y",
+        "%d %b %Y",
+        "%d %B %Y",
+    ):
+        try:
+            return datetime.strptime(value, fmt).strftime("%Y-%m-%d")
+        except Exception:
+            pass
+    return value
+
+
+def _legacy_city_only(value: str) -> str:
+    value = _legacy_clean_text(value)
+    if not value:
+        return ""
+    return _legacy_clean_text(value.split(",", 1)[0]).title()
+
+
+def _legacy_preserve_city(value: str) -> str:
+    return _legacy_clean_text(value).title()
+
+
+def _legacy_short_commodity(value: str) -> str:
+    value = _legacy_clean_text(value)
+    if not value:
+        return ""
+    value = re.split(r"\bEXCLUDING\b", value, maxsplit=1, flags=re.IGNORECASE)[0]
+    value = value.split("(", 1)[0]
+    if re.search(r"\band/or\b", value, re.IGNORECASE):
+        left = re.split(r"\band/or\b", value, maxsplit=1, flags=re.IGNORECASE)[0]
+        if " - " in left:
+            value = left
+    return _legacy_clean_text(value.rstrip(":;,.- "))
+
+
+LEGACY_SECTION_PATTERNS: List[Tuple[re.Pattern, str]] = [
+    (re.compile(r"6\s*[-.]\s*1|general\s+rate", re.IGNORECASE), "RATES"),
+    (re.compile(r"6\s*[-.]\s*3|origin\s+arbitrary", re.IGNORECASE), "ORIGIN_ARB"),
+    (re.compile(r"6\s*[-.]\s*4|destination\s+arbitrary", re.IGNORECASE), "DEST_ARB"),
+    (re.compile(r"6\s*[-.]\s*5|g\.?o\.?h", re.IGNORECASE), "STOP"),
+]
+
+LEGACY_CONTRACT_ID_RE = re.compile(r"\bATL\w+\b", re.IGNORECASE)
+LEGACY_COMMODITY_RE = re.compile(r"COMMODITY\s*:\s*(.+)", re.IGNORECASE)
+LEGACY_ORIGIN_RE = re.compile(r"\bORIGIN\s*:\s*(.+)", re.IGNORECASE)
+LEGACY_ORIGIN_VIA_RE = re.compile(r"\bORIGIN\s+VIA\s*:\s*(.+)", re.IGNORECASE)
+LEGACY_RATE_OVER_RE = re.compile(r"RATE\s+APPLICABLE\s+OVER\s*:\s*(.+)", re.IGNORECASE)
+LEGACY_SCOPE_RE = re.compile(r"\[([^\]]*\(WB\)[^\]]*)\]", re.IGNORECASE)
+LEGACY_DATE_TOKEN_RE = re.compile(
+    r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{4}-\d{2}-\d{2}|\d{8}|\d{1,2}\s+[A-Za-z]{3,9},?\s+\d{4})"
+)
+LEGACY_VALID_RANGE_RE = re.compile(
+    r"valid\s*(?:from)?\s*(\d{4}-\d{2}-\d{2}|\d{8}|\d{1,2}\s+[A-Za-z]{3,9},?\s+\d{4})\s*(?:to|through|thru)\s*(\d{4}-\d{2}-\d{2}|\d{8}|\d{1,2}\s+[A-Za-z]{3,9},?\s+\d{4})",
+    re.IGNORECASE,
+)
+LEGACY_EFFECTIVE_RE = re.compile(r"effective\s+date\s*[:\-]?\s*([^\n\r]+)", re.IGNORECASE)
+LEGACY_EXPIRATION_RE = re.compile(r"expir(?:ation|y)\s+date\s*[:\-]?\s*([^\n\r]+)", re.IGNORECASE)
+
+
+LEGACY_HEADER_MAP = {
+    "destination": "destination_city",
+    "destination city": "destination_city",
+    "destination via": "destination_via_city",
+    "destination via city": "destination_via_city",
+    "point": "point",
+    "via": "via",
+    "cntry": "cntry",
+    "term": "term",
+    "type": "type",
+    "cur": "cur",
+    "service": "service",
+    "lane": "lane",
+    "trunk lane": "trunk_lane",
+    "mode": "mode",
+    "box": "box",
+    "cmdt": "cmdt",
+    "note": "note",
+    "direct call": "direct_call",
+    "20'": "rate20",
+    "40'": "rate40",
+    "40hc": "rate40h",
+    "45'": "rate45",
+    "20' agw": "agw20",
+    "40' agw": "agw40",
+    "45' agw": "agw45",
+}
+
+
+def _legacy_normalize_header(cell: str) -> str:
+    clean = _legacy_clean_text(cell).lower().replace("_", " ")
+    clean = clean.replace("\n", " ")
+    clean = re.sub(r"\s+", " ", clean)
+    return LEGACY_HEADER_MAP.get(clean, clean)
+
+
+def _legacy_dedupe_headers(headers: List[str]) -> List[str]:
+    out: List[str] = []
+    seen: Dict[str, int] = {}
+    for header in headers:
+        key = _legacy_normalize_header(header)
+        count = seen.get(key, 0) + 1
+        seen[key] = count
+        out.append(key if count == 1 else f"{key}_{count}")
+    return out
+
+
+def _legacy_row_dict(headers: List[str], cells: List[str]) -> Dict[str, str]:
+    row: Dict[str, str] = {}
+    for idx, header in enumerate(headers):
+        row[header] = _legacy_clean_text(cells[idx] if idx < len(cells) else "")
+    return row
+
+
+def _legacy_is_blank_row(cells: List[str]) -> bool:
+    return not any(_legacy_clean_text(cell) for cell in cells)
+
+
+def _legacy_is_header_row(cells: List[str]) -> bool:
+    first = _legacy_clean_text(cells[0] if cells else "").lower()
+    return first.startswith("destination") or first.startswith("point")
+
+
+def _legacy_has_numbers(value: str) -> bool:
+    return bool(re.search(r"\d", _legacy_clean_text(value)))
+
+
+def _legacy_continuation_row(section: str, row: Dict[str, str]) -> bool:
+    anchor = row.get("destination_city", "") if section == "RATES" else row.get("point", "")
+    if _legacy_clean_text(anchor):
+        return False
+    return any(_legacy_clean_text(v) for v in row.values())
+
+
+def _legacy_merge_row(base: Dict[str, str], cont: Dict[str, str]) -> None:
+    for key, value in cont.items():
+        value = _legacy_clean_text(value)
+        if not value:
+            continue
+        current = _legacy_clean_text(base.get(key, ""))
+        if not current:
+            base[key] = value
+        elif value not in current:
+            base[key] = _legacy_clean_text(f"{current} {value}")
+
+
+def _legacy_build_boundaries(doc: fitz.Document) -> List[Tuple[int, float, str]]:
+    found: List[Tuple[int, float, str]] = []
+    seen = set()
+    for page_no in range(len(doc)):
+        page = doc[page_no]
+        try:
+            page_dict = page.get_text("dict")
+        except Exception:
+            continue
+        for block in page_dict.get("blocks", []):
+            if block.get("type") != 0:
+                continue
+            text = " ".join(
+                span["text"]
+                for line in block.get("lines", [])
+                for span in line.get("spans", [])
+            )
+            for pattern, section in LEGACY_SECTION_PATTERNS:
+                if section not in seen and pattern.search(text):
+                    found.append((page_no, float(block["bbox"][1]), section))
+                    seen.add(section)
+                    break
+    found.sort(key=lambda item: (item[0], item[1]))
+    return found
+
+
+def _legacy_section_for(
+    page_no: int, y0: float, boundaries: List[Tuple[int, float, str]]
+) -> str:
+    pos = page_no * 1_000_000.0 + y0
+    current = "UNKNOWN"
+    for b_page, b_y, section in boundaries:
+        if b_page * 1_000_000.0 + b_y <= pos:
+            current = section
+        else:
+            break
+    return current
+
+
+def _legacy_scan_inline_labels(page: fitz.Page) -> List[Tuple[float, str, str]]:
+    lines: List[Tuple[float, str]] = []
+    for block in page.get_text("dict").get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            y0 = float(line["bbox"][1])
+            text = _legacy_clean_text(" ".join(span["text"] for span in line.get("spans", [])))
+            if text:
+                lines.append((y0, text))
+    lines.sort(key=lambda item: item[0])
+
+    found: List[Tuple[float, str, str]] = []
+    i = 0
+    while i < len(lines):
+        y0, text = lines[i]
+
+        m = re.match(r"ORIGIN\s+VIA\s*:\s*(.+)", text, re.IGNORECASE)
+        if m:
+            found.append((y0, "origin_via", _legacy_city_only(m.group(1))))
+            i += 1
+            continue
+
+        m = re.match(r"ORIGIN(?!\s+VIA)\s*:\s*(.+)", text, re.IGNORECASE)
+        if m:
+            found.append((y0, "origin", _legacy_city_only(m.group(1))))
+            i += 1
+            continue
+
+        m = re.match(r"RATE\s+APPLICABLE\s+OVER\s*:\s*(.+)", text, re.IGNORECASE)
+        if m:
+            found.append((y0, "rate_over", _legacy_city_only(m.group(1))))
+            i += 1
+            continue
+
+        i += 1
+
+    return found
+
+
+def _legacy_parse_date_pairs(text: str) -> List[Tuple[str, str]]:
+    pairs: List[Tuple[str, str]] = []
+    for start, end in LEGACY_VALID_RANGE_RE.findall(text):
+        pair = (_legacy_to_iso_date(start), _legacy_to_iso_date(end))
+        if pair not in pairs:
+            pairs.append(pair)
+    return pairs
+
+
+def _legacy_parse_scope_bracketed(text: str) -> str:
+    match = LEGACY_SCOPE_RE.search(text)
+    return f"[{_legacy_clean_text(match.group(1))}]" if match else ""
+
+
+def _legacy_parse_scope_unbracketed(text: str) -> str:
+    match = LEGACY_SCOPE_RE.search(text)
+    return _legacy_clean_text(match.group(1)) if match else ""
+
+
+def _legacy_extract_header(doc: fitz.Document) -> Dict[str, str]:
+    texts = [doc[i].get_text("text") for i in range(min(len(doc), 12))]
+    text = "\n".join(texts)
+
+    contract_id = ""
+    match = LEGACY_CONTRACT_ID_RE.search(text)
+    if match:
+        contract_id = match.group(0).upper()
+
+    pairs = _legacy_parse_date_pairs("\n".join(doc[i].get_text("text") for i in range(len(doc))))
+    if not pairs:
+        effs = [
+            _legacy_to_iso_date(LEGACY_DATE_TOKEN_RE.search(m.group(1)).group(1))
+            for m in LEGACY_EFFECTIVE_RE.finditer(text)
+            if LEGACY_DATE_TOKEN_RE.search(m.group(1))
+        ]
+        exps = [
+            _legacy_to_iso_date(LEGACY_DATE_TOKEN_RE.search(m.group(1)).group(1))
+            for m in LEGACY_EXPIRATION_RE.finditer(text)
+            if LEGACY_DATE_TOKEN_RE.search(m.group(1))
+        ]
+        for idx in range(max(len(effs), len(exps))):
+            eff = effs[idx] if idx < len(effs) else ""
+            exp = exps[idx] if idx < len(exps) else ""
+            if eff and exp:
+                pairs.append((eff, exp))
+
+    effective_date, expiration_date = pairs[0] if pairs else ("", "")
+    return {
+        "carrier": "OLTEK",
+        "contractId": contract_id,
+        "effectiveDate": effective_date,
+        "expirationDate": expiration_date,
+    }
+
+
+def _legacy_agw_values(origin_city: str) -> Tuple[str, str, str]:
+    city = _legacy_clean_text(origin_city).lower()
+    if city in {"halifax", "vancouver", "montreal"}:
+        return ("525", "500", "500")
+    if city in {"chicago", "pocatello"}:
+        return ("200", "400", "400")
+    if city in {"baltimore", "richmond"}:
+        return ("", "", "")
+    return ("230", "230", "230")
+
+
+def _legacy_build_rates_row(
+    header: Dict[str, str],
+    dates: Tuple[str, str],
+    commodity: str,
+    origin_city: str,
+    origin_via_city: str,
+    scope: str,
+    row: Dict[str, str],
+) -> Dict[str, str]:
+    out = _legacy_blank_row(LEGACY_RATES_COLS)
+    out["Carrier"] = header["carrier"]
+    out["Contract ID"] = header["contractId"]
+    out["effective_date"] = dates[0]
+    out["expiration_date"] = dates[1]
+    out["commodity"] = commodity
+    out["origin_city"] = origin_city
+    out["origin_via_city"] = origin_via_city
+    out["destination_city"] = _legacy_city_only(row.get("destination_city", ""))
+    out["destination_via_city"] = _legacy_city_only(row.get("destination_via_city", ""))
+    out["service"] = "CY/CY"
+    out["SCOPE"] = scope
+    out["BaseRate 20"] = row.get("rate20", "")
+    out["BaseRate 40"] = row.get("rate40", "")
+    out["BaseRate 40H"] = row.get("rate40h", "")
+    out["BaseRate 45"] = row.get("rate45", "")
+    if _legacy_clean_text(row.get("direct_call", "")):
+        out["Remarks"] = "!must be direct call at destination"
+
+    country = _legacy_clean_text(row.get("cntry", "")).upper()
+    if scope == "NORTH AMERICA - ASIA (WB)" and country in {"CN", "JP"}:
+        out["AMS(CHINA & JAPAN)"] = "35"
+
+    row_blob = " ".join(row.values()).lower()
+    if "hea" in row_blob and "included" in row_blob:
+        out["(HEA) Heavy Surcharge"] = "included"
+    if re.search(r"\bagw\b", row_blob) and "included" in row_blob:
+        out["AGW"] = "included"
+    if scope == "NORTH AMERICA - WEST ASIA AND AFRICA (WB)":
+        out["RED SEA DIVERSION CHARGE(RDS)."] = "included"
+
+    return out
+
+
+def _legacy_build_origin_arb_row(
+    header: Dict[str, str],
+    dates: Tuple[str, str],
+    scope: str,
+    rate_over_city: str,
+    row: Dict[str, str],
+) -> Dict[str, str]:
+    out = _legacy_blank_row(LEGACY_ORIGIN_ARB_COLS)
+    out["Carrier"] = header["carrier"]
+    out["Contract ID"] = header["contractId"]
+    out["effective_date"] = dates[0]
+    out["expiration_date"] = dates[1]
+    out["origin_city"] = _legacy_city_only(row.get("point", ""))
+    out["origin_via_city"] = rate_over_city
+    out["service"] = "CY"
+    out["Scope"] = scope
+    out["BaseRate 20"] = row.get("rate20", "")
+    out["BaseRate 40"] = row.get("rate40", "")
+    out["BaseRate 40H"] = row.get("rate40h", "")
+    out["BaseRate 45"] = row.get("rate45", "")
+    out["20' AGW"], out["40' AGW"], out["45' AGW"] = _legacy_agw_values(out["origin_city"])
+    return out
+
+
+def _legacy_build_dest_arb_row(
+    header: Dict[str, str],
+    dates: Tuple[str, str],
+    scope: str,
+    rate_over_city: str,
+    row: Dict[str, str],
+) -> Dict[str, str]:
+    out = _legacy_blank_row(LEGACY_DEST_ARB_COLS)
+    out["Carrier"] = header["carrier"]
+    out["Contract ID"] = header["contractId"]
+    out["effective_date"] = dates[0]
+    out["expiration_date"] = dates[1]
+    out["destination_city"] = _legacy_preserve_city(row.get("point", ""))
+    out["destination_via_city"] = rate_over_city
+    out["service"] = "CY"
+    out["Scope"] = scope
+    out["BaseRate 20"] = row.get("rate20", "")
+    out["BaseRate 40"] = row.get("rate40", "")
+    out["BaseRate 40H"] = row.get("rate40h", "")
+    out["BaseRate 45"] = row.get("rate45", "")
+    return out
+
+
+def _legacy_extract_tables(
+    doc: fitz.Document,
+    header: Dict[str, str],
+) -> Tuple[
+    List[Dict[str, str]],
+    List[Dict[str, str]],
+    List[Dict[str, str]],
+    List[str],
+    List[Dict[str, Any]],
+]:
+    rates: List[Dict[str, str]] = []
+    origin_arbs: List[Dict[str, str]] = []
+    dest_arbs: List[Dict[str, str]] = []
+    warnings: List[str] = []
+    raw_pages: List[Dict[str, Any]] = []
+
+    boundaries = _legacy_build_boundaries(doc)
+    if not boundaries:
+        warnings.append("No section boundaries found; defaulting tables to RATES")
+        boundaries = [(0, 0.0, "RATES")]
+
+    section_headers: Dict[str, List[str]] = {"RATES": [], "ORIGIN_ARB": [], "DEST_ARB": []}
+    previous_output: Dict[str, Optional[Dict[str, str]]] = {
+        "RATES": None,
+        "ORIGIN_ARB": None,
+        "DEST_ARB": None,
+    }
+
+    current_commodity = ""
+    current_origin = ""
+    current_origin_via = ""
+    current_scope_rates = ""
+    current_scope_arb = ""
+    current_rate_over = ""
+    current_dates = (header["effectiveDate"], header["expirationDate"])
+
+    for page_no in range(len(doc)):
+        page = doc[page_no]
+        page_text = doc[page_no].get_text("text")
+        raw_pages.append({"page": page_no + 1, "text": page_text})
+
+        commodity_match = LEGACY_COMMODITY_RE.search(page_text)
+        if commodity_match:
+            current_commodity = _legacy_short_commodity(commodity_match.group(1))
+
+        origin_match = LEGACY_ORIGIN_RE.search(page_text)
+        if origin_match:
+            current_origin = _legacy_city_only(origin_match.group(1))
+
+        origin_via_match = LEGACY_ORIGIN_VIA_RE.search(page_text)
+        if origin_via_match:
+            current_origin_via = _legacy_city_only(origin_via_match.group(1))
+
+        scope_match = _legacy_parse_scope_unbracketed(page_text)
+        if scope_match:
+            current_scope_rates = scope_match
+        scope_arb_match = _legacy_parse_scope_bracketed(page_text)
+        if scope_arb_match:
+            current_scope_arb = scope_arb_match
+
+        rate_over_match = LEGACY_RATE_OVER_RE.search(page_text)
+        if rate_over_match:
+            current_rate_over = _legacy_city_only(rate_over_match.group(1))
+
+        pairs = _legacy_parse_date_pairs(page_text)
+        if pairs:
+            current_dates = pairs[-1]
+
+        inline_labels = _legacy_scan_inline_labels(page)
+
+        try:
+            with _FitzStdoutGuard():
+                table_finder = page.find_tables(strategy="lines_strict")
+                found_tables = (
+                    table_finder.tables if hasattr(table_finder, "tables") else list(table_finder)
+                )
+                if not found_tables:
+                    table_finder = page.find_tables(strategy="lines")
+                    found_tables = (
+                        table_finder.tables if hasattr(table_finder, "tables") else list(table_finder)
+                    )
+        except Exception as exc:
+            warnings.append(f"Page {page_no + 1}: find_tables() failed - {exc}")
+            continue
+
+        for table in found_tables:
+            raw_rows = table.extract()
+            if not raw_rows or len(raw_rows) < 2:
+                continue
+
+            table_y0 = float(table.bbox[1]) if hasattr(table, "bbox") else 0.0
+            section = _legacy_section_for(page_no, table_y0, boundaries)
+            if section in ("UNKNOWN", "STOP"):
+                continue
+
+            table_origin = current_origin
+            table_origin_via = current_origin_via
+            table_rate_over = current_rate_over
+            for label_y, label_type, label_value in inline_labels:
+                if label_y < table_y0:
+                    if label_type == "origin":
+                        table_origin = label_value
+                    elif label_type == "origin_via":
+                        table_origin_via = label_value
+                    elif label_type == "rate_over":
+                        table_rate_over = label_value
+
+            rows = [[_legacy_clean_text(cell) for cell in row] for row in raw_rows]
+            rows = [row for row in rows if not _legacy_is_blank_row(row)]
+            if not rows:
+                continue
+
+            if _legacy_is_header_row(rows[0]):
+                headers = _legacy_dedupe_headers(rows[0])
+                section_headers[section] = headers
+                rows = rows[1:]
+            else:
+                headers = section_headers.get(section, [])
+                if not headers:
+                    warnings.append(
+                        f"Page {page_no + 1}: skipped continuation table in {section} with no prior headers"
+                    )
+                    continue
+
+            for cells in rows:
+                if _legacy_is_blank_row(cells) or _legacy_is_header_row(cells):
+                    continue
+
+                parsed_row = _legacy_row_dict(headers, cells)
+                if _legacy_continuation_row(section, parsed_row) and previous_output[section] is not None:
+                    _legacy_merge_row(previous_output[section], parsed_row)
+                    continue
+
+                if section == "RATES":
+                    out = _legacy_build_rates_row(
+                        header,
+                        current_dates,
+                        current_commodity,
+                        table_origin,
+                        table_origin_via,
+                        current_scope_rates,
+                        parsed_row,
+                    )
+                    if any(
+                        _legacy_has_numbers(out[k])
+                        for k in ("BaseRate 20", "BaseRate 40", "BaseRate 40H", "BaseRate 45")
+                    ):
+                        rates.append(out)
+                        previous_output[section] = out
+                elif section == "ORIGIN_ARB":
+                    out = _legacy_build_origin_arb_row(
+                        header,
+                        current_dates,
+                        current_scope_arb,
+                        table_rate_over,
+                        parsed_row,
+                    )
+                    if out["origin_city"]:
+                        origin_arbs.append(out)
+                        previous_output[section] = out
+                elif section == "DEST_ARB":
+                    out = _legacy_build_dest_arb_row(
+                        header,
+                        current_dates,
+                        current_scope_arb,
+                        table_rate_over,
+                        parsed_row,
+                    )
+                    if out["destination_city"]:
+                        dest_arbs.append(out)
+                        previous_output[section] = out
+
+    end_rates = _legacy_blank_row(LEGACY_RATES_COLS)
+    end_rates["Carrier"] = "DOC END"
+    rates.append(end_rates)
+
+    end_origin = _legacy_blank_row(LEGACY_ORIGIN_ARB_COLS)
+    end_origin["Carrier"] = "DOC END"
+    origin_arbs.append(end_origin)
+
+    end_dest = _legacy_blank_row(LEGACY_DEST_ARB_COLS)
+    end_dest["Carrier"] = "DOC END"
+    dest_arbs.append(end_dest)
+
+    return rates, origin_arbs, dest_arbs, warnings, raw_pages
+
+
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
 def main():
@@ -1031,24 +1680,32 @@ def main():
     try:
         header = extract_header(doc)
         tabs_out: List[Dict[str, Any]] = []
+        raw_pages: List[Dict[str, Any]] = []
         schema_preset = _parse_schema_preset(args.schema_json, warnings)
 
         if schema_preset:
             rates, origin_arbs, dest_arbs, tabs_out, tbl_warnings = extract_tables_from_schema(
                 doc, header, schema_preset
             )
+            # Collect raw per-page text for schema mode as well.
+            raw_pages = [
+                {"page": i + 1, "text": doc[i].get_text("text")}
+                for i in range(page_count)
+            ]
         else:
-            rates, origin_arbs, dest_arbs, tbl_warnings = extract_tables(doc, header)
+            # No schema assigned: use hardcoded legacy extractor as fallback.
+            header = _legacy_extract_header(doc)
+            rates, origin_arbs, dest_arbs, tbl_warnings, raw_pages = _legacy_extract_tables(
+                doc,
+                header,
+            )
+            tabs_out = [
+                {"name": "Rates", "rows": rates},
+                {"name": "Origin Arbitraries", "rows": origin_arbs},
+                {"name": "Destination Arbitraries", "rows": dest_arbs},
+            ]
 
         warnings.extend(tbl_warnings)
-
-        # Collect raw per-page text so the UI can show a "Raw" preview
-        raw_pages: List[Dict[str, Any]] = []
-        for i in range(page_count):
-            raw_pages.append({
-                "page": i + 1,
-                "text": doc[i].get_text("text"),
-            })
     except Exception as e:
         print(json.dumps({"error": f"Extraction failed: {e}"}))
         sys.stdout.flush()
