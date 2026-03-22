@@ -236,6 +236,247 @@ export const autoSchemasApi = {
     }),
 };
 
+// ─── Manual Schemas ─────────────────────────────────────
+export interface ManualSchemaBlock {
+  id: string;
+  type: "kv_pair" | "table" | "paragraph";
+  page: number;
+  y: number;
+  text?: string;
+  key?: string;
+  value?: string;
+  headers?: string[];
+  rows?: Record<string, string>[];
+}
+
+export interface ManualSchemaGroup {
+  id: string;
+  headers: string[];
+  rows: Record<string, string>[];
+  context: Record<string, string>;
+  pageStart: number;
+  pageEnd: number;
+}
+
+export interface ManualOutputColumn {
+  name: string;
+  sourceType: "column" | "context" | "conditional" | "static" | "regex";
+  sourceKey?: string;
+  staticValue?: string;
+  condition?: {
+    left: { type: "column" | "context" | "static"; value: string };
+    operator: "equals" | "notEquals" | "contains" | "gt" | "lt";
+    right: { type: "column" | "context" | "static"; value: string };
+    thenValue: string;
+    elseValue: string;
+  };
+  regexPattern?: string;
+  regexTarget?: "blocks" | "row" | "context";
+}
+
+export const manualSchemasApi = {
+  extractBlocks: (filePath: string) =>
+    request<{
+      sessionId: string;
+      fileName: string;
+      blocks: ManualSchemaBlock[];
+      groups: ManualSchemaGroup[];
+      detectedContextKeys: string[];
+    }>("/manual-schemas/extract-blocks", {
+      method: "POST",
+      body: JSON.stringify({ filePath }),
+    }),
+  getSession: (id: string) =>
+    request<{
+      id: string;
+      fileName: string;
+      filePath: string;
+      schemaId: string | null;
+      status: string;
+      blocks: ManualSchemaBlock[];
+      groups: ManualSchemaGroup[];
+      detectedContextKeys: string[];
+      createdAt: string;
+      updatedAt: string;
+    }>(`/manual-schemas/sessions/${id}`),
+  updateGroups: (id: string, groups: ManualSchemaGroup[]) =>
+    request<any>(`/manual-schemas/sessions/${id}/groups`, {
+      method: "PATCH",
+      body: JSON.stringify({ groups }),
+    }),
+  preview: (
+    id: string,
+    payload: {
+      outputColumns: ManualOutputColumn[];
+      editedGroups?: ManualSchemaGroup[];
+    },
+  ) =>
+    request<{
+      sessionId: string;
+      rowCount: number;
+      columns: string[];
+      rows: Record<string, string>[];
+    }>(`/manual-schemas/sessions/${id}/preview`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  listDefinitions: () => request<any[]>("/manual-schemas/definitions"),
+  saveDefinition: (data: {
+    name: string;
+    category?: string;
+    outputColumns: ManualOutputColumn[];
+  }) =>
+    request<any>("/manual-schemas/definitions", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  attachSchema: (sessionId: string, schemaId: string) =>
+    request<any>(`/manual-schemas/sessions/${sessionId}/schema`, {
+      method: "PATCH",
+      body: JSON.stringify({ schemaId }),
+    }),
+  exportSession: (sessionId: string, schemaId?: string) =>
+    request<{
+      sessionId: string;
+      schemaId: string;
+      rowCount: number;
+      exportPath: string;
+    }>(`/manual-schemas/sessions/${sessionId}/export`, {
+      method: "POST",
+      body: JSON.stringify({ schemaId }),
+    }),
+};
+
+// ─── Manual Schemas V2 ───────────────────────────────────
+
+export interface RawTableInfo {
+  id: string;
+  rawIndex: number;
+  page: number;
+  y: number;
+  headers: string[];
+  rowCount: number;
+  sampleRows: Record<string, string>[];
+}
+
+export interface ColumnComputeConfig {
+  // copy
+  sourceKey?: string;
+  // fixed
+  value?: string;
+  // conditional
+  sourceType?: "column" | "context";
+  compareValue?: string;
+  operator?: "equals" | "notEquals" | "contains" | "gt" | "lt";
+  thenValue?: string;
+  elseValue?: string;
+  // extract
+  preset?: string;
+  customPattern?: string;
+  // combine
+  sourceKeys?: string[];
+  separator?: string;
+}
+
+export interface ColumnConfig {
+  key: string;
+  label: string;
+  source: "detected" | "computed";
+  included: boolean;
+  format: string;
+  sampleValue: string;
+  computeType?: "copy" | "fixed" | "conditional" | "extract" | "combine";
+  computeConfig?: ColumnComputeConfig;
+}
+
+export interface GroupV2 {
+  id: string;
+  name: string;
+  rawTableIds: string[];
+  headers: string[];
+  rows: Record<string, string>[];
+  context: Record<string, string>;
+  pageStart: number;
+  pageEnd: number;
+  mergeConfidence: "exact" | "similar" | "manual";
+  columns: ColumnConfig[];
+}
+
+export interface SheetConfig {
+  name: string;
+  groupIds: string[];
+  includeContext: boolean;
+}
+
+export interface MsbSessionV2 {
+  id: string;
+  fileName: string;
+  filePath: string;
+  status: string;
+  rawTables: RawTableInfo[];
+  groups: GroupV2[];
+  sheets: SheetConfig[];
+  contextKeys: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MsbPreviewSheet {
+  name: string;
+  columns: string[];
+  rows: Record<string, string>[];
+  rowCount: number;
+  warnings: string[];
+}
+
+export interface MsbDefinitionV2 {
+  id: string;
+  name: string;
+  category: string;
+  version: number;
+  groups: GroupV2[];
+  sheets: SheetConfig[];
+  contextKeys: string[];
+  sampleFile?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const manualSchemasApiV2 = {
+  extract: (filePath: string) =>
+    request<MsbSessionV2>("/manual-schemas/extract", {
+      method: "POST",
+      body: JSON.stringify({ filePath }),
+    }),
+  getSession: (id: string) => request<MsbSessionV2>(`/manual-schemas/v2/sessions/${id}`),
+  updateGroups: (id: string, groups: GroupV2[]) =>
+    request<MsbSessionV2>(`/manual-schemas/v2/sessions/${id}/groups`, {
+      method: "PATCH",
+      body: JSON.stringify({ groups }),
+    }),
+  updateSheets: (id: string, sheets: SheetConfig[]) =>
+    request<MsbSessionV2>(`/manual-schemas/v2/sessions/${id}/sheets`, {
+      method: "PATCH",
+      body: JSON.stringify({ sheets }),
+    }),
+  preview: (id: string) =>
+    request<{ sessionId: string; sheets: MsbPreviewSheet[] }>(`/manual-schemas/v2/sessions/${id}/preview`, {
+      method: "POST",
+    }),
+  saveSchema: (id: string, data: { name: string; category?: string }) =>
+    request<MsbDefinitionV2>(`/manual-schemas/v2/sessions/${id}/save`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  exportSession: (id: string) =>
+    request<{ sessionId: string; sheetCount: number; exportPath: string }>(`/manual-schemas/v2/sessions/${id}/export`, {
+      method: "POST",
+    }),
+  listDefinitions: () => request<Omit<MsbDefinitionV2, "groups" | "sheets" | "contextKeys">[]>("/manual-schemas/v2/definitions"),
+  getDefinition: (id: string) => request<MsbDefinitionV2>(`/manual-schemas/v2/definitions/${id}`),
+  deleteDefinition: (id: string) => request<{ deleted: string }>(`/manual-schemas/v2/definitions/${id}`, { method: "DELETE" }),
+};
+
 // ─── Sessions ────────────────────────────────────────────
 export interface SessionSchemaFieldPayload {
   label: string;
