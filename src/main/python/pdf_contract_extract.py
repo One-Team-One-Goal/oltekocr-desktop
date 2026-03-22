@@ -1961,17 +1961,44 @@ def _legacy_scan_inline_labels(page: Any) -> List[Tuple[float, str, str]]:
             i += 1
             continue
 
+        if re.fullmatch(r"ORIGIN\s+VIA", text, re.IGNORECASE):
+            j = i + 1
+            while j < len(lines) and re.fullmatch(r"[:\s]*", lines[j][1]):
+                j += 1
+            if j < len(lines) and lines[j][1].strip():
+                found.append((y0, "origin_via", _legacy_city_only(lines[j][1])))
+                i = j + 1
+                continue
+
         m = re.match(r"ORIGIN(?!\s+VIA)\s*:\s*(.+)", text, re.IGNORECASE)
         if m:
             found.append((y0, "origin", _legacy_city_only(m.group(1))))
             i += 1
             continue
 
+        if re.fullmatch(r"ORIGIN", text, re.IGNORECASE):
+            j = i + 1
+            while j < len(lines) and re.fullmatch(r"[:\s]*", lines[j][1]):
+                j += 1
+            if j < len(lines) and lines[j][1].strip():
+                found.append((y0, "origin", _legacy_city_only(lines[j][1])))
+                i = j + 1
+                continue
+
         m = re.match(r"RATE\s+APPLICABLE\s+OVER\s*:\s*(.+)", text, re.IGNORECASE)
         if m:
             found.append((y0, "rate_over", _legacy_city_only(m.group(1))))
             i += 1
             continue
+
+        if re.fullmatch(r"RATE\s+APPLICABLE\s+OVER", text, re.IGNORECASE):
+            j = i + 1
+            while j < len(lines) and re.fullmatch(r"[:\s]*", lines[j][1]):
+                j += 1
+            if j < len(lines) and lines[j][1].strip():
+                found.append((y0, "rate_over", _legacy_city_only(lines[j][1])))
+                i = j + 1
+                continue
 
         i += 1
 
@@ -2180,12 +2207,12 @@ def _legacy_extract_tables(
             current_commodity = _legacy_short_commodity(commodity_match.group(1))
 
         origin_match = LEGACY_ORIGIN_RE.search(page_text)
-        if origin_match:
-            current_origin = _legacy_city_only(origin_match.group(1))
+        page_origin_hint = _legacy_city_only(origin_match.group(1)) if origin_match else ""
 
         origin_via_match = LEGACY_ORIGIN_VIA_RE.search(page_text)
-        if origin_via_match:
-            current_origin_via = _legacy_city_only(origin_via_match.group(1))
+        page_origin_via_hint = (
+            _legacy_city_only(origin_via_match.group(1)) if origin_via_match else ""
+        )
 
         scope_match = _legacy_parse_scope_unbracketed(page_text)
         if scope_match:
@@ -2195,8 +2222,9 @@ def _legacy_extract_tables(
             current_scope_arb = scope_arb_match
 
         rate_over_match = LEGACY_RATE_OVER_RE.search(page_text)
-        if rate_over_match:
-            current_rate_over = _legacy_city_only(rate_over_match.group(1))
+        page_rate_over_hint = (
+            _legacy_city_only(rate_over_match.group(1)) if rate_over_match else ""
+        )
 
         pairs = _legacy_parse_date_pairs(page_text)
         if pairs:
@@ -2305,6 +2333,31 @@ def _legacy_extract_tables(
                     if out["destination_city"]:
                         dest_arbs.append(out)
                         previous_output[section] = out
+
+        # Update carry-forward context after processing tables on this page.
+        # This keeps continuation tables at the top of a page from inheriting
+        # labels that appear lower on the same page.
+        has_inline_origin = False
+        has_inline_origin_via = False
+        has_inline_rate_over = False
+        for _, label_type, label_value in inline_labels:
+            if label_type == "origin":
+                current_origin = label_value
+                has_inline_origin = True
+            elif label_type == "origin_via":
+                current_origin_via = label_value
+                has_inline_origin_via = True
+            elif label_type == "rate_over":
+                current_rate_over = label_value
+                has_inline_rate_over = True
+
+        # Fallback to page-level regex if inline scan missed a label type.
+        if page_origin_hint and not has_inline_origin:
+            current_origin = page_origin_hint
+        if page_origin_via_hint and not has_inline_origin_via:
+            current_origin_via = page_origin_via_hint
+        if page_rate_over_hint and not has_inline_rate_over:
+            current_rate_over = page_rate_over_hint
 
     end_rates = _legacy_blank_row(LEGACY_RATES_COLS)
     end_rates["Carrier"] = "DOC END"
