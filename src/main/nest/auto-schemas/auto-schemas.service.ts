@@ -1,29 +1,52 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import { Injectable, NotFoundException, OnModuleInit } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { CreateAutoSchemaDto, GenerateAutoSchemaLlmDto } from "./auto-schemas.dto";
 import { AutoSchemaLlmService } from "./auto-schema-llm.service";
 import { parseLlmSchemaOutput } from "./llm-schema-parser";
 
 @Injectable()
-export class AutoSchemasService {
+export class AutoSchemasService implements OnModuleInit {
   constructor(
     private readonly prisma: PrismaService,
     private readonly autoSchemaLlmService: AutoSchemaLlmService,
   ) {}
 
+  async onModuleInit(): Promise<void> {
+    await this.prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS auto_schemas (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        document_id TEXT NOT NULL DEFAULT '',
+        uploaded_file_name TEXT NOT NULL DEFAULT '',
+        raw_json TEXT NOT NULL DEFAULT '{}',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+  }
+
   async list() {
-    const rows = await (this.prisma as any).autoSchema.findMany({
-      orderBy: { createdAt: "desc" },
-      take: 100,
-    });
+    const rows = await this.prisma.$queryRawUnsafe<any[]>(`
+      SELECT id, name, document_id, uploaded_file_name, raw_json, created_at, updated_at
+      FROM auto_schemas
+      ORDER BY created_at DESC
+      LIMIT 100
+    `);
 
     return rows.map((row: any) => this.toResponse(row));
   }
 
   async getById(id: string) {
-    const row = await (this.prisma as any).autoSchema.findUnique({
-      where: { id },
-    });
+    const rows = await this.prisma.$queryRawUnsafe<any[]>(
+      `
+      SELECT id, name, document_id, uploaded_file_name, raw_json, created_at, updated_at
+      FROM auto_schemas
+      WHERE id = ?
+      LIMIT 1
+      `,
+      id,
+    );
+    const row = rows[0] ?? null;
 
     if (!row) {
       throw new NotFoundException(`Auto schema ${id} not found`);
@@ -44,13 +67,20 @@ export class AutoSchemasService {
       },
     });
 
-    return this.toResponse(created);
+    return this.getById(id);
   }
 
   async generateLlmFromAutoSchema(id: string, dto: GenerateAutoSchemaLlmDto) {
-    const row = await (this.prisma as any).autoSchema.findUnique({
-      where: { id },
-    });
+    const rows = await this.prisma.$queryRawUnsafe<any[]>(
+      `
+      SELECT id, name, document_id, uploaded_file_name, raw_json, created_at, updated_at
+      FROM auto_schemas
+      WHERE id = ?
+      LIMIT 1
+      `,
+      id,
+    );
+    const row = rows[0] ?? null;
 
     if (!row) {
       throw new NotFoundException(`Auto schema ${id} not found`);
@@ -75,8 +105,8 @@ export class AutoSchemasService {
 
     return {
       autoSchemaId: row.id,
-      documentId: row.documentId,
-      uploadedFileName: row.uploadedFileName,
+      documentId: row.document_id,
+      uploadedFileName: row.uploaded_file_name,
       llmJson,
       parsed,
     };

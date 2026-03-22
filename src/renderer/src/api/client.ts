@@ -236,6 +236,103 @@ export const autoSchemasApi = {
     }),
 };
 
+// ─── Manual Schemas ─────────────────────────────────────
+export interface ManualSchemaBlock {
+  id: string;
+  type: "kv_pair" | "table" | "paragraph";
+  page: number;
+  y: number;
+  text?: string;
+  key?: string;
+  value?: string;
+  headers?: string[];
+  rows?: Record<string, string>[];
+}
+
+export interface ManualSchemaGroup {
+  id: string;
+  headers: string[];
+  rows: Record<string, string>[];
+  context: Record<string, string>;
+  pageStart: number;
+  pageEnd: number;
+}
+
+export interface ManualOutputColumn {
+  name: string;
+  sourceType: "column" | "context" | "conditional" | "static" | "regex";
+  sourceKey?: string;
+  staticValue?: string;
+  condition?: {
+    left: { type: "column" | "context" | "static"; value: string };
+    operator: "equals" | "notEquals" | "contains" | "gt" | "lt";
+    right: { type: "column" | "context" | "static"; value: string };
+    thenValue: string;
+    elseValue: string;
+  };
+  regexPattern?: string;
+  regexTarget?: "blocks" | "row" | "context";
+}
+
+export const manualSchemasApi = {
+  extractBlocks: (filePath: string) =>
+    request<{
+      sessionId: string;
+      fileName: string;
+      blocks: ManualSchemaBlock[];
+      groups: ManualSchemaGroup[];
+      detectedContextKeys: string[];
+    }>("/manual-schemas/extract-blocks", {
+      method: "POST",
+      body: JSON.stringify({ filePath }),
+    }),
+  getSession: (id: string) =>
+    request<{
+      id: string;
+      fileName: string;
+      filePath: string;
+      schemaId: string | null;
+      status: string;
+      blocks: ManualSchemaBlock[];
+      groups: ManualSchemaGroup[];
+      detectedContextKeys: string[];
+      createdAt: string;
+      updatedAt: string;
+    }>(`/manual-schemas/sessions/${id}`),
+  updateGroups: (id: string, groups: ManualSchemaGroup[]) =>
+    request<any>(`/manual-schemas/sessions/${id}/groups`, {
+      method: "PATCH",
+      body: JSON.stringify({ groups }),
+    }),
+  preview: (id: string, payload: { outputColumns: ManualOutputColumn[]; editedGroups?: ManualSchemaGroup[] }) =>
+    request<{ sessionId: string; rowCount: number; columns: string[]; rows: Record<string, string>[] }>(
+      `/manual-schemas/sessions/${id}/preview`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      },
+    ),
+  listDefinitions: () => request<any[]>("/manual-schemas/definitions"),
+  saveDefinition: (data: { name: string; category?: string; outputColumns: ManualOutputColumn[] }) =>
+    request<any>("/manual-schemas/definitions", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  attachSchema: (sessionId: string, schemaId: string) =>
+    request<any>(`/manual-schemas/sessions/${sessionId}/schema`, {
+      method: "PATCH",
+      body: JSON.stringify({ schemaId }),
+    }),
+  exportSession: (sessionId: string, schemaId?: string) =>
+    request<{ sessionId: string; schemaId: string; rowCount: number; exportPath: string }>(
+      `/manual-schemas/sessions/${sessionId}/export`,
+      {
+        method: "POST",
+        body: JSON.stringify({ schemaId }),
+      },
+    ),
+};
+
 // ─── Sessions ────────────────────────────────────────────
 export interface SessionSchemaFieldPayload {
   label: string;

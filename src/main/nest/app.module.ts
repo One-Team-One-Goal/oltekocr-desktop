@@ -11,6 +11,7 @@ import { SessionPresetsModule } from "./session-presets/session-presets.module";
 import { ContractExtractionModule } from "./contract-extraction/contract-extraction.module";
 import { ModelsModule } from "./models/models.module";
 import { AutoSchemasModule } from "./auto-schemas/auto-schemas.module";
+import { ManualSchemasModule } from "./manual-schemas/manual-schemas.module";
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { AutoSchemasModule } from "./auto-schemas/auto-schemas.module";
     ContractExtractionModule,
     ModelsModule,
     AutoSchemasModule,
+    ManualSchemasModule,
   ],
 })
 export class AppModule {}

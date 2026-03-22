@@ -62,7 +62,6 @@ import type { SessionListItem, SessionMode } from "@shared/types";
 import { WindowControls } from "@/components/layout/SidebarContext";
 import { markUnsaved, nextUnnamedName } from "@/lib/unsaved-sessions";
 import {
-  SchemaBuilderDialog,
   type SchemaPresetDraft,
   type SchemaPresetTab,
 } from "./SchemaBuilderDialog";
@@ -783,14 +782,9 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
           </DialogContent>
         </Dialog>
 
-        <SchemaBuilderDialog
+        <ManualSchemaBuilderDialog
           open={manualSchemaBuilderOpen}
           onClose={() => setManualSchemaBuilderOpen(false)}
-          initialPreset={{
-            name: "Other Document Schema",
-            extractionMode: "GENERIC",
-            tabs: [],
-          }}
           submitting={schemaBuilderSubmitting}
           onSubmit={(preset) => handleSchemaBuilderSubmit(preset, "manual")}
         />
