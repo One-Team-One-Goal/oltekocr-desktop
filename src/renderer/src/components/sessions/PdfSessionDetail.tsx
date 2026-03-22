@@ -1,8 +1,4 @@
-<<<<<<< Updated upstream
-import { useState, useCallback, useEffect, useRef } from "react";
-=======
-import { useState, useCallback, useEffect, useMemo } from "react";
->>>>>>> Stashed changes
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
   sessionsApi,

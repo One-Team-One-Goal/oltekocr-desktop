@@ -286,17 +286,11 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
         documentType: docType,
         columns: [],
       });
-<<<<<<< Updated upstream
-      const docs = await sessionsApi.ingestFiles(session.id, selectedFiles);
-=======
-
       if (schemaPresetId) {
         await sessionsApi.assignSessionSchemaPreset(session.id, schemaPresetId);
       }
 
-      // PDF mode is single-document per session.
-      const docs = await sessionsApi.ingestFiles(session.id, [selectedFile]);
->>>>>>> Stashed changes
+      const docs = await sessionsApi.ingestFiles(session.id, selectedFiles);
       const docIds = docs.map((d: { id: string }) => d.id);
       if (docIds.length > 0) {
         await queueApi.add(docIds);
