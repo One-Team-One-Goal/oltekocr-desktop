@@ -1,4 +1,6 @@
 import { useMemo, useState } from "react";
+import Lottie from "lottie-react";
+import trdntLoading from "@/assets/trdnt_loading.json";
 import {
   Dialog,
   DialogContent,
@@ -14,7 +16,6 @@ import {
   manualSchemasApi,
   type ManualOutputColumn,
   type ManualSchemaBlock,
-  type ManualSchemaGroup,
 } from "@/api/client";
 import type { SchemaPresetDraft } from "./SchemaBuilderDialog";
 import { Loader2, Plus, Trash2 } from "lucide-react";
@@ -26,7 +27,26 @@ interface ManualSchemaBuilderDialogProps {
   onSubmit: (preset: SchemaPresetDraft) => Promise<void> | void;
 }
 
-type BuilderTab = "groups" | "columns" | "preview";
+type BuilderTab = "tables" | "conditions";
+
+interface TableGroup {
+  headers: string[];
+  tableIds: string[];
+  tables: ManualSchemaBlock[];
+  splits?: Array<{
+    id: string;
+    condition: {
+      field: string;
+      operator: "equals" | "notEquals" | "contains" | "gt" | "lt";
+      value: string;
+    };
+    rows: Record<string, string>[];
+  }>;
+}
+
+interface ConditionColumn extends ManualOutputColumn {
+  tableGroupIndex: number;
+}
 
 function normalizeFieldKey(input: string): string {
   const key = input
@@ -37,47 +57,54 @@ function normalizeFieldKey(input: string): string {
   return key || "column";
 }
 
+function groupTablesByHeaders(tableBlocks: ManualSchemaBlock[]): TableGroup[] {
+  const headerKey = (headers: string[]) => JSON.stringify(headers.sort());
+  const groups = new Map<string, TableGroup>();
+
+  for (const block of tableBlocks) {
+    if (block.type !== "table" || !block.headers) continue;
+    const key = headerKey(block.headers);
+    if (!groups.has(key)) {
+      groups.set(key, {
+        headers: block.headers,
+        tableIds: [],
+        tables: [],
+      });
+    }
+    const group = groups.get(key)!;
+    group.tableIds.push(block.id);
+    group.tables.push(block);
+  }
+
+  return Array.from(groups.values());
+}
+
 export function ManualSchemaBuilderDialog({
   open,
   onClose,
   submitting = false,
   onSubmit,
 }: ManualSchemaBuilderDialogProps) {
-  const [tab, setTab] = useState<BuilderTab>("groups");
+  const [tab, setTab] = useState<BuilderTab>("tables");
   const [schemaName, setSchemaName] = useState("Other Manual Schema");
   const [schemaCategory, setSchemaCategory] = useState("OTHER");
   const [sessionId, setSessionId] = useState("");
   const [fileName, setFileName] = useState("");
   const [blocks, setBlocks] = useState<ManualSchemaBlock[]>([]);
-  const [groups, setGroups] = useState<ManualSchemaGroup[]>([]);
-  const [outputColumns, setOutputColumns] = useState<ManualOutputColumn[]>([]);
-  const [previewRows, setPreviewRows] = useState<Record<string, string>[]>([]);
-  const [previewColumns, setPreviewColumns] = useState<string[]>([]);
+  const [tableGroups, setTableGroups] = useState<TableGroup[]>([]);
+  const [conditionColumns, setConditionColumns] = useState<ConditionColumn[]>([]);
+  const [selectedTableGroupIndex, setSelectedTableGroupIndex] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
   const hasLoaded = !!sessionId;
-
-  const contextKeys = useMemo(() => {
-    const keys = new Set<string>();
-    for (const g of groups) {
-      for (const key of Object.keys(g.context || {})) {
-        keys.add(key);
-      }
-    }
-    return Array.from(keys);
-  }, [groups]);
+  const selectedGroup = tableGroups[selectedTableGroupIndex];
 
   const sampleColumnKeys = useMemo(() => {
-    const keys = new Set<string>();
-    for (const g of groups) {
-      const first = g.rows?.[0] || {};
-      for (const key of Object.keys(first)) {
-        keys.add(key);
-      }
-    }
-    return Array.from(keys);
-  }, [groups]);
+    if (!selectedGroup || selectedGroup.tables.length === 0) return [];
+    const firstTable = selectedGroup.tables[0];
+    return firstTable.headers || [];
+  }, [selectedGroup]);
 
   const pickPdfAndExtract = async () => {
     setError("");
@@ -91,72 +118,83 @@ export function ManualSchemaBuilderDialog({
       setSessionId(extracted.sessionId);
       setFileName(extracted.fileName);
       setBlocks(extracted.blocks || []);
-      setGroups(extracted.groups || []);
-      setTab("groups");
-      setPreviewRows([]);
-      setPreviewColumns([]);
-
-      if (outputColumns.length === 0) {
-        const firstCtx = extracted.detectedContextKeys?.[0];
-        const firstCol = extracted.groups?.[0]?.headers?.[0];
-        setOutputColumns([
-          {
-            name: firstCol || "value",
-            sourceType: "column",
-            sourceKey: firstCol || "",
-          },
-          {
-            name: firstCtx || "context",
-            sourceType: "context",
-            sourceKey: firstCtx || "",
-          },
-        ]);
+      
+      // Group tables by headers
+      const groups = groupTablesByHeaders(extracted.blocks || []);
+      setTableGroups(groups);
+      setSelectedTableGroupIndex(0);
+      setTab("tables");
+      
+      // Initialize condition columns from first table group
+      if (groups.length > 0 && groups[0].tables.length > 0) {
+        const firstTable = groups[0].tables[0];
+        const initCols: ConditionColumn[] = (firstTable.headers || []).map((header) => ({
+          name: header,
+          sourceType: "column",
+          sourceKey: header,
+          tableGroupIndex: 0,
+        }));
+        setConditionColumns(initCols);
       }
     } catch (err: any) {
-      setError(err?.message || "Failed to extract manual schema blocks");
+      const message = String(err?.message || "");
+      if (/failed to fetch|networkerror|err_connection_refused/i.test(message)) {
+        setError(
+          "Cannot reach backend API (localhost:3847). Start the Electron app with npm run dev and keep it running, then try Upload PDF again.",
+        );
+      } else {
+        setError(message || "Failed to extract manual schema blocks");
+      }
     } finally {
       setBusy(false);
     }
   };
 
-  const updateGroupContext = (groupId: string, key: string, value: string) => {
-    setGroups((prev) =>
-      prev.map((g) =>
-        g.id === groupId
-          ? {
-              ...g,
-              context: { ...g.context, [key]: value },
-            }
-          : g,
-      ),
-    );
-  };
-
-  const addOutputColumn = () => {
-    setOutputColumns((prev) => [
+  const addConditionColumn = () => {
+    const colIndex = conditionColumns.length;
+    setConditionColumns((prev) => [
       ...prev,
-      { name: `column_${prev.length + 1}`, sourceType: "column", sourceKey: "" },
+      {
+        name: `column_${colIndex + 1}`,
+        sourceType: "column",
+        sourceKey: "",
+        tableGroupIndex: selectedTableGroupIndex,
+      },
     ]);
   };
 
-  const runPreview = async () => {
-    if (!sessionId) return;
-    setBusy(true);
-    setError("");
-    try {
-      await manualSchemasApi.updateGroups(sessionId, groups);
-      const preview = await manualSchemasApi.preview(sessionId, {
-        outputColumns,
-        editedGroups: groups,
-      });
-      setPreviewRows(preview.rows || []);
-      setPreviewColumns(preview.columns || []);
-      setTab("preview");
-    } catch (err: any) {
-      setError(err?.message || "Preview failed");
-    } finally {
-      setBusy(false);
+  const splitTableByCondition = (groupIndex: number, field: string, operator: "equals" | "notEquals" | "contains" | "gt" | "lt", value: string) => {
+    if (!tableGroups[groupIndex]) return;
+    
+    const group = tableGroups[groupIndex];
+    const splitId = `split_${group.splits?.length || 0}_${Date.now()}`;
+    
+    const filteredRows: Record<string, string>[] = [];
+    for (const table of group.tables) {
+      for (const row of table.rows || []) {
+        const fieldValue = String(row[field] || "");
+        let matches = false;
+        
+        if (operator === "equals") matches = fieldValue === value;
+        else if (operator === "notEquals") matches = fieldValue !== value;
+        else if (operator === "contains") matches = fieldValue.includes(value);
+        else if (operator === "gt") matches = Number(fieldValue) > Number(value);
+        else if (operator === "lt") matches = Number(fieldValue) < Number(value);
+        
+        if (matches) filteredRows.push(row);
+      }
     }
+
+    setTableGroups((prev) => {
+      const updated = [...prev];
+      if (!updated[groupIndex].splits) updated[groupIndex].splits = [];
+      updated[groupIndex].splits!.push({
+        id: splitId,
+        condition: { field, operator, value },
+        rows: filteredRows,
+      });
+      return updated;
+    });
   };
 
   const saveAndContinue = async () => {
@@ -169,18 +207,18 @@ export function ManualSchemaBuilderDialog({
     setBusy(true);
     setError("");
     try {
-      await manualSchemasApi.updateGroups(sessionId, groups);
+      // Save schema with condition-based columns
       const saved = await manualSchemasApi.saveDefinition({
         name: schemaName.trim(),
         category: schemaCategory.trim() || "OTHER",
-        outputColumns,
+        outputColumns: conditionColumns,
       });
       await manualSchemasApi.attachSchema(sessionId, saved.id);
 
       const tabs = [
         {
-          name: "Manual Output",
-          fields: outputColumns.map((c) => ({
+          name: "Extracted Tables",
+          fields: conditionColumns.map((c) => ({
             label: c.name,
             fieldKey: normalizeFieldKey(c.name),
             regexRule: c.regexPattern || "",
@@ -214,11 +252,12 @@ export function ManualSchemaBuilderDialog({
         <DialogHeader>
           <DialogTitle>Manual Schema Builder</DialogTitle>
           <DialogDescription>
-            Upload PDF, review extracted blocks, map output columns, preview rows, then save reusable schema.
+            Upload PDF, group tables by column headers, define split conditions, and map columns to create schema.
           </DialogDescription>
         </DialogHeader>
 
         <div className="grid grid-cols-[340px_1fr] gap-4 min-h-0 flex-1">
+          {/* Left Sidebar: Raw Blocks */}
           <div className="border rounded-md p-3 min-h-0 flex flex-col">
             <div className="flex items-center justify-between gap-2 pb-2 border-b">
               <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Raw Blocks</p>
@@ -227,10 +266,18 @@ export function ManualSchemaBuilderDialog({
               </Button>
             </div>
             <p className="text-xs text-muted-foreground mt-2 truncate" title={fileName}>{fileName || "No file loaded"}</p>
+            {busy && (
+              <div className="flex-1 min-h-0 flex items-center justify-center">
+                <div className="w-36 h-36 [filter:brightness(0)_invert(1)]">
+                  <Lottie animationData={trdntLoading} loop={true} />
+                </div>
+              </div>
+            )}
+            {!busy && (
             <ScrollArea className="mt-2 flex-1 min-h-0 pr-2">
               <div className="space-y-2">
                 {blocks.map((b) => (
-                  <div key={b.id} className="rounded border px-2 py-1.5 text-xs">
+                  <div key={b.id} className="rounded border px-2 py-1.5 text-xs bg-card hover:bg-accent cursor-pointer">
                     <p className="text-[10px] text-muted-foreground">p{b.page} • y{Math.round(b.y)} • {b.type}</p>
                     {b.type === "kv_pair" ? (
                       <p className="mt-1"><span className="font-semibold">{b.key}</span>: {b.value}</p>
@@ -243,46 +290,160 @@ export function ManualSchemaBuilderDialog({
                 ))}
               </div>
             </ScrollArea>
+            )}
           </div>
 
+          {/* Right Main Area: Tabs */}
           <div className="border rounded-md p-3 min-h-0 flex flex-col">
             <div className="flex items-center gap-2 pb-2 border-b">
-              <Button size="sm" variant={tab === "groups" ? "secondary" : "ghost"} onClick={() => setTab("groups")}>Groups</Button>
-              <Button size="sm" variant={tab === "columns" ? "secondary" : "ghost"} onClick={() => setTab("columns")}>Output Columns</Button>
-              <Button size="sm" variant={tab === "preview" ? "secondary" : "ghost"} onClick={() => setTab("preview")}>Preview</Button>
+              <Button size="sm" variant={tab === "tables" ? "secondary" : "ghost"} onClick={() => setTab("tables")}>
+                Tables ({tableGroups.length})
+              </Button>
+              <Button size="sm" variant={tab === "conditions" ? "secondary" : "ghost"} onClick={() => setTab("conditions")}>
+                Conditions
+              </Button>
               <div className="ml-auto flex items-center gap-2">
-                <Button size="sm" variant="outline" onClick={runPreview} disabled={!hasLoaded || busy || submitting}>Run Preview</Button>
                 <Button size="sm" onClick={saveAndContinue} disabled={!hasLoaded || busy || submitting}>Use Schema</Button>
               </div>
             </div>
 
             {error && <p className="text-xs text-destructive mt-2">{error}</p>}
 
-            {tab === "groups" && (
+            {/* Tables Tab */}
+            {tab === "tables" && (
               <ScrollArea className="mt-3 flex-1 min-h-0 pr-2">
                 <div className="space-y-2">
-                  {groups.map((group) => (
-                    <div key={group.id} className="rounded border p-2 space-y-2">
-                      <p className="text-xs font-medium">Rows: {group.rows?.length || 0} • Pages: {group.pageStart}-{group.pageEnd}</p>
-                      <div className="grid grid-cols-2 gap-2">
-                        {Object.entries(group.context || {}).map(([key, value]) => (
-                          <div key={key}>
-                            <Label className="text-[11px]">{key}</Label>
-                            <Input
-                              className="h-7 text-xs"
-                              value={value || ""}
-                              onChange={(e) => updateGroupContext(group.id, key, e.target.value)}
-                            />
-                          </div>
-                        ))}
+                  {/* Table Group Selector */}
+                  <div className="space-y-2 pb-3 border-b">
+                    <p className="text-xs font-semibold">Table Groups by Headers</p>
+                    {tableGroups.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">No tables found. Upload a PDF to get started.</p>
+                    ) : (
+                      tableGroups.map((group, idx) => (
+                        <div
+                          key={idx}
+                          className={`rounded border p-2 cursor-pointer transition ${
+                            selectedTableGroupIndex === idx ? "border-primary bg-accent" : "hover:bg-accent"
+                          }`}
+                          onClick={() => {
+                            setSelectedTableGroupIndex(idx);
+                            setConditionColumns(
+                              group.headers.map((h) => ({
+                                name: h,
+                                sourceType: "column" as const,
+                                sourceKey: h,
+                                tableGroupIndex: idx,
+                              }))
+                            );
+                          }}
+                        >
+                          <p className="text-xs font-medium">Group {idx + 1}: {group.headers.join(" | ")}</p>
+                          <p className="text-[10px] text-muted-foreground mt-1">{group.tableIds.length} table(s)</p>
+                        </div>
+                      ))
+                    )}
+                  </div>
+
+                  {/* Split Table Section */}
+                  {selectedGroup && (
+                    <div className="space-y-2 pb-3 border-b">
+                      <p className="text-xs font-semibold">Split Tables by Condition</p>
+                      <div className="grid grid-cols-[1fr_110px_1fr_auto] gap-2 items-end">
+                        <div>
+                          <Label className="text-[11px]">Field</Label>
+                          <select className="h-8 w-full rounded border bg-background px-2 text-xs" id="split-field">
+                            {sampleColumnKeys.map((key) => (
+                              <option key={key} value={key}>{key}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <Label className="text-[11px]">Operator</Label>
+                          <select className="h-8 w-full rounded border bg-background px-2 text-xs" id="split-op">
+                            <option value="equals">equals</option>
+                            <option value="notEquals">notEquals</option>
+                            <option value="contains">contains</option>
+                            <option value="gt">gt</option>
+                            <option value="lt">lt</option>
+                          </select>
+                        </div>
+                        <div>
+                          <Label className="text-[11px]">Value</Label>
+                          <Input className="h-8 text-xs" id="split-value" placeholder="value" />
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            const field = (document.getElementById("split-field") as HTMLSelectElement)?.value;
+                            const op = (document.getElementById("split-op") as HTMLSelectElement)?.value as "equals" | "notEquals" | "contains" | "gt" | "lt";
+                            const value = (document.getElementById("split-value") as HTMLInputElement)?.value;
+                            if (field && op && value) {
+                              splitTableByCondition(selectedTableGroupIndex, field, op, value);
+                              (document.getElementById("split-value") as HTMLInputElement).value = "";
+                            }
+                          }}
+                        >
+                          Split
+                        </Button>
                       </div>
+
+                      {/* Show splits if any */}
+                      {selectedGroup.splits && selectedGroup.splits.length > 0 && (
+                        <div className="space-y-1 mt-2">
+                          {selectedGroup.splits.map((split, idx) => (
+                            <div key={split.id} className="rounded bg-muted p-1.5 text-xs">
+                              <p className="font-medium">
+                                Split {idx + 1}: {split.condition.field} {split.condition.operator} "{split.condition.value}"
+                              </p>
+                              <p className="text-[10px] text-muted-foreground">{split.rows.length} matching rows</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
-                  ))}
+                  )}
+
+                  {/* Preview tables in group */}
+                  {selectedGroup && (
+                    <div className="space-y-2">
+                      <p className="text-xs font-semibold">Tables in Group</p>
+                      {selectedGroup.tables.map((table, idx) => (
+                        <div key={table.id} className="rounded border p-2 bg-card">
+                          <p className="text-xs font-medium mb-1">Table {idx + 1} (Page {table.page})</p>
+                          <div className="max-h-40 overflow-auto text-xs border rounded">
+                            <table className="w-full">
+                              <thead className="sticky top-0 bg-muted">
+                                <tr>
+                                  {(table.headers || []).map((h) => (
+                                    <th key={h} className="text-left px-1 py-0.5 text-[10px] border-b">{h}</th>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {(table.rows || []).slice(0, 3).map((row, ridx) => (
+                                  <tr key={ridx}>
+                                    {(table.headers || []).map((h) => (
+                                      <td key={h} className="px-1 py-0.5 text-[10px] border-b">{row[h] || ""}</td>
+                                    ))}
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                          {(table.rows?.length ?? 0) > 3 && (
+                            <p className="text-[10px] text-muted-foreground mt-1">...and {(table.rows?.length ?? 0) - 3} more rows</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </ScrollArea>
             )}
 
-            {tab === "columns" && (
+            {/* Conditions Tab */}
+            {tab === "conditions" && (
               <ScrollArea className="mt-3 flex-1 min-h-0 pr-2">
                 <div className="space-y-2">
                   <div className="grid grid-cols-2 gap-2">
@@ -296,12 +457,12 @@ export function ManualSchemaBuilderDialog({
                     </div>
                   </div>
 
-                  <Button size="sm" variant="outline" onClick={addOutputColumn}>
-                    <Plus className="h-3.5 w-3.5 mr-1" /> Add Output Column
+                  <Button size="sm" variant="outline" onClick={addConditionColumn} disabled={!hasLoaded}>
+                    <Plus className="h-3.5 w-3.5 mr-1" /> Add Column
                   </Button>
 
-                  {outputColumns.map((col, idx) => (
-                    <div key={idx} className="rounded border p-2 space-y-2">
+                  {conditionColumns.map((col, idx) => (
+                    <div key={idx} className="rounded border p-2 space-y-2 bg-card">
                       <div className="grid grid-cols-[1fr_130px_1fr_auto] gap-2 items-end">
                         <div>
                           <Label className="text-[11px]">Output Name</Label>
@@ -309,8 +470,8 @@ export function ManualSchemaBuilderDialog({
                             className="h-8 text-xs"
                             value={col.name}
                             onChange={(e) =>
-                              setOutputColumns((prev) =>
-                                prev.map((item, i) => (i === idx ? { ...item, name: e.target.value } : item)),
+                              setConditionColumns((prev) =>
+                                prev.map((item, i) => (i === idx ? { ...item, name: e.target.value } : item))
                               )
                             }
                           />
@@ -321,7 +482,7 @@ export function ManualSchemaBuilderDialog({
                             className="h-8 w-full rounded border bg-background px-2 text-xs"
                             value={col.sourceType}
                             onChange={(e) =>
-                              setOutputColumns((prev) =>
+                              setConditionColumns((prev) =>
                                 prev.map((item, i) =>
                                   i === idx
                                     ? {
@@ -329,12 +490,11 @@ export function ManualSchemaBuilderDialog({
                                         sourceType: e.target.value as ManualOutputColumn["sourceType"],
                                       }
                                     : item,
-                                ),
+                                )
                               )
                             }
                           >
                             <option value="column">column</option>
-                            <option value="context">context</option>
                             <option value="static">static</option>
                             <option value="regex">regex</option>
                             <option value="conditional">conditional</option>
@@ -344,7 +504,7 @@ export function ManualSchemaBuilderDialog({
                           <Label className="text-[11px]">Source Key / Value</Label>
                           <Input
                             className="h-8 text-xs"
-                            list={col.sourceType === "column" ? "manual-column-keys" : col.sourceType === "context" ? "manual-context-keys" : undefined}
+                            list={col.sourceType === "column" ? "manual-column-keys" : undefined}
                             value={
                               col.sourceType === "static"
                                 ? col.staticValue || ""
@@ -353,7 +513,7 @@ export function ManualSchemaBuilderDialog({
                                   : col.sourceKey || ""
                             }
                             onChange={(e) =>
-                              setOutputColumns((prev) =>
+                              setConditionColumns((prev) =>
                                 prev.map((item, i) => {
                                   if (i !== idx) return item;
                                   if (item.sourceType === "static") {
@@ -363,7 +523,7 @@ export function ManualSchemaBuilderDialog({
                                     return { ...item, regexPattern: e.target.value };
                                   }
                                   return { ...item, sourceKey: e.target.value };
-                                }),
+                                })
                               )
                             }
                           />
@@ -372,7 +532,7 @@ export function ManualSchemaBuilderDialog({
                           variant="ghost"
                           size="icon"
                           className="h-8 w-8"
-                          onClick={() => setOutputColumns((prev) => prev.filter((_, i) => i !== idx))}
+                          onClick={() => setConditionColumns((prev) => prev.filter((_, i) => i !== idx))}
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                         </Button>
@@ -387,7 +547,7 @@ export function ManualSchemaBuilderDialog({
                               placeholder="columnKey"
                               value={col.condition?.left.value || ""}
                               onChange={(e) =>
-                                setOutputColumns((prev) =>
+                                setConditionColumns((prev) =>
                                   prev.map((item, i) =>
                                     i === idx
                                       ? {
@@ -404,7 +564,7 @@ export function ManualSchemaBuilderDialog({
                                           },
                                         }
                                       : item,
-                                  ),
+                                  )
                                 )
                               }
                             />
@@ -415,7 +575,7 @@ export function ManualSchemaBuilderDialog({
                               className="h-8 w-full rounded border bg-background px-2 text-xs"
                               value={col.condition?.operator || "equals"}
                               onChange={(e) =>
-                                setOutputColumns((prev) =>
+                                setConditionColumns((prev) =>
                                   prev.map((item, i) =>
                                     i === idx
                                       ? {
@@ -429,7 +589,7 @@ export function ManualSchemaBuilderDialog({
                                           },
                                         }
                                       : item,
-                                  ),
+                                  )
                                 )
                               }
                             >
@@ -447,7 +607,7 @@ export function ManualSchemaBuilderDialog({
                               placeholder="value"
                               value={col.condition?.right.value || ""}
                               onChange={(e) =>
-                                setOutputColumns((prev) =>
+                                setConditionColumns((prev) =>
                                   prev.map((item, i) =>
                                     i === idx
                                       ? {
@@ -464,7 +624,7 @@ export function ManualSchemaBuilderDialog({
                                           },
                                         }
                                       : item,
-                                  ),
+                                  )
                                 )
                               }
                             />
@@ -475,7 +635,7 @@ export function ManualSchemaBuilderDialog({
                               className="h-8 text-xs"
                               value={col.condition?.thenValue || ""}
                               onChange={(e) =>
-                                setOutputColumns((prev) =>
+                                setConditionColumns((prev) =>
                                   prev.map((item, i) =>
                                     i === idx
                                       ? {
@@ -489,7 +649,7 @@ export function ManualSchemaBuilderDialog({
                                           },
                                         }
                                       : item,
-                                  ),
+                                  )
                                 )
                               }
                             />
@@ -500,7 +660,7 @@ export function ManualSchemaBuilderDialog({
                               className="h-8 text-xs"
                               value={col.condition?.elseValue || ""}
                               onChange={(e) =>
-                                setOutputColumns((prev) =>
+                                setConditionColumns((prev) =>
                                   prev.map((item, i) =>
                                     i === idx
                                       ? {
@@ -514,7 +674,7 @@ export function ManualSchemaBuilderDialog({
                                           },
                                         }
                                       : item,
-                                  ),
+                                  )
                                 )
                               }
                             />
@@ -529,40 +689,8 @@ export function ManualSchemaBuilderDialog({
                       <option key={key} value={key} />
                     ))}
                   </datalist>
-                  <datalist id="manual-context-keys">
-                    {contextKeys.map((key) => (
-                      <option key={key} value={key} />
-                    ))}
-                  </datalist>
                 </div>
               </ScrollArea>
-            )}
-
-            {tab === "preview" && (
-              <div className="mt-3 flex-1 min-h-0 overflow-auto rounded border">
-                {previewRows.length === 0 ? (
-                  <p className="p-3 text-xs text-muted-foreground">No preview rows yet. Click Run Preview.</p>
-                ) : (
-                  <table className="min-w-full text-xs">
-                    <thead className="sticky top-0 bg-muted">
-                      <tr>
-                        {previewColumns.map((col) => (
-                          <th key={col} className="text-left px-2 py-1 border-b">{col}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {previewRows.map((row, idx) => (
-                        <tr key={idx}>
-                          {previewColumns.map((col) => (
-                            <td key={col} className="px-2 py-1 border-b align-top">{row[col] || ""}</td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </div>
             )}
           </div>
         </div>

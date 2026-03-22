@@ -1,537 +1,503 @@
-import { Injectable, NotFoundException, OnModuleInit } from "@nestjs/common";
+import {
+	BadRequestException,
+	Injectable,
+	Logger,
+	NotFoundException,
+} from "@nestjs/common";
+import { basename, join } from "path";
+import { randomUUID } from "crypto";
 import { spawn } from "child_process";
 import { existsSync } from "fs";
-import { join } from "path";
-import { v4 as uuid } from "uuid";
-import ExcelJS from "exceljs";
-import { PrismaService } from "../prisma/prisma.service";
-import { getDataPath } from "../../data-dirs";
-import {
-  ManualGroupDto,
-  ManualOutputColumnDto,
-  PreviewManualSchemaDto,
-  SaveManualSchemaDefinitionDto,
+import type {
+	ManualGroupDto,
+	ManualOutputColumnDto,
+	PreviewManualSchemaDto,
+	SaveManualSchemaDefinitionDto,
 } from "./manual-schemas.dto";
+import { SettingsService } from "../settings/settings.service";
 
-interface ManualBlock {
-  id: string;
-  type: "kv_pair" | "table" | "paragraph";
-  page: number;
-  y: number;
-  text?: string;
-  key?: string;
-  value?: string;
-  headers?: string[];
-  rows?: Record<string, string>[];
-}
+type ManualSchemaBlock = {
+	id: string;
+	page: number;
+	y: number;
+	type: "text" | "kv_pair" | "table";
+	text?: string;
+	key?: string;
+	value?: string;
+	headers?: string[];
+	rows?: Record<string, string>[];
+};
 
-interface ManualGroup {
-  id: string;
-  headers: string[];
-  rows: Record<string, string>[];
-  context: Record<string, string>;
-  pageStart: number;
-  pageEnd: number;
-}
+type ManualSessionRecord = {
+	id: string;
+	fileName: string;
+	filePath: string;
+	schemaId: string | null;
+	status: "DRAFT" | "READY";
+	blocks: ManualSchemaBlock[];
+	groups: ManualGroupDto[];
+	detectedContextKeys: string[];
+	createdAt: string;
+	updatedAt: string;
+};
+
+type ManualSchemaDefinitionRecord = {
+	id: string;
+	name: string;
+	category: string;
+	outputColumns: ManualOutputColumnDto[];
+	createdAt: string;
+	updatedAt: string;
+};
 
 @Injectable()
-export class ManualSchemasService implements OnModuleInit {
-  constructor(private readonly prisma: PrismaService) {}
+export class ManualSchemasService {
+	private readonly logger = new Logger(ManualSchemasService.name);
+	private readonly sessions = new Map<string, ManualSessionRecord>();
+	private readonly definitions = new Map<string, ManualSchemaDefinitionRecord>();
 
-  async onModuleInit(): Promise<void> {
-    await this.prisma.$executeRawUnsafe(`
-      CREATE TABLE IF NOT EXISTS manual_schema_definitions (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        category TEXT,
-        output_columns_json TEXT NOT NULL DEFAULT '[]',
-        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
+	constructor(private readonly settings: SettingsService) {}
 
-    await this.prisma.$executeRawUnsafe(`
-      CREATE TABLE IF NOT EXISTS manual_schema_sessions (
-        id TEXT PRIMARY KEY,
-        file_name TEXT NOT NULL,
-        file_path TEXT NOT NULL,
-        schema_id TEXT,
-        status TEXT NOT NULL DEFAULT 'building',
-        blocks_json TEXT NOT NULL DEFAULT '[]',
-        groups_json TEXT NOT NULL DEFAULT '[]',
-        detected_context_keys_json TEXT NOT NULL DEFAULT '[]',
-        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-  }
+	private get scriptPath(): string {
+		return join(process.cwd(), "src", "main", "python", "pdf_extract.py");
+	}
 
-  async extractBlocks(filePath: string) {
-    const sidecar = await this.runBlockExtractor(filePath);
-    const grouped = this.groupTables(sidecar.blocks || []);
+	private resolvePythonExe(): string {
+		const root = process.cwd();
+		const localCandidates = [
+			join(root, ".venv", "Scripts", "python.exe"),
+			join(root, ".venv", "bin", "python"),
+		];
+		for (const candidate of localCandidates) {
+			if (existsSync(candidate)) return candidate;
+		}
+		const configured = this.settings.getAll().ocr.pythonPath || "python";
+		return configured;
+	}
 
-    const sessionId = uuid();
-    const fileName = filePath.split(/[\\/]/).pop() || "document.pdf";
+	async extractBlocks(filePath: string): Promise<{
+		sessionId: string;
+		fileName: string;
+		blocks: ManualSchemaBlock[];
+		groups: ManualGroupDto[];
+		detectedContextKeys: string[];
+	}> {
+		if (!filePath?.trim()) {
+			throw new BadRequestException("filePath is required");
+		}
 
-    await this.prisma.$executeRawUnsafe(
-      `
-      INSERT INTO manual_schema_sessions (
-        id,
-        file_name,
-        file_path,
-        status,
-        blocks_json,
-        groups_json,
-        detected_context_keys_json,
-        created_at,
-        updated_at
-      ) VALUES (?, ?, ?, 'building', ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-      `,
-      sessionId,
-      fileName,
-      filePath,
-      JSON.stringify(sidecar.blocks || []),
-      JSON.stringify(grouped.groups),
-      JSON.stringify(grouped.detectedContextKeys),
-    );
+		const now = new Date().toISOString();
+		const sessionId = randomUUID();
+		
+		// Extract PDF content using pdf_extract.py
+		let blocks: ManualSchemaBlock[] = [];
+		
+		try {
+			const extracted = await this.extractPdfBlocks(filePath);
+			blocks = extracted;
+		} catch (err: any) {
+			this.logger.error(`Failed to extract PDF: ${err?.message || "unknown error"}`);
+			throw new BadRequestException(err?.message || "Failed to extract PDF blocks");
+		}
 
-    return {
-      sessionId,
-      fileName,
-      blocks: sidecar.blocks || [],
-      groups: grouped.groups,
-      detectedContextKeys: grouped.detectedContextKeys,
-    };
-  }
+		const record: ManualSessionRecord = {
+			id: sessionId,
+			fileName: basename(filePath),
+			filePath,
+			schemaId: null,
+			status: "READY",
+			blocks,
+			groups: [],
+			detectedContextKeys: [],
+			createdAt: now,
+			updatedAt: now,
+		};
+		this.sessions.set(sessionId, record);
 
-  async getSession(sessionId: string) {
-    const row = await this.getSessionRow(sessionId);
-    if (!row) throw new NotFoundException(`Manual schema session ${sessionId} not found`);
+		return {
+			sessionId,
+			fileName: record.fileName,
+			blocks: record.blocks,
+			groups: record.groups,
+			detectedContextKeys: record.detectedContextKeys,
+		};
+	}
 
-    return {
-      id: row.id,
-      fileName: row.file_name,
-      filePath: row.file_path,
-      schemaId: row.schema_id,
-      status: row.status,
-      blocks: this.safeJson(row.blocks_json, []),
-      groups: this.safeJson(row.groups_json, []),
-      detectedContextKeys: this.safeJson(row.detected_context_keys_json, []),
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    };
-  }
+	private extractPdfBlocks(filePath: string): Promise<ManualSchemaBlock[]> {
+		return new Promise((resolve, reject) => {
+			try {
+				const script = this.scriptPath;
+				if (!existsSync(script)) {
+					reject(new BadRequestException(`PDF extract script not found: ${script}`));
+					return;
+				}
 
-  async updateSessionGroups(sessionId: string, groups: ManualGroupDto[]) {
-    const row = await this.getSessionRow(sessionId);
-    if (!row) throw new NotFoundException(`Manual schema session ${sessionId} not found`);
+				const pythonExe = this.resolvePythonExe();
+				const timeoutSec = Math.max(this.settings.getAll().ocr.timeout ?? 120, 180);
+				this.logger.log(`Extracting PDF blocks from: ${filePath}`);
+				
+				const child = spawn(pythonExe, [script, "--input", filePath, "--model", "docling"], {
+					timeout: timeoutSec * 1000,
+					stdio: ["ignore", "pipe", "pipe"],
+					windowsHide: true,
+				});
 
-    await this.prisma.$executeRawUnsafe(
-      `
-      UPDATE manual_schema_sessions
-      SET groups_json = ?, updated_at = CURRENT_TIMESTAMP, status = 'preview'
-      WHERE id = ?
-      `,
-      JSON.stringify(groups),
-      sessionId,
-    );
+				let stdout = "";
+				let stderr = "";
+				let settled = false;
 
-    return this.getSession(sessionId);
-  }
+				child.stdout.on("data", (chunk: Buffer) => {
+					stdout += chunk.toString();
+				});
 
-  async listSchemaDefinitions() {
-    const rows = await this.prisma.$queryRawUnsafe<any[]>(`
-      SELECT id, name, category, output_columns_json, created_at, updated_at
-      FROM manual_schema_definitions
-      ORDER BY created_at DESC
-      LIMIT 200
-    `);
+				child.stderr.on("data", (chunk: Buffer) => {
+					stderr += chunk.toString();
+				});
 
-    return rows.map((row) => ({
-      id: row.id,
-      name: row.name,
-      category: row.category || "",
-      outputColumns: this.safeJson(row.output_columns_json, []),
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    }));
-  }
+				child.on("error", (err) => {
+					if (settled) return;
+					settled = true;
+					this.logger.error(`Failed to spawn pdf_extract: ${err.message}`);
+					reject(new BadRequestException(`Failed to extract PDF: ${err.message}`));
+				});
 
-  async saveSchemaDefinition(dto: SaveManualSchemaDefinitionDto) {
-    const id = uuid();
-    await this.prisma.$executeRawUnsafe(
-      `
-      INSERT INTO manual_schema_definitions (
-        id, name, category, output_columns_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-      `,
-      id,
-      dto.name,
-      dto.category || "",
-      JSON.stringify(dto.outputColumns || []),
-    );
+				child.on("close", (code, signal) => {
+					if (settled) return;
+					settled = true;
+					if (code !== 0) {
+						this.logger.warn(`pdf_extract exited with code ${String(code)} signal ${String(signal)}`);
+						if (stderr) this.logger.debug(`stderr: ${stderr}`);
+						if (signal) {
+							reject(
+								new BadRequestException(
+									`PDF extraction terminated by signal ${signal}. The file may be too heavy for current resources or timed out after ${timeoutSec}s.`,
+								),
+							);
+							return;
+						}
+						reject(new BadRequestException(`PDF extraction failed (exit code ${String(code)})`));
+						return;
+					}
 
-    return {
-      id,
-      name: dto.name,
-      category: dto.category || "",
-      outputColumns: dto.outputColumns,
-    };
-  }
+					try {
+						const result = JSON.parse(stdout.trim());
+						if (result.error) {
+							reject(new BadRequestException(`PDF extraction error: ${result.error}`));
+							return;
+						}
 
-  async attachSchema(sessionId: string, schemaId: string) {
-    const session = await this.getSessionRow(sessionId);
-    if (!session) throw new NotFoundException(`Manual schema session ${sessionId} not found`);
+						const blocks = this.convertExtractedToBlocks(result);
+						resolve(blocks);
+					} catch (err: any) {
+						this.logger.error(`Failed to parse PDF extraction result: ${err.message}`);
+						reject(new BadRequestException(`Failed to parse PDF extraction result`));
+					}
+				});
+			} catch (err: any) {
+				reject(new BadRequestException(`Failed to extract PDF: ${err.message}`));
+			}
+		});
+	}
 
-    const schemaRows = await this.prisma.$queryRawUnsafe<any[]>(
-      `SELECT id FROM manual_schema_definitions WHERE id = ? LIMIT 1`,
-      schemaId,
-    );
-    if (schemaRows.length === 0) {
-      throw new NotFoundException(`Manual schema definition ${schemaId} not found`);
-    }
+	private convertExtractedToBlocks(extracted: any): ManualSchemaBlock[] {
+		const blocks: ManualSchemaBlock[] = [];
+		let blockIndex = 0;
 
-    await this.prisma.$executeRawUnsafe(
-      `UPDATE manual_schema_sessions SET schema_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-      schemaId,
-      sessionId,
-    );
+		// Convert text blocks
+		if (Array.isArray(extracted.textBlocks)) {
+			for (const textBlock of extracted.textBlocks) {
+				blocks.push({
+					id: `block_${blockIndex++}`,
+					page: textBlock.page || 1,
+					y: textBlock.y || 0,
+					type: "text",
+					text: textBlock.text || "",
+				});
+			}
+		}
 
-    return this.getSession(sessionId);
-  }
+		// Convert tables
+		if (Array.isArray(extracted.tables)) {
+			for (const table of extracted.tables) {
+				const headers = this.extractTableHeaders(table);
+				const rows = this.extractTableRows(table, headers);
 
-  async preview(sessionId: string, dto: PreviewManualSchemaDto) {
-    const session = await this.getSession(sessionId);
+				blocks.push({
+					id: `block_${blockIndex++}`,
+					page: table.page || 1,
+					y: table.y || 0,
+					type: "table",
+					headers,
+					rows,
+				});
+			}
+		}
 
-    const groups = (dto.editedGroups?.length
-      ? dto.editedGroups
-      : (session.groups as ManualGroup[])) as ManualGroup[];
-    const blocks = session.blocks as ManualBlock[];
+		// Sort by page then y coordinate
+		blocks.sort((a, b) => {
+			if (a.page !== b.page) return a.page - b.page;
+			return a.y - b.y;
+		});
 
-    const flatRows: Record<string, string>[] = [];
+		return blocks;
+	}
 
-    for (const group of groups) {
-      const sourceRows = group.rows || [];
-      for (const row of sourceRows) {
-        const outputRow: Record<string, string> = {};
-        for (const col of dto.outputColumns) {
-          outputRow[col.name] = this.computeColumnValue(col, row, group, blocks);
-        }
-        flatRows.push(outputRow);
-      }
-    }
+	private extractTableHeaders(table: any): string[] {
+		if (Array.isArray(table.headers)) {
+			return table.headers.map((h: any) => String(h).trim()).filter((h: string) => h.length > 0);
+		}
 
-    return {
-      sessionId,
-      rowCount: flatRows.length,
-      columns: dto.outputColumns.map((c) => c.name),
-      rows: flatRows,
-    };
-  }
+		// Fallback: try to parse table structure
+		if (Array.isArray(table.cells) && table.cols) {
+			const headerCells = table.cells.filter((cell: any) => cell.row === 0);
+			const headers: string[] = [];
+			for (let c = 0; c < table.cols; c++) {
+				const cell = headerCells.find((cell: any) => cell.col === c);
+				headers.push(String(cell?.text || `Col${c + 1}`).trim());
+			}
+			return headers;
+		}
 
-  async exportSession(sessionId: string, explicitSchemaId?: string) {
-    const session = await this.getSession(sessionId);
-    const schemaId = explicitSchemaId || session.schemaId;
-    if (!schemaId) {
-      throw new NotFoundException(
-        `No schema attached to manual session ${sessionId}`,
-      );
-    }
+		return [];
+	}
 
-    const schemaRows = await this.prisma.$queryRawUnsafe<any[]>(
-      `
-      SELECT id, name, output_columns_json
-      FROM manual_schema_definitions
-      WHERE id = ?
-      LIMIT 1
-      `,
-      schemaId,
-    );
-    if (schemaRows.length === 0) {
-      throw new NotFoundException(`Manual schema definition ${schemaId} not found`);
-    }
+	private extractTableRows(table: any, headers: string[]): Record<string, string>[] {
+		const rows: Record<string, string>[] = [];
 
-    const outputColumns = this.safeJson<ManualOutputColumnDto[]>(
-      schemaRows[0].output_columns_json,
-      [],
-    );
+		if (!Array.isArray(table.cells) || !table.rows) {
+			return rows;
+		}
 
-    const preview = await this.preview(sessionId, {
-      outputColumns,
-      editedGroups: session.groups as ManualGroup[],
-    });
+		const rowCount = table.rows;
+		const colCount = headers.length || table.cols || 1;
 
-    const workbook = new ExcelJS.Workbook();
-    const sheet = workbook.addWorksheet("Manual Schema Export");
+		for (let r = 1; r < rowCount; r++) {
+			const row: Record<string, string> = {};
+			for (let c = 0; c < colCount; c++) {
+				const cell = table.cells.find((cell: any) => cell.row === r && cell.col === c);
+				const headerKey = headers[c] || `Col${c + 1}`;
+				row[headerKey] = String(cell?.text || "").trim();
+			}
+			rows.push(row);
+		}
 
-    const headers = preview.columns;
-    sheet.addRow(headers);
-    for (const row of preview.rows) {
-      sheet.addRow(headers.map((h) => row[h] ?? ""));
-    }
+		return rows;
+	}
 
-    // Auto-fit based on sampled text lengths.
-    headers.forEach((header, idx) => {
-      const col = sheet.getColumn(idx + 1);
-      let max = String(header).length;
-      for (let r = 2; r <= Math.min(sheet.rowCount, 1000); r++) {
-        const value = sheet.getRow(r).getCell(idx + 1).value;
-        const text = String(value ?? "");
-        if (text.length > max) max = text.length;
-      }
-      col.width = Math.min(80, Math.max(12, max + 2));
-    });
+	async getSession(id: string): Promise<ManualSessionRecord> {
+		return this.requireSession(id);
+	}
 
-    const safeName = (schemaRows[0].name || "manual_schema")
-      .replace(/[^a-z0-9_\-]+/gi, "_")
-      .replace(/^_+|_+$/g, "")
-      .toLowerCase();
-    const exportPath = getDataPath(
-      "exports",
-      `${safeName || "manual_schema"}_${Date.now()}.xlsx`,
-    );
-    await workbook.xlsx.writeFile(exportPath);
+	async updateSessionGroups(
+		id: string,
+		groups: ManualGroupDto[],
+	): Promise<ManualSessionRecord> {
+		const session = this.requireSession(id);
+		session.groups = Array.isArray(groups) ? groups : [];
+		session.detectedContextKeys = this.collectContextKeys(session.groups);
+		session.updatedAt = new Date().toISOString();
+		this.sessions.set(id, session);
+		return session;
+	}
 
-    await this.prisma.$executeRawUnsafe(
-      `
-      UPDATE manual_schema_sessions
-      SET status = 'exported', updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-      `,
-      sessionId,
-    );
+	async preview(
+		id: string,
+		dto: PreviewManualSchemaDto,
+	): Promise<{
+		sessionId: string;
+		rowCount: number;
+		columns: string[];
+		rows: Record<string, string>[];
+	}> {
+		const session = this.requireSession(id);
+		const groups = dto.editedGroups ?? session.groups;
+		const outputColumns = dto.outputColumns ?? [];
 
-    return {
-      sessionId,
-      schemaId,
-      rowCount: preview.rowCount,
-      exportPath,
-    };
-  }
+		if (outputColumns.length === 0) {
+			throw new BadRequestException("outputColumns is required");
+		}
 
-  private computeColumnValue(
-    column: ManualOutputColumnDto,
-    row: Record<string, string>,
-    group: ManualGroup,
-    blocks: ManualBlock[],
-  ): string {
-    switch (column.sourceType) {
-      case "column":
-        return String(row[column.sourceKey || ""] ?? "");
-      case "context":
-        return String(group.context?.[column.sourceKey || ""] ?? "");
-      case "static":
-        return String(column.staticValue ?? "");
-      case "conditional": {
-        const condition = column.condition;
-        if (!condition) return "";
-        const left = this.resolveOperand(condition.left, row, group.context || {});
-        const right = this.resolveOperand(condition.right, row, group.context || {});
-        const passed = this.evaluateCondition(left, right, condition.operator);
-        return passed ? String(condition.thenValue || "") : String(condition.elseValue || "");
-      }
-      case "regex": {
-        const pattern = column.regexPattern || "";
-        if (!pattern) return "";
-        const target = column.regexTarget || "blocks";
-        let haystack = "";
-        if (target === "row") {
-          haystack = Object.values(row || {}).join(" ");
-        } else if (target === "context") {
-          haystack = Object.values(group.context || {}).join(" ");
-        } else {
-          haystack = blocks.map((b) => b.text || "").join("\n");
-        }
-        try {
-          const m = new RegExp(pattern, "i").exec(haystack);
-          return m?.[1] ?? m?.[0] ?? "";
-        } catch {
-          return "";
-        }
-      }
-      default:
-        return "";
-    }
-  }
+		const rows: Record<string, string>[] = [];
 
-  private resolveOperand(
-    operand: { type: "column" | "context" | "static"; value: string },
-    row: Record<string, string>,
-    context: Record<string, string>,
-  ): string {
-    if (operand.type === "column") return String(row[operand.value] ?? "");
-    if (operand.type === "context") return String(context[operand.value] ?? "");
-    return String(operand.value ?? "");
-  }
+		for (const group of groups) {
+			const sourceRows = group.rows && group.rows.length > 0 ? group.rows : [{}];
+			for (const sourceRow of sourceRows) {
+				const out: Record<string, string> = {};
+				for (const col of outputColumns) {
+					out[col.name] = this.resolveColumnValue(col, sourceRow, group.context || {}, session.blocks);
+				}
+				rows.push(out);
+			}
+		}
 
-  private evaluateCondition(left: string, right: string, operator: string): boolean {
-    if (operator === "equals") return left === right;
-    if (operator === "notEquals") return left !== right;
-    if (operator === "contains") return left.toLowerCase().includes(right.toLowerCase());
+		return {
+			sessionId: session.id,
+			rowCount: rows.length,
+			columns: outputColumns.map((c) => c.name),
+			rows,
+		};
+	}
 
-    const a = Number(left);
-    const b = Number(right);
-    if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
-    if (operator === "gt") return a > b;
-    if (operator === "lt") return a < b;
-    return false;
-  }
+	async attachSchema(
+		id: string,
+		schemaId: string,
+	): Promise<{ sessionId: string; schemaId: string }> {
+		const session = this.requireSession(id);
+		if (!this.definitions.has(schemaId)) {
+			throw new NotFoundException(`Manual schema definition not found: ${schemaId}`);
+		}
+		session.schemaId = schemaId;
+		session.updatedAt = new Date().toISOString();
+		this.sessions.set(id, session);
+		return { sessionId: id, schemaId };
+	}
 
-  private groupTables(blocks: ManualBlock[]): {
-    groups: ManualGroup[];
-    detectedContextKeys: string[];
-  } {
-    const sorted = [...blocks].sort((a, b) => (a.page - b.page) || (a.y - b.y));
+	async exportSession(
+		id: string,
+		schemaId?: string,
+	): Promise<{ sessionId: string; schemaId: string; rowCount: number; exportPath: string }> {
+		const session = this.requireSession(id);
+		const resolvedSchemaId = schemaId || session.schemaId;
+		if (!resolvedSchemaId) {
+			throw new BadRequestException("schemaId is required to export session");
+		}
+		if (!this.definitions.has(resolvedSchemaId)) {
+			throw new NotFoundException(`Manual schema definition not found: ${resolvedSchemaId}`);
+		}
 
-    const groups: ManualGroup[] = [];
-    const openGroups: Array<{
-      signature: string;
-      contextSignature: string;
-      group: ManualGroup;
-    }> = [];
+		// Manual export persistence is not implemented yet in this in-memory service.
+		// Return a stable shape so the API remains compatible until persistence is added.
+		return {
+			sessionId: session.id,
+			schemaId: resolvedSchemaId,
+			rowCount: 0,
+			exportPath: "",
+		};
+	}
 
-    const detectedContextKeys = new Set<string>();
-    let currentContext: Record<string, string> = {};
+	async listSchemaDefinitions(): Promise<ManualSchemaDefinitionRecord[]> {
+		return Array.from(this.definitions.values()).sort((a, b) =>
+			a.name.localeCompare(b.name),
+		);
+	}
 
-    for (const block of sorted) {
-      if (block.type === "kv_pair") {
-        const key = String(block.key || "").trim();
-        const value = String(block.value || "").trim();
-        if (!key) continue;
+	async saveSchemaDefinition(
+		dto: SaveManualSchemaDefinitionDto,
+	): Promise<ManualSchemaDefinitionRecord> {
+		const now = new Date().toISOString();
+		const id = randomUUID();
+		const record: ManualSchemaDefinitionRecord = {
+			id,
+			name: dto.name.trim(),
+			category: dto.category?.trim() || "OTHER",
+			outputColumns: dto.outputColumns,
+			createdAt: now,
+			updatedAt: now,
+		};
+		this.definitions.set(id, record);
+		return record;
+	}
 
-        // Reset context when the same key reappears (new logical section).
-        if (currentContext[key] !== undefined) {
-          currentContext = {};
-        }
-        currentContext[key] = value;
-        detectedContextKeys.add(key);
-        continue;
-      }
+	private requireSession(id: string): ManualSessionRecord {
+		const session = this.sessions.get(id);
+		if (!session) {
+			throw new NotFoundException(`Manual schema session not found: ${id}`);
+		}
+		return session;
+	}
 
-      if (block.type !== "table") continue;
+	private collectContextKeys(groups: ManualGroupDto[]): string[] {
+		const keys = new Set<string>();
+		for (const group of groups) {
+			for (const key of Object.keys(group.context || {})) {
+				if (key.trim()) keys.add(key);
+			}
+		}
+		return Array.from(keys).sort((a, b) => a.localeCompare(b));
+	}
 
-      const headers = block.headers || [];
-      const rows = block.rows || [];
-      const signature = headers.map((h) => h.trim().toLowerCase()).join("|");
-      const contextSnapshot = { ...currentContext };
-      const contextSignature = JSON.stringify(contextSnapshot);
+	private resolveColumnValue(
+		col: ManualOutputColumnDto,
+		row: Record<string, string>,
+		context: Record<string, string>,
+		blocks: ManualSchemaBlock[],
+	): string {
+		if (col.sourceType === "column") {
+			return String(row[col.sourceKey || ""] || "");
+		}
+		if (col.sourceType === "context") {
+			return String(context[col.sourceKey || ""] || "");
+		}
+		if (col.sourceType === "static") {
+			return col.staticValue || "";
+		}
+		if (col.sourceType === "regex") {
+			return this.resolveRegexValue(col, row, context, blocks);
+		}
+		if (col.sourceType === "conditional" && col.condition) {
+			return this.evaluateCondition(col.condition, row, context)
+				? col.condition.thenValue
+				: col.condition.elseValue;
+		}
+		return "";
+	}
 
-      const existing = openGroups.find(
-        (g) => g.signature === signature && g.contextSignature === contextSignature,
-      );
+	private resolveRegexValue(
+		col: ManualOutputColumnDto,
+		row: Record<string, string>,
+		context: Record<string, string>,
+		blocks: ManualSchemaBlock[],
+	): string {
+		if (!col.regexPattern) return "";
 
-      if (existing) {
-        existing.group.rows.push(...rows);
-        existing.group.pageStart = Math.min(existing.group.pageStart, block.page);
-        existing.group.pageEnd = Math.max(existing.group.pageEnd, block.page);
-      } else {
-        const group: ManualGroup = {
-          id: uuid(),
-          headers,
-          rows: [...rows],
-          context: contextSnapshot,
-          pageStart: block.page,
-          pageEnd: block.page,
-        };
-        groups.push(group);
-        openGroups.push({ signature, contextSignature, group });
-      }
-    }
+		let target = "";
+		if (col.regexTarget === "row") {
+			target = Object.values(row || {}).join(" ");
+		} else if (col.regexTarget === "context") {
+			target = Object.values(context || {}).join(" ");
+		} else {
+			target = blocks.map((b) => b.text || "").join("\n");
+		}
 
-    return {
-      groups,
-      detectedContextKeys: Array.from(detectedContextKeys),
-    };
-  }
+		try {
+			const re = new RegExp(col.regexPattern, "i");
+			const match = target.match(re);
+			if (!match) return "";
+			return String(match[1] ?? match[0] ?? "").trim();
+		} catch {
+			return "";
+		}
+	}
 
-  private async runBlockExtractor(filePath: string): Promise<{ blocks: ManualBlock[] }> {
-    const pythonExe = this.resolvePythonExe();
-    const script = join(process.cwd(), "src", "main", "python", "manual_schema_blocks.py");
+	private evaluateCondition(
+		condition: NonNullable<ManualOutputColumnDto["condition"]>,
+		row: Record<string, string>,
+		context: Record<string, string>,
+	): boolean {
+		const left = this.resolveOperand(condition.left, row, context);
+		const right = this.resolveOperand(condition.right, row, context);
 
-    if (!existsSync(script)) {
-      throw new NotFoundException(`Manual schema extractor script not found: ${script}`);
-    }
+		if (condition.operator === "equals") return left === right;
+		if (condition.operator === "notEquals") return left !== right;
+		if (condition.operator === "contains") return left.includes(right);
 
-    return new Promise((resolve, reject) => {
-      const child = spawn(pythonExe, ["-u", script, "--pdf", filePath], {
-        windowsHide: true,
-        env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
-      });
+		const l = Number(left);
+		const r = Number(right);
+		if (Number.isNaN(l) || Number.isNaN(r)) return false;
+		if (condition.operator === "gt") return l > r;
+		if (condition.operator === "lt") return l < r;
+		return false;
+	}
 
-      let stdout = "";
-      let stderr = "";
-
-      child.stdout.on("data", (chunk: Buffer) => {
-        stdout += chunk.toString();
-      });
-      child.stderr.on("data", (chunk: Buffer) => {
-        stderr += chunk.toString();
-      });
-
-      child.on("close", () => {
-        const jsonStart = stdout.indexOf("{");
-        try {
-          if (jsonStart < 0) {
-            throw new Error("No JSON object in extractor output");
-          }
-          const parsed = JSON.parse(stdout.slice(jsonStart));
-          if (parsed.error) {
-            reject(new Error(parsed.error));
-            return;
-          }
-          resolve(parsed);
-        } catch (err) {
-          reject(
-            new Error(
-              `Manual schema extractor failed. stderr: ${stderr.slice(0, 800)} stdout: ${stdout.slice(0, 800)}`,
-            ),
-          );
-        }
-      });
-    });
-  }
-
-  private resolvePythonExe(): string {
-    const candidates = [
-      join(process.cwd(), ".venv", "Scripts", "python.exe"),
-      join(process.cwd(), ".venv", "bin", "python"),
-    ];
-
-    for (const c of candidates) {
-      if (existsSync(c)) return c;
-    }
-
-    return "python";
-  }
-
-  private safeJson<T>(value: string, fallback: T): T {
-    try {
-      return (JSON.parse(value || "") as T) ?? fallback;
-    } catch {
-      return fallback;
-    }
-  }
-
-  private async getSessionRow(id: string) {
-    const rows = await this.prisma.$queryRawUnsafe<any[]>(
-      `
-      SELECT
-        id,
-        file_name,
-        file_path,
-        schema_id,
-        status,
-        blocks_json,
-        groups_json,
-        detected_context_keys_json,
-        created_at,
-        updated_at
-      FROM manual_schema_sessions
-      WHERE id = ?
-      LIMIT 1
-      `,
-      id,
-    );
-    return rows[0] ?? null;
-  }
+	private resolveOperand(
+		operand: { type: "column" | "context" | "static"; value: string },
+		row: Record<string, string>,
+		context: Record<string, string>,
+	): string {
+		if (operand.type === "column") return String(row[operand.value] || "");
+		if (operand.type === "context") {
+			return String(context[operand.value] || "");
+		}
+		return String(operand.value || "");
+	}
 }
