@@ -1,62 +1,150 @@
 """
 pdf_contract_extract.py
 -----------------------
-Extracts structured freight rate tables from a digital PDF contract using PyMuPDF.
+Legacy/standard freight contract extraction using pdfplumber.
 
-Usage:
-    python pdf_contract_extract.py --pdf <path>
-
-Outputs a single JSON blob to stdout:
-{
-  "header": { "carrier", "contractId", "effectiveDate", "expirationDate" },
-  "rates":         [ { ...row fields } ],
-  "originArbs":    [ { ...row fields } ],
-  "destArbs":      [ { ...row fields } ],
-  "pageCount":     <int>,
-  "processingTime": <float seconds>,
-  "warnings":      [ <str>, ... ]
-}
+This entrypoint always runs the hardcoded legacy extractor.
+Schema-driven dynamic extraction lives in pdf_contract_extract_dynamic.py.
 """
 from __future__ import annotations  # Python 3.7+ safe subscript annotations
 
 import sys
-import io
 import json
 import argparse
 import time
 import re
-from datetime import datetime
+import ast
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-# Force UTF-8 stdout/stderr so non-ASCII city names don't cause encoding errors
-# when Python is spawned as a subprocess on Windows (default cp1252 codepage)
-if hasattr(sys.stdout, "buffer"):
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-if hasattr(sys.stderr, "buffer"):
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+# Force UTF-8 output for Windows subprocesses without replacing stream objects.
+for _stream_name in ("stdout", "stderr"):
+    _stream = getattr(sys, _stream_name, None)
+    if _stream and hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
 
 class _FitzStdoutGuard:
-    """Context manager: redirect sys.stdout -> sys.stderr during fitz calls.
-
-    PyMuPDF (and pymupdf) occasionally print informational messages to stdout
-    (e.g. 'Consider using the pymupdf_layout package…').  These corrupt the
-    JSON we write to stdout, so we push them to stderr while fitz is running.
-    """
+    """No-op context manager kept for backward compatibility."""
     def __enter__(self):
-        self._prev = sys.stdout
-        sys.stdout = sys.stderr
         return self
 
     def __exit__(self, *_):
-        sys.stdout = self._prev
+        return None
 
 
 try:
-    import fitz  # PyMuPDF
+    import pdfplumber
 except ImportError:
-    print(json.dumps({"error": "PyMuPDF (fitz) is not installed. Run: pip install pymupdf"}))
+    print(json.dumps({"error": "pdfplumber is not installed. Run: pip install pdfplumber"}))
     sys.exit(1)
+
+
+class _PlumberTableAdapter:
+    def __init__(self, table: Any):
+        self._table = table
+        self.bbox = tuple(table.bbox) if hasattr(table, "bbox") else (0.0, 0.0, 0.0, 0.0)
+
+    def extract(self) -> List[List[Any]]:
+        return self._table.extract() or []
+
+
+class _PlumberTableFinderAdapter:
+    def __init__(self, tables: List[_PlumberTableAdapter]):
+        self.tables = tables
+
+    def __iter__(self):
+        return iter(self.tables)
+
+
+class _PlumberPageAdapter:
+    def __init__(self, page: Any):
+        self._page = page
+
+    def _line_items(self) -> List[Dict[str, Any]]:
+        words = self._page.extract_words(x_tolerance=2, y_tolerance=2, keep_blank_chars=False) or []
+        by_line: Dict[float, List[Dict[str, Any]]] = {}
+        for w in words:
+            top = round(float(w.get("top", 0.0)), 1)
+            by_line.setdefault(top, []).append(w)
+
+        lines: List[Dict[str, Any]] = []
+        for _, items in sorted(by_line.items(), key=lambda kv: kv[0]):
+            items.sort(key=lambda it: float(it.get("x0", 0.0)))
+            text = " ".join(str(it.get("text", "")) for it in items).strip()
+            if not text:
+                continue
+            x0 = min(float(it.get("x0", 0.0)) for it in items)
+            x1 = max(float(it.get("x1", 0.0)) for it in items)
+            y0 = min(float(it.get("top", 0.0)) for it in items)
+            y1 = max(float(it.get("bottom", 0.0)) for it in items)
+            lines.append({"text": text, "bbox": (x0, y0, x1, y1)})
+        return lines
+
+    def get_text(self, mode: str = "text") -> Any:
+        if mode == "text":
+            return self._page.extract_text() or ""
+
+        lines = self._line_items()
+        if mode == "blocks":
+            return [
+                (line["bbox"][0], line["bbox"][1], line["bbox"][2], line["bbox"][3], line["text"], idx, 0)
+                for idx, line in enumerate(lines)
+            ]
+
+        if mode == "dict":
+            return {
+                "blocks": [
+                    {
+                        "type": 0,
+                        "bbox": line["bbox"],
+                        "lines": [
+                            {
+                                "bbox": line["bbox"],
+                                "spans": [
+                                    {
+                                        "text": line["text"],
+                                        "bbox": line["bbox"],
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                    for line in lines
+                ]
+            }
+
+        raise ValueError(f"Unsupported text mode: {mode}")
+
+    def find_tables(self, strategy: str = "lines") -> _PlumberTableFinderAdapter:
+        if strategy == "lines_strict":
+            settings = {"vertical_strategy": "lines_strict", "horizontal_strategy": "lines_strict"}
+        else:
+            settings = {"vertical_strategy": "lines", "horizontal_strategy": "lines"}
+        tables = self._page.find_tables(table_settings=settings) or []
+        return _PlumberTableFinderAdapter([_PlumberTableAdapter(t) for t in tables])
+
+
+class _PlumberDocumentAdapter:
+    def __init__(self, doc: Any):
+        self._doc = doc
+        self._pages = [_PlumberPageAdapter(page) for page in doc.pages]
+
+    def __len__(self) -> int:
+        return len(self._pages)
+
+    def __getitem__(self, index: int) -> _PlumberPageAdapter:
+        return self._pages[index]
+
+    def close(self) -> None:
+        self._doc.close()
+
+
+def open_pdf_document(path: str) -> _PlumberDocumentAdapter:
+    return _PlumberDocumentAdapter(pdfplumber.open(path))
 
 
 # ─── Section boundary patterns ───────────────────────────────────────────────
@@ -163,7 +251,7 @@ _EFF_LABEL_RE      = re.compile(r"effective\s+date[:\s]+", re.IGNORECASE)
 _EXP_LABEL_RE      = re.compile(r"expir(?:ation|y)\s+date[:\s]+", re.IGNORECASE)
 
 
-def extract_header(doc: fitz.Document) -> Dict:
+def extract_header(doc: Any) -> Dict:
     """
     Pull carrier, contractId, effectiveDate, expirationDate from the first 2 pages of text.
     """
@@ -215,7 +303,7 @@ def extract_header(doc: fitz.Document) -> Dict:
 
 # ─── Document-level section boundary builder ─────────────────────────────────
 
-def _build_section_boundaries(doc: fitz.Document) -> List[Tuple[int, float, str]]:
+def _build_section_boundaries(doc: Any) -> List[Tuple[int, float, str]]:
     """
     Scan every page and return a list of (page_no, y0, section_name) sorted by
     document order (page ascending, then y ascending).
@@ -267,7 +355,7 @@ def _section_for(page_no: int, table_y0: float,
     return current
 
 
-def _DEAD_classify_section(page: fitz.Page, table_rect: Any, warnings: list) -> str:
+def _DEAD_classify_section(page: Any, table_rect: Any, warnings: list) -> str:
     """REMOVED — kept as dead code for reference only.
     Look at text blocks on the same page that appear *above* the table.
     Return "RATES", "ORIGIN_ARB", "DEST_ARB", or "UNKNOWN".
@@ -291,7 +379,7 @@ def _DEAD_classify_section(page: fitz.Page, table_rect: Any, warnings: list) -> 
     return "UNKNOWN"
 
 
-def _scan_origin_labels(page: fitz.Page) -> List[Tuple[float, str, str]]:
+def _scan_origin_labels(page: Any) -> List[Tuple[float, str, str]]:
     """
     Scan a page for ORIGIN / ORIGIN VIA labels.
     Returns list of (y0, 'origin'|'originVia', value) sorted by y0.
@@ -368,7 +456,7 @@ def _scan_origin_labels(page: fitz.Page) -> List[Tuple[float, str, str]]:
 
 # ─── Core extraction ──────────────────────────────────────────────────────────
 
-def extract_tables(doc: fitz.Document, header: Dict) -> Tuple[List, List, List, List]:
+def extract_tables(doc: Any, header: Dict) -> Tuple[List, List, List, List]:
     """
     Iterate every page, find tables via `find_tables()`, assign each table to
     its section using document-level keyword boundaries, and return
@@ -586,8 +674,14 @@ def _parse_schema_preset(schema_json: Optional[str], warnings: List[str]) -> Opt
                 field_obj["altRegexRules"] = [str(r).strip() for r in alt_regex_rules if str(r).strip()]
 
             section_hint = str(item.get("sectionHint", "")).strip()
-            if section_hint in ("RATES", "ORIGIN_ARB", "DEST_ARB", "HEADER"):
-                field_obj["sectionHint"] = section_hint
+            if section_hint:
+                field_obj["sectionHint"] = section_hint.upper()
+
+            section_indicator_key = str(
+                item.get("sectionIndicatorKey", item.get("contextLabel", ""))
+            ).strip()
+            if section_indicator_key:
+                field_obj["sectionIndicatorKey"] = section_indicator_key
 
             context_hint = str(item.get("contextHint", "")).strip()
             if context_hint in ("same_line_after_label", "next_line_after_label", "table_cell"):
@@ -624,12 +718,137 @@ def _parse_schema_preset(schema_json: Optional[str], warnings: List[str]) -> Opt
     if not tabs:
         return None
 
-    return {"name": name, "tabs": tabs}
+    extraction_mode_raw = str(parsed.get("extractionMode", "AUTO")).strip().upper()
+    extraction_mode = (
+        extraction_mode_raw
+        if extraction_mode_raw in ("AUTO", "CONTRACT_BIASED", "GENERIC")
+        else "AUTO"
+    )
+    record_start_regex = str(parsed.get("recordStartRegex", "")).strip() or None
+
+    return {
+        "name": name,
+        "extractionMode": extraction_mode,
+        "recordStartRegex": record_start_regex,
+        "tabs": tabs,
+    }
 
 
-def _apply_post_processing(value: str, rules: List[str]) -> str:
+def _to_float(value: Any) -> Optional[float]:
+    try:
+        cleaned = re.sub(r"[^\d.\-]", "", str(value or ""))
+        if cleaned in ("", "-", ".", "-."):
+            return None
+        return float(cleaned)
+    except Exception:
+        return None
+
+
+def _lookup_context_number(context: Dict[str, Any], reference: str) -> Optional[float]:
+    ref = str(reference or "").strip()
+    if not ref:
+        return None
+
+    # Direct key lookup first
+    if ref in context:
+        return _to_float(context.get(ref))
+
+    # Canonical key fallback (strip non-alphanumeric)
+    ref_canon = re.sub(r"[^a-z0-9]", "", ref.lower())
+    for key, raw in context.items():
+        key_canon = re.sub(r"[^a-z0-9]", "", str(key).lower())
+        if key_canon == ref_canon:
+            return _to_float(raw)
+
+    return None
+
+
+def _safe_eval_formula(
+    expression: str,
+    context: Dict[str, Any],
+    warnings: Optional[List[str]] = None,
+    field_key: str = "",
+) -> Optional[float]:
+    formula = str(expression or "").strip()
+    if not formula:
+        return None
+
+    # Placeholder style: {{Field Key}} * 1.2
+    def repl(match: re.Match) -> str:
+        ref = match.group(1).strip()
+        num = _lookup_context_number(context, ref)
+        if num is None:
+            if warnings is not None:
+                warnings.append(
+                    f"Formula reference '{ref}' not found for field '{field_key}'"
+                )
+            return "0"
+        return str(num)
+
+    formula = re.sub(r"\{\{\s*([^}]+?)\s*\}\}", repl, formula)
+
+    variables: Dict[str, float] = {}
+    for key, raw in context.items():
+        numeric = _to_float(raw)
+        if numeric is None:
+            continue
+        key_str = str(key)
+        aliases = {
+            key_str,
+            re.sub(r"[^A-Za-z0-9_]", "_", key_str),
+            re.sub(r"[^a-z0-9]", "", key_str.lower()),
+        }
+        for alias in aliases:
+            if not alias:
+                continue
+            if alias[0].isdigit():
+                alias = f"f_{alias}"
+            if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", alias) and alias not in variables:
+                variables[alias] = numeric
+
+    try:
+        parsed = ast.parse(formula, mode="eval")
+        allowed_nodes = (
+            ast.Expression,
+            ast.BinOp,
+            ast.UnaryOp,
+            ast.Add,
+            ast.Sub,
+            ast.Mult,
+            ast.Div,
+            ast.USub,
+            ast.UAdd,
+            ast.Mod,
+            ast.Pow,
+            ast.FloorDiv,
+            ast.Name,
+            ast.Load,
+            ast.Constant,
+        )
+        for node in ast.walk(parsed):
+            if not isinstance(node, allowed_nodes):
+                raise ValueError(f"Unsupported token: {type(node).__name__}")
+            if isinstance(node, ast.Name) and node.id not in variables:
+                raise ValueError(f"Unknown variable: {node.id}")
+
+        result = eval(compile(parsed, "<formula>", "eval"), {"__builtins__": {}}, variables)
+        return float(result)
+    except Exception as err:
+        if warnings is not None:
+            warnings.append(f"Invalid formula for field '{field_key}': {err}")
+        return None
+
+
+def _apply_post_processing(
+    value: str,
+    rules: List[str],
+    context: Optional[Dict[str, Any]] = None,
+    warnings: Optional[List[str]] = None,
+    field_key: str = "",
+) -> str:
     """Apply a sequence of post-processing transformations to a value."""
     result = value
+    context = context or {}
     for rule in rules:
         rule = rule.strip().lower()
         if rule == "trim":
@@ -654,6 +873,69 @@ def _apply_post_processing(value: str, rules: List[str]) -> str:
                     break
                 except ValueError:
                     continue
+        elif rule.startswith("add_days:") or rule.startswith("sub_days:"):
+            try:
+                sign = -1 if rule.startswith("sub_days:") else 1
+                amount = int(rule.split(":", 1)[1].strip())
+                for fmt in ["%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y", "%m-%d-%Y", "%d-%m-%Y"]:
+                    try:
+                        parsed = datetime.strptime(result.strip(), fmt)
+                        shifted = parsed + timedelta(days=sign * amount)
+                        result = shifted.strftime("%Y-%m-%d")
+                        break
+                    except ValueError:
+                        continue
+            except Exception:
+                pass
+        elif any(rule.startswith(prefix) for prefix in ("add:", "sub:", "mul:", "div:")):
+            try:
+                op, raw_operand = rule.split(":", 1)
+                operand = float(raw_operand.strip())
+                numeric = float(re.sub(r"[^\d.\-]", "", result) or "0")
+                if op == "add":
+                    numeric = numeric + operand
+                elif op == "sub":
+                    numeric = numeric - operand
+                elif op == "mul":
+                    numeric = numeric * operand
+                elif op == "div" and operand != 0:
+                    numeric = numeric / operand
+                result = str(numeric)
+            except Exception:
+                pass
+        elif any(rule.startswith(prefix) for prefix in ("add_field:", "sub_field:", "mul_field:", "div_field:")):
+            try:
+                op, ref = rule.split(":", 1)
+                ref_value = _lookup_context_number(context, ref)
+                numeric = float(re.sub(r"[^\d.\-]", "", result) or "0")
+                if ref_value is None:
+                    if warnings is not None:
+                        warnings.append(
+                            f"Referenced field '{ref}' not found for field '{field_key}'"
+                        )
+                    continue
+                if op == "add_field":
+                    numeric = numeric + ref_value
+                elif op == "sub_field":
+                    numeric = numeric - ref_value
+                elif op == "mul_field":
+                    numeric = numeric * ref_value
+                elif op == "div_field" and ref_value != 0:
+                    numeric = numeric / ref_value
+                result = str(numeric)
+            except Exception:
+                pass
+        elif rule.startswith("formula:"):
+            numeric = _safe_eval_formula(rule.split(":", 1)[1], context, warnings, field_key)
+            if numeric is not None:
+                result = str(numeric)
+        elif rule.startswith("round:"):
+            try:
+                digits = int(rule.split(":", 1)[1].strip())
+                numeric = float(re.sub(r"[^\d.\-]", "", result) or "0")
+                result = str(round(numeric, digits))
+            except Exception:
+                pass
     return result
 
 
@@ -687,7 +969,11 @@ def _validate_extraction(
 
 
 def _extract_field_value(
-    full_text: str, pdf_pages: List[str], field: Dict[str, Any], warnings: List[str]
+    full_text: str,
+    pdf_pages: List[str],
+    field: Dict[str, Any],
+    warnings: List[str],
+    search_text_override: Optional[str] = None,
 ) -> str:
     """
     Extract a field value using the configured extraction strategy and rules.
@@ -704,8 +990,8 @@ def _extract_field_value(
     value = ""
 
     # ── Step 1: Determine search scope (full text or specific pages) ────────
-    search_text = full_text
-    if page_range:
+    search_text = search_text_override if search_text_override is not None else full_text
+    if search_text_override is None and page_range:
         try:
             # Parse page range: "1", "1-3", "1,5,7"
             page_nums = set()
@@ -761,7 +1047,7 @@ def _extract_field_value(
 
     # ── Step 4: Apply post-processing ────────────────────────────────────────
     if value and post_processing:
-        value = _apply_post_processing(value, post_processing)
+        value = _apply_post_processing(value, post_processing, warnings=warnings, field_key=field_key)
 
     # ── Step 5: Validate against constraints ─────────────────────────────────
     is_valid, value = _validate_extraction(value, field, warnings)
@@ -771,6 +1057,133 @@ def _extract_field_value(
         return ""
 
     return value.strip()
+
+
+def _extract_by_context_hint(
+    text: str,
+    label: str,
+    context_hint: str,
+    all_labels: Optional[List[str]] = None,
+) -> str:
+    """Extract value by label position for header-like fields.
+
+    - same_line_after_label: read text after label on the same line
+    - next_line_after_label: read next non-empty line after label line
+    """
+    label_clean = str(label or "").strip()
+    if not label_clean:
+        return ""
+
+    lines = text.splitlines()
+    if not lines:
+        return ""
+
+    label_re = re.compile(rf"{re.escape(label_clean.rstrip(':'))}\s*:?", re.IGNORECASE)
+
+    normalized_labels = []
+    for raw in all_labels or []:
+        cleaned = str(raw or "").strip().rstrip(":")
+        if cleaned and cleaned.lower() != label_clean.rstrip(":").lower():
+            normalized_labels.append(cleaned)
+
+    def cut_at_next_label(value: str) -> str:
+        candidate = value.strip()
+        if not candidate:
+            return ""
+        stop_at = len(candidate)
+        for other_label in normalized_labels:
+            match = re.search(rf"\b{re.escape(other_label)}\s*:?", candidate, re.IGNORECASE)
+            if match and match.start() < stop_at:
+                stop_at = match.start()
+        return candidate[:stop_at].strip(" :-\t")
+
+    for idx, raw_line in enumerate(lines):
+        line = raw_line.strip()
+        if not line:
+            continue
+        match = label_re.search(line)
+        if not match:
+            continue
+
+        # Same-line tail after the label is often present for both modes.
+        tail = cut_at_next_label(line[match.end() :])
+        if tail:
+            return tail
+
+        # Fallback to next non-empty line for multi-line layouts.
+        if context_hint in ("same_line_after_label", "next_line_after_label"):
+            for next_idx in range(idx + 1, len(lines)):
+                candidate = cut_at_next_label(lines[next_idx])
+                if candidate:
+                    return candidate
+
+    return ""
+
+
+def _build_header_chunks(
+    full_text: str,
+    fields: List[Dict[str, Any]],
+    warnings: List[str],
+) -> List[str]:
+    """Split full text into repeated header chunks using sectionIndicatorKey.
+
+    If no usable indicator or only one match is found, returns [full_text].
+    """
+    indicator = ""
+    for field in fields:
+        raw = str(field.get("sectionIndicatorKey", "")).strip()
+        if raw:
+            indicator = raw
+            break
+
+    def find_starts(pattern: str) -> List[int]:
+        try:
+            return sorted(
+                set(m.start() for m in re.finditer(re.escape(pattern), full_text, re.IGNORECASE))
+            )
+        except re.error as err:
+            warnings.append(f"Invalid section indicator '{pattern}': {err}")
+            return []
+
+    if not indicator:
+        # Heuristic fallback for repeated document headers in a combined PDF:
+        # try field labels/keys and pick the first one that repeats.
+        for field in fields:
+            candidates = [
+                str(field.get("label", "")).strip().rstrip(":"),
+                str(field.get("fieldKey", "")).strip(),
+            ]
+            for candidate in candidates:
+                if len(candidate) < 3:
+                    continue
+                starts = find_starts(candidate)
+                if len(starts) > 1:
+                    indicator = candidate
+                    warnings.append(
+                        f"Auto header chunking using indicator '{indicator}' ({len(starts)} matches)."
+                    )
+                    break
+            if indicator:
+                break
+
+    if not indicator:
+        return [full_text]
+
+    starts = find_starts(indicator)
+
+    # De-dupe + stable sort
+    starts = sorted(set(starts))
+    if len(starts) <= 1:
+        return [full_text]
+
+    chunks: List[str] = []
+    for idx, start in enumerate(starts):
+        end = starts[idx + 1] if idx + 1 < len(starts) else len(full_text)
+        chunk = full_text[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+
+    return chunks or [full_text]
 
 
 def _canon_key(value: str) -> str:
@@ -885,8 +1298,207 @@ def _pick_section_rows(
     return rates
 
 
+def _resolve_tab_section(tab_name: str, fields: List[Dict[str, Any]]) -> str:
+    """Resolve tab target section from field hints first, then tab name heuristics."""
+    def _to_known_section(value: str) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        upper = re.sub(r"[^A-Z0-9]+", "_", raw.upper()).strip("_")
+        if upper in ("RATES", "ORIGIN_ARB", "DEST_ARB", "HEADER"):
+            return upper
+
+        low = raw.lower()
+        if "header" in low:
+            return "HEADER"
+        if "origin" in low and "arb" in low:
+            return "ORIGIN_ARB"
+        if ("dest" in low or "destination" in low) and "arb" in low:
+            return "DEST_ARB"
+        if "rate" in low:
+            return "RATES"
+        return ""
+
+    section_counts: Dict[str, int] = {
+        "RATES": 0,
+        "ORIGIN_ARB": 0,
+        "DEST_ARB": 0,
+        "HEADER": 0,
+    }
+    for field in fields:
+        hint = _to_known_section(str(field.get("sectionHint", "")).strip())
+        indicator = _to_known_section(
+            str(field.get("sectionIndicatorKey", "")).strip()
+        )
+        target = hint or indicator
+        if target in section_counts:
+            section_counts[target] += 1
+
+    selected = max(section_counts, key=lambda key: section_counts[key])
+    if section_counts[selected] > 0:
+        return selected
+
+    return _to_known_section(tab_name) or "RATES"
+
+
+def _is_contract_biased_schema(schema_preset: Dict[str, Any]) -> bool:
+    mode = str(schema_preset.get("extractionMode", "AUTO") or "AUTO").strip().upper()
+    if mode == "CONTRACT_BIASED":
+        return True
+    if mode == "GENERIC":
+        return False
+
+    name = str(schema_preset.get("name", "")).strip().lower()
+    if "contract" in name:
+        return True
+
+    contract_section_hits = 0
+    for tab in schema_preset.get("tabs", []):
+        for field in tab.get("fields", []):
+            hint = str(field.get("sectionHint", "")).strip().upper()
+            if hint in ("RATES", "ORIGIN_ARB", "DEST_ARB"):
+                contract_section_hits += 1
+
+    return contract_section_hits >= 2
+
+
+def _build_record_chunks(
+    full_text: str,
+    schema_preset: Dict[str, Any],
+    fields: List[Dict[str, Any]],
+    warnings: List[str],
+) -> List[str]:
+    pattern = str(schema_preset.get("recordStartRegex", "") or "").strip()
+    if pattern:
+        try:
+            starts = sorted(set(m.start() for m in re.finditer(pattern, full_text, re.IGNORECASE | re.MULTILINE)))
+            if len(starts) > 1:
+                chunks: List[str] = []
+                for idx, start in enumerate(starts):
+                    end = starts[idx + 1] if idx + 1 < len(starts) else len(full_text)
+                    chunk = full_text[start:end].strip()
+                    if chunk:
+                        chunks.append(chunk)
+                if chunks:
+                    return chunks
+            elif len(starts) == 1:
+                return [full_text[starts[0] :].strip()]
+        except re.error as err:
+            warnings.append(f"Invalid recordStartRegex '{pattern}': {err}")
+
+    return _build_header_chunks(full_text, fields, warnings)
+
+
+def _extract_generic_from_schema(
+    doc: Any,
+    schema_preset: Dict[str, Any],
+) -> Tuple[
+    List[Dict[str, Any]],
+    List[Dict[str, Any]],
+    List[Dict[str, Any]],
+    List[Dict[str, Any]],
+    List[str],
+]:
+    warnings: List[str] = []
+    full_text = "\n".join(doc[i].get_text("text") for i in range(len(doc)))
+    pdf_pages = [doc[i].get_text("text") for i in range(len(doc))]
+
+    all_fields: List[Dict[str, Any]] = []
+    for tab in schema_preset.get("tabs", []):
+        all_fields.extend(tab.get("fields", []))
+
+    record_chunks = _build_record_chunks(full_text, schema_preset, all_fields, warnings)
+    tabs_out: List[Dict[str, Any]] = []
+
+    for tab in schema_preset.get("tabs", []):
+        tab_name = str(tab.get("name", "Tab")).strip() or "Tab"
+        fields = tab.get("fields", [])
+
+        # Header-oriented tabs work per chunk; table-oriented tabs can still use full text.
+        uses_header_style = any(
+            str(field.get("contextHint", "")).strip()
+            in ("same_line_after_label", "next_line_after_label")
+            or str(field.get("sectionHint", "")).strip().upper() == "HEADER"
+            for field in fields
+        )
+        chunks = record_chunks if uses_header_style else [full_text]
+
+        tab_rows: List[Dict[str, Any]] = []
+        all_labels = [
+            str(field.get("contextLabel") or field.get("label") or field.get("fieldKey") or "").strip()
+            for field in fields
+        ]
+
+        for chunk in chunks:
+            row: Dict[str, Any] = {}
+
+            for field in fields:
+                field_key = str(field.get("fieldKey", "")).strip()
+                if not field_key:
+                    continue
+
+                extraction_strategy = str(field.get("extractionStrategy", "regex")).strip()
+                context_hint = str(field.get("contextHint", "")).strip()
+                label_for_context = str(
+                    field.get("contextLabel")
+                    or field.get("label")
+                    or field.get("fieldKey")
+                    or ""
+                ).strip()
+
+                value = ""
+                used_context_hint = False
+                if context_hint in ("same_line_after_label", "next_line_after_label") and label_for_context:
+                    value = _extract_by_context_hint(
+                        chunk,
+                        label_for_context,
+                        context_hint,
+                        all_labels=all_labels,
+                    )
+                    used_context_hint = bool(value)
+
+                if not value:
+                    if extraction_strategy in ("regex", "header_field", "table_column", "page_region"):
+                        value = _extract_field_value(
+                            full_text,
+                            pdf_pages,
+                            field,
+                            warnings,
+                            search_text_override=chunk,
+                        )
+
+                if value and used_context_hint:
+                    post_processing = field.get("postProcessing", [])
+                    if post_processing:
+                        value = _apply_post_processing(
+                            value,
+                            post_processing,
+                            context=row,
+                            warnings=warnings,
+                            field_key=field_key,
+                        )
+                    is_valid, value = _validate_extraction(value, field, warnings)
+                    if not is_valid:
+                        value = ""
+
+                row[field_key] = value
+
+            if any(str(v).strip() for v in row.values()):
+                tab_rows.append(row)
+
+        if not tab_rows:
+            tab_rows.append({str(field.get("fieldKey", "")).strip(): "" for field in fields if str(field.get("fieldKey", "")).strip()})
+
+        tabs_out.append({"name": tab_name, "rows": tab_rows})
+
+    rates = tabs_out[0]["rows"] if len(tabs_out) > 0 else []
+    origin_arbs = tabs_out[1]["rows"] if len(tabs_out) > 1 else []
+    dest_arbs = tabs_out[2]["rows"] if len(tabs_out) > 2 else []
+    return rates, origin_arbs, dest_arbs, tabs_out, warnings
+
+
 def extract_tables_from_schema(
-    doc: fitz.Document, header: Dict[str, str], schema_preset: Dict[str, Any]
+    doc: Any, header: Dict[str, str], schema_preset: Dict[str, Any]
 ) -> Tuple[
     List[Dict[str, Any]],
     List[Dict[str, Any]],
@@ -902,8 +1514,15 @@ def extract_tables_from_schema(
 
     Returns (rates, origin_arbs, dest_arbs, tabs_out, warnings).
     """
-    # Keep legacy extraction as primary source of truth for row accuracy
-    rates_src, origin_src, dest_src, legacy_warnings = extract_tables(doc, header)
+    if not _is_contract_biased_schema(schema_preset):
+        return _extract_generic_from_schema(doc, schema_preset)
+
+    # Contract-biased mode: use legacy parser as dynamic source so schema mode matches hardcoded output behavior.
+    legacy_header = _legacy_extract_header(doc)
+    rates_src, origin_src, dest_src, legacy_warnings, _raw_pages = _legacy_extract_tables(
+        doc,
+        legacy_header,
+    )
     warnings: List[str] = list(legacy_warnings)
 
     full_text = "\n".join(doc[i].get_text("text") for i in range(len(doc)))
@@ -913,10 +1532,27 @@ def extract_tables_from_schema(
 
     tabs_out: List[Dict[str, Any]] = []
 
+    section_rows_map: Dict[str, List[Dict[str, Any]]] = {
+        "RATES": [],
+        "ORIGIN_ARB": [],
+        "DEST_ARB": [],
+    }
+
     for tab in schema_preset.get("tabs", []):
         tab_name = str(tab.get("name", "Tab")).strip() or "Tab"
         fields = tab.get("fields", [])
-        section_rows = _pick_section_rows(tab_name, fields, rates_src, origin_src, dest_src)
+        tab_section = _resolve_tab_section(tab_name, fields)
+
+        if tab_section == "ORIGIN_ARB":
+            section_rows = origin_src
+        elif tab_section == "DEST_ARB":
+            section_rows = dest_src
+        elif tab_section == "HEADER":
+            header_chunks = _build_header_chunks(full_text, fields, warnings)
+            section_rows = [{"__chunk_text": chunk} for chunk in header_chunks]
+        else:
+            section_rows = rates_src
+
         tab_rows: List[Dict[str, Any]] = []
 
         # Build one output row per source table row (same behavior that made old mode accurate)
@@ -928,6 +1564,12 @@ def extract_tables_from_schema(
                 if not field_key:
                     continue
 
+                scoped_text = (
+                    str(source_row.get("__chunk_text", ""))
+                    if isinstance(source_row, dict)
+                    else ""
+                )
+
                 value = _lookup_row_value(source_row, field)
 
                 section_hint = str(field.get("sectionHint", "")).strip()
@@ -938,31 +1580,60 @@ def extract_tables_from_schema(
                     "next_line_after_label",
                 )
 
-                # Header-like fields should prefer header extraction before regex.
+                # Header-like fields should prefer legacy header values before regex.
                 if not value and is_header_like:
-                    value = _lookup_header_value(header, field)
+                    value = _lookup_header_value(legacy_header, field)
+
+                if not value and is_header_like:
+                    label_for_context = str(
+                        field.get("contextLabel")
+                        or field.get("label")
+                        or field.get("fieldKey")
+                        or ""
+                    ).strip()
+                    all_labels = [
+                        str(f.get("contextLabel") or f.get("label") or f.get("fieldKey") or "").strip()
+                        for f in fields
+                    ]
+                    if label_for_context and context_hint in (
+                        "same_line_after_label",
+                        "next_line_after_label",
+                    ):
+                        value = _extract_by_context_hint(
+                            scoped_text or full_text,
+                            label_for_context,
+                            context_hint,
+                            all_labels=all_labels,
+                        )
 
                 # Fallback to regex when mapping misses, but avoid broad text matching
                 # for table-cell columns unless strategy explicitly requests regex.
                 if not value:
                     if extraction_strategy == "regex" or is_header_like:
-                        value = _extract_field_value(full_text, pdf_pages, field, warnings)
+                        value = _extract_field_value(
+                            full_text,
+                            pdf_pages,
+                            field,
+                            warnings,
+                            search_text_override=scoped_text or None,
+                        )
                 else:
                     # Apply same transformations/validation pipeline for table-mapped values
                     post_processing = field.get("postProcessing", [])
                     if post_processing:
-                        value = _apply_post_processing(value, post_processing)
+                        context = {**source_row, **row}
+                        value = _apply_post_processing(
+                            value,
+                            post_processing,
+                            context=context,
+                            warnings=warnings,
+                            field_key=field_key,
+                        )
                     is_valid, value = _validate_extraction(value, field, warnings)
                     if not is_valid:
                         value = ""
 
                 row[field_key] = value
-
-            # Always add header data to every row
-            row["carrier"] = header.get("carrier", "")
-            row["contractId"] = header.get("contractId", "")
-            row["effectiveDate"] = header.get("effectiveDate", "")
-            row["expirationDate"] = header.get("expirationDate", "")
 
             tab_rows.append(row)
 
@@ -984,23 +1655,21 @@ def extract_tables_from_schema(
 
                 value = ""
                 if is_header_like:
-                    value = _lookup_header_value(header, field)
+                    value = _lookup_header_value(legacy_header, field)
                 if not value and (extraction_strategy == "regex" or is_header_like):
                     value = _extract_field_value(full_text, pdf_pages, field, warnings)
 
                 fallback_row[field_key] = value
-
-            fallback_row["carrier"] = header.get("carrier", "")
-            fallback_row["contractId"] = header.get("contractId", "")
-            fallback_row["effectiveDate"] = header.get("effectiveDate", "")
-            fallback_row["expirationDate"] = header.get("expirationDate", "")
             tab_rows.append(fallback_row)
 
         tabs_out.append({"name": tab_name, "rows": tab_rows})
 
-    rates = tabs_out[0]["rows"] if len(tabs_out) > 0 else []
-    origin_arbs = tabs_out[1]["rows"] if len(tabs_out) > 1 else []
-    dest_arbs = tabs_out[2]["rows"] if len(tabs_out) > 2 else []
+        if tab_section in section_rows_map and not section_rows_map[tab_section]:
+            section_rows_map[tab_section] = tab_rows
+
+    rates = section_rows_map["RATES"]
+    origin_arbs = section_rows_map["ORIGIN_ARB"]
+    dest_arbs = section_rows_map["DEST_ARB"]
     return rates, origin_arbs, dest_arbs, tabs_out, warnings
 
 
@@ -1230,7 +1899,7 @@ def _legacy_merge_row(base: Dict[str, str], cont: Dict[str, str]) -> None:
             base[key] = _legacy_clean_text(f"{current} {value}")
 
 
-def _legacy_build_boundaries(doc: fitz.Document) -> List[Tuple[int, float, str]]:
+def _legacy_build_boundaries(doc: Any) -> List[Tuple[int, float, str]]:
     found: List[Tuple[int, float, str]] = []
     seen = set()
     for page_no in range(len(doc)):
@@ -1269,7 +1938,7 @@ def _legacy_section_for(
     return current
 
 
-def _legacy_scan_inline_labels(page: fitz.Page) -> List[Tuple[float, str, str]]:
+def _legacy_scan_inline_labels(page: Any) -> List[Tuple[float, str, str]]:
     lines: List[Tuple[float, str]] = []
     for block in page.get_text("dict").get("blocks", []):
         if block.get("type") != 0:
@@ -1328,7 +1997,7 @@ def _legacy_parse_scope_unbracketed(text: str) -> str:
     return _legacy_clean_text(match.group(1)) if match else ""
 
 
-def _legacy_extract_header(doc: fitz.Document) -> Dict[str, str]:
+def _legacy_extract_header(doc: Any) -> Dict[str, str]:
     texts = [doc[i].get_text("text") for i in range(min(len(doc), 12))]
     text = "\n".join(texts)
 
@@ -1466,7 +2135,7 @@ def _legacy_build_dest_arb_row(
 
 
 def _legacy_extract_tables(
-    doc: fitz.Document,
+    doc: Any,
     header: Dict[str, str],
 ) -> Tuple[
     List[Dict[str, str]],
@@ -1657,19 +2326,13 @@ def _legacy_extract_tables(
 def main():
     parser = argparse.ArgumentParser(description="Extract freight contract tables from a PDF")
     parser.add_argument("--pdf", required=True, help="Absolute path to the PDF file")
-    parser.add_argument(
-        "--schema-json",
-        required=False,
-        default="",
-        help="Optional JSON array of schema fields with regex rules",
-    )
     args = parser.parse_args()
 
     start = time.time()
     warnings: List[str] = []
 
     try:
-        doc = fitz.open(args.pdf)
+        doc = open_pdf_document(args.pdf)
     except Exception as e:
         print(json.dumps({"error": f"Failed to open PDF: {e}"}))
         sys.stdout.flush()
@@ -1678,32 +2341,17 @@ def main():
     page_count = len(doc)
 
     try:
-        header = extract_header(doc)
-        tabs_out: List[Dict[str, Any]] = []
-        raw_pages: List[Dict[str, Any]] = []
-        schema_preset = _parse_schema_preset(args.schema_json, warnings)
-
-        if schema_preset:
-            rates, origin_arbs, dest_arbs, tabs_out, tbl_warnings = extract_tables_from_schema(
-                doc, header, schema_preset
-            )
-            # Collect raw per-page text for schema mode as well.
-            raw_pages = [
-                {"page": i + 1, "text": doc[i].get_text("text")}
-                for i in range(page_count)
-            ]
-        else:
-            # No schema assigned: use hardcoded legacy extractor as fallback.
-            header = _legacy_extract_header(doc)
-            rates, origin_arbs, dest_arbs, tbl_warnings, raw_pages = _legacy_extract_tables(
-                doc,
-                header,
-            )
-            tabs_out = [
-                {"name": "Rates", "rows": rates},
-                {"name": "Origin Arbitraries", "rows": origin_arbs},
-                {"name": "Destination Arbitraries", "rows": dest_arbs},
-            ]
+        # Legacy-only path: keep this script focused on standard hardcoded extraction.
+        header = _legacy_extract_header(doc)
+        rates, origin_arbs, dest_arbs, tbl_warnings, raw_pages = _legacy_extract_tables(
+            doc,
+            header,
+        )
+        tabs_out = [
+            {"name": "Rates", "rows": rates},
+            {"name": "Origin Arbitraries", "rows": origin_arbs},
+            {"name": "Destination Arbitraries", "rows": dest_arbs},
+        ]
 
         warnings.extend(tbl_warnings)
     except Exception as e:

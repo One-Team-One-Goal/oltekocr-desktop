@@ -34,7 +34,8 @@ interface SessionSchemaFieldRule {
   pageRange?: string;
   postProcessing?: string[];
   altRegexRules?: string[];
-  sectionHint?: "RATES" | "ORIGIN_ARB" | "DEST_ARB" | "HEADER";
+  sectionHint?: string;
+  sectionIndicatorKey?: string;
   contextHint?: "same_line_after_label" | "next_line_after_label" | "table_cell";
   contextLabel?: string;
   mandatory?: boolean;
@@ -52,6 +53,8 @@ interface SessionSchemaTabRule {
 interface SessionSchemaPresetRule {
   id: string;
   name: string;
+  extractionMode?: "AUTO" | "CONTRACT_BIASED" | "GENERIC";
+  recordStartRegex?: string;
   tabs: SessionSchemaTabRule[];
 }
 
@@ -64,8 +67,12 @@ export class ContractExtractionService {
     private readonly settings: SettingsService,
   ) {}
 
-  private get scriptPath(): string {
+  private get legacyScriptPath(): string {
     return join(process.cwd(), "src", "main", "python", "pdf_contract_extract.py");
+  }
+
+  private get dynamicScriptPath(): string {
+    return join(process.cwd(), "src", "main", "python", "pdf_contract_extract_dynamic.py");
   }
 
   private resolvePythonExe(): string {
@@ -152,7 +159,8 @@ export class ContractExtractionService {
     schemaPreset: SessionSchemaPresetRule | null,
   ): Promise<ContractExtractionResult> {
     const pythonExe = this.resolvePythonExe();
-    const script = this.scriptPath;
+    const useDynamic = Boolean(schemaPreset && schemaPreset.tabs.length > 0);
+    const script = useDynamic ? this.dynamicScriptPath : this.legacyScriptPath;
     const cfg = this.settings.getAll().ocr;
     const CONTRACT_TIMEOUT_S = Math.max(cfg.timeout ?? 180, 600);
     const timeoutMs = CONTRACT_TIMEOUT_S * 1000;
@@ -163,11 +171,13 @@ export class ContractExtractionService {
 
     return new Promise((resolve, reject) => {
       const args = ["-u", script, "--pdf", pdfPath];
-      if (schemaPreset && schemaPreset.tabs.length > 0) {
+      if (useDynamic && schemaPreset) {
         this.logger.log(
-          `Using schema preset '${schemaPreset.name}' with ${schemaPreset.tabs.length} tab(s) for extraction`,
+          `Using dynamic extractor with schema preset '${schemaPreset.name}' (${schemaPreset.tabs.length} tab(s))`,
         );
         args.push("--schema-json", JSON.stringify(schemaPreset));
+      } else {
+        this.logger.log("Using legacy standard contract extractor (no schema preset attached)");
       }
 
       const child = spawn(pythonExe, args, {
@@ -242,8 +252,20 @@ export class ContractExtractionService {
     if (!presetId) return null;
 
     const presetRows = await this.prisma.$queryRawUnsafe<
-      Array<{ id: string; name: string }>
-    >(`SELECT id, name FROM schema_presets WHERE id = ?`, presetId);
+      Array<{
+        id: string;
+        name: string;
+        extraction_mode: string | null;
+        record_start_regex: string | null;
+      }>
+    >(
+      `
+      SELECT id, name, extraction_mode, record_start_regex
+      FROM schema_presets
+      WHERE id = ?
+      `,
+      presetId,
+    );
     if (presetRows.length === 0) return null;
 
     const tabRows = await this.prisma.$queryRawUnsafe<
@@ -308,6 +330,13 @@ export class ContractExtractionService {
     return {
       id: presetRows[0].id,
       name: presetRows[0].name,
+      extractionMode:
+        presetRows[0].extraction_mode === "CONTRACT_BIASED" ||
+        presetRows[0].extraction_mode === "GENERIC" ||
+        presetRows[0].extraction_mode === "AUTO"
+          ? (presetRows[0].extraction_mode as "AUTO" | "CONTRACT_BIASED" | "GENERIC")
+          : "AUTO",
+      recordStartRegex: presetRows[0].record_start_regex ?? undefined,
       tabs: tabRows.map((tab) => ({
         name: tab.name,
         fields: fieldRows
@@ -342,13 +371,8 @@ export class ContractExtractionService {
                 ? f.data_type
                 : undefined;
 
-            const sectionHint =
-              f.section_hint === "RATES" ||
-              f.section_hint === "ORIGIN_ARB" ||
-              f.section_hint === "DEST_ARB" ||
-              f.section_hint === "HEADER"
-                ? f.section_hint
-                : undefined;
+            const sectionHint = (f.section_hint ?? "").trim() || undefined;
+            const sectionIndicatorKey = (f.context_label ?? "").trim() || undefined;
 
             const contextHint =
               f.context_hint === "same_line_after_label" ||
@@ -367,6 +391,7 @@ export class ContractExtractionService {
               postProcessing: parseJsonArray(f.post_processing),
               altRegexRules: parseJsonArray(f.alt_regex_rules),
               sectionHint,
+              sectionIndicatorKey,
               contextHint,
               contextLabel: f.context_label ?? undefined,
               mandatory:

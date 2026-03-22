@@ -31,6 +31,77 @@ import type {
   SessionColumn,
 } from "@shared/types";
 
+const STANDARD_CONTRACT_SCHEMA_NAME = "STANDARD_CONTRACT_SCHEMA";
+
+const STANDARD_CONTRACT_SCHEMA_TABS: SchemaPresetTabDto[] = [
+  {
+    name: "Rates",
+    fields: [
+      { label: "Carrier", fieldKey: "Carrier", regexRule: "" },
+      { label: "Contract ID", fieldKey: "Contract ID", regexRule: "" },
+      { label: "effective_date", fieldKey: "effective_date", regexRule: "" },
+      { label: "expiration_date", fieldKey: "expiration_date", regexRule: "" },
+      { label: "commodity", fieldKey: "commodity", regexRule: "" },
+      { label: "origin_city", fieldKey: "origin_city", regexRule: "" },
+      { label: "origin_via_city", fieldKey: "origin_via_city", regexRule: "" },
+      { label: "destination_city", fieldKey: "destination_city", regexRule: "" },
+      { label: "destination_via_city", fieldKey: "destination_via_city", regexRule: "" },
+      { label: "service", fieldKey: "service", regexRule: "" },
+      { label: "Remarks", fieldKey: "Remarks", regexRule: "" },
+      { label: "SCOPE", fieldKey: "SCOPE", regexRule: "" },
+      { label: "BaseRate 20", fieldKey: "BaseRate 20", regexRule: "" },
+      { label: "BaseRate 40", fieldKey: "BaseRate 40", regexRule: "" },
+      { label: "BaseRate 40H", fieldKey: "BaseRate 40H", regexRule: "" },
+      { label: "BaseRate 45", fieldKey: "BaseRate 45", regexRule: "" },
+      { label: "AMS(CHINA & JAPAN)", fieldKey: "AMS(CHINA & JAPAN)", regexRule: "" },
+      { label: "(HEA) Heavy Surcharge", fieldKey: "(HEA) Heavy Surcharge", regexRule: "" },
+      { label: "AGW", fieldKey: "AGW", regexRule: "" },
+      { label: "RED SEA DIVERSION CHARGE(RDS).", fieldKey: "RED SEA DIVERSION CHARGE(RDS).", regexRule: "" },
+    ],
+  },
+  {
+    name: "Origin Arbitraries",
+    fields: [
+      { label: "Carrier", fieldKey: "Carrier", regexRule: "" },
+      { label: "Contract ID", fieldKey: "Contract ID", regexRule: "" },
+      { label: "effective_date", fieldKey: "effective_date", regexRule: "" },
+      { label: "expiration_date", fieldKey: "expiration_date", regexRule: "" },
+      { label: "commodity", fieldKey: "commodity", regexRule: "" },
+      { label: "origin_city", fieldKey: "origin_city", regexRule: "" },
+      { label: "origin_via_city", fieldKey: "origin_via_city", regexRule: "" },
+      { label: "service", fieldKey: "service", regexRule: "" },
+      { label: "Remarks", fieldKey: "Remarks", regexRule: "" },
+      { label: "Scope", fieldKey: "Scope", regexRule: "" },
+      { label: "BaseRate 20", fieldKey: "BaseRate 20", regexRule: "" },
+      { label: "BaseRate 40", fieldKey: "BaseRate 40", regexRule: "" },
+      { label: "BaseRate 40H", fieldKey: "BaseRate 40H", regexRule: "" },
+      { label: "BaseRate 45", fieldKey: "BaseRate 45", regexRule: "" },
+      { label: "20' AGW", fieldKey: "20' AGW", regexRule: "" },
+      { label: "40' AGW", fieldKey: "40' AGW", regexRule: "" },
+      { label: "45' AGW", fieldKey: "45' AGW", regexRule: "" },
+    ],
+  },
+  {
+    name: "Destination Arbitraries",
+    fields: [
+      { label: "Carrier", fieldKey: "Carrier", regexRule: "" },
+      { label: "Contract ID", fieldKey: "Contract ID", regexRule: "" },
+      { label: "effective_date", fieldKey: "effective_date", regexRule: "" },
+      { label: "expiration_date", fieldKey: "expiration_date", regexRule: "" },
+      { label: "commodity", fieldKey: "commodity", regexRule: "" },
+      { label: "destination_city", fieldKey: "destination_city", regexRule: "" },
+      { label: "destination_via_city", fieldKey: "destination_via_city", regexRule: "" },
+      { label: "service", fieldKey: "service", regexRule: "" },
+      { label: "Remarks", fieldKey: "Remarks", regexRule: "" },
+      { label: "Scope", fieldKey: "Scope", regexRule: "" },
+      { label: "BaseRate 20", fieldKey: "BaseRate 20", regexRule: "" },
+      { label: "BaseRate 40", fieldKey: "BaseRate 40", regexRule: "" },
+      { label: "BaseRate 40H", fieldKey: "BaseRate 40H", regexRule: "" },
+      { label: "BaseRate 45", fieldKey: "BaseRate 45", regexRule: "" },
+    ],
+  },
+];
+
 @Injectable()
 export class SessionsService {
   private readonly logger = new Logger(SessionsService.name);
@@ -328,23 +399,116 @@ export class SessionsService {
     return this.getSchemaFields(id);
   }
 
-  async listSchemaPresets(): Promise<Array<{ id: string; name: string }>> {
-    return this.prisma.$queryRawUnsafe<Array<{ id: string; name: string }>>(
-      `SELECT id, name FROM schema_presets ORDER BY name COLLATE NOCASE ASC`,
+  async listSchemaPresets(): Promise<
+    Array<{
+      id: string;
+      name: string;
+      extractionMode: "AUTO" | "CONTRACT_BIASED" | "GENERIC";
+      recordStartRegex?: string;
+    }>
+  > {
+    await this.ensureStandardContractSchemaPreset();
+    const rows = await this.prisma.$queryRawUnsafe<
+      Array<{
+        id: string;
+        name: string;
+        extractionMode: "AUTO" | "CONTRACT_BIASED" | "GENERIC";
+        recordStartRegex: string | null;
+      }>
+    >(
+      `
+      SELECT
+        id,
+        name,
+        COALESCE(extraction_mode, 'AUTO') AS extractionMode,
+        record_start_regex AS recordStartRegex
+      FROM schema_presets
+      ORDER BY name COLLATE NOCASE ASC
+      `,
     );
+
+    return rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      extractionMode: row.extractionMode,
+      recordStartRegex: row.recordStartRegex ?? undefined,
+    }));
+  }
+
+  private async ensureStandardContractSchemaPreset(): Promise<void> {
+    const existing = await this.prisma.$queryRawUnsafe<Array<{ id: string }>>(
+      `SELECT id FROM schema_presets WHERE name = ? LIMIT 1`,
+      STANDARD_CONTRACT_SCHEMA_NAME,
+    );
+
+    const presetId = existing[0]?.id ?? uuid();
+    await this.prisma.$transaction(async (tx) => {
+      if (existing.length === 0) {
+        await tx.$executeRawUnsafe(
+          `
+          INSERT INTO schema_presets (id, name, extraction_mode, record_start_regex, created_at, updated_at)
+          VALUES (?, ?, 'CONTRACT_BIASED', '6\\s*[-.]\\s*1|GENERAL\\s+RATE', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+          `,
+          presetId,
+          STANDARD_CONTRACT_SCHEMA_NAME,
+        );
+      } else {
+        await tx.$executeRawUnsafe(
+          `
+          UPDATE schema_presets
+          SET
+            extraction_mode = 'CONTRACT_BIASED',
+            record_start_regex = '6\\s*[-.]\\s*1|GENERAL\\s+RATE',
+            updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+          `,
+          presetId,
+        );
+        await tx.$executeRawUnsafe(
+          `DELETE FROM schema_preset_tabs WHERE preset_id = ?`,
+          presetId,
+        );
+      }
+
+      await this.writeSchemaPresetTabs(tx, presetId, STANDARD_CONTRACT_SCHEMA_TABS);
+    });
+
+    if (existing.length === 0) {
+      this.logger.log(`Seeded global schema preset: ${STANDARD_CONTRACT_SCHEMA_NAME}`);
+    } else {
+      this.logger.log(`Synchronized global schema preset: ${STANDARD_CONTRACT_SCHEMA_NAME}`);
+    }
   }
 
   async getSchemaPreset(presetId: string): Promise<{
     id: string;
     name: string;
+    extractionMode: "AUTO" | "CONTRACT_BIASED" | "GENERIC";
+    recordStartRegex?: string;
     tabs: Array<{
       name: string;
       fields: SchemaPresetFieldDto[];
     }>;
   }> {
     const preset = await this.prisma.$queryRawUnsafe<
-      Array<{ id: string; name: string }>
-    >(`SELECT id, name FROM schema_presets WHERE id = ?`, presetId);
+      Array<{
+        id: string;
+        name: string;
+        extractionMode: "AUTO" | "CONTRACT_BIASED" | "GENERIC";
+        recordStartRegex: string | null;
+      }>
+    >(
+      `
+      SELECT
+        id,
+        name,
+        COALESCE(extraction_mode, 'AUTO') AS extractionMode,
+        record_start_regex AS recordStartRegex
+      FROM schema_presets
+      WHERE id = ?
+      `,
+      presetId,
+    );
     if (preset.length === 0) {
       throw new NotFoundException(`Schema preset ${presetId} not found`);
     }
@@ -353,6 +517,8 @@ export class SessionsService {
     return {
       id: preset[0].id,
       name: preset[0].name,
+      extractionMode: preset[0].extractionMode,
+      recordStartRegex: preset[0].recordStartRegex ?? undefined,
       tabs,
     };
   }
@@ -366,11 +532,13 @@ export class SessionsService {
     await this.prisma.$transaction(async (tx) => {
       await tx.$executeRawUnsafe(
         `
-        INSERT INTO schema_presets (id, name, created_at, updated_at)
-        VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        INSERT INTO schema_presets (id, name, extraction_mode, record_start_regex, created_at, updated_at)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         `,
         presetId,
         dto.name.trim(),
+        dto.extractionMode ?? "AUTO",
+        dto.recordStartRegex?.trim() || null,
       );
 
       await this.writeSchemaPresetTabs(tx, presetId, dto.tabs);
@@ -388,8 +556,18 @@ export class SessionsService {
 
     await this.prisma.$transaction(async (tx) => {
       await tx.$executeRawUnsafe(
-        `UPDATE schema_presets SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+        `
+        UPDATE schema_presets
+        SET
+          name = ?,
+          extraction_mode = ?,
+          record_start_regex = ?,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        `,
         dto.name.trim(),
+        dto.extractionMode ?? "AUTO",
+        dto.recordStartRegex?.trim() || null,
         presetId,
       );
 
@@ -745,13 +923,8 @@ export class SessionsService {
           pageRange: f.page_range ?? undefined,
           postProcessing: parseJsonArray(f.post_processing),
           altRegexRules: parseJsonArray(f.alt_regex_rules),
-          sectionHint:
-            f.section_hint === "RATES" ||
-            f.section_hint === "ORIGIN_ARB" ||
-            f.section_hint === "DEST_ARB" ||
-            f.section_hint === "HEADER"
-              ? f.section_hint
-              : undefined,
+          sectionHint: (f.section_hint ?? "").trim() || undefined,
+          sectionIndicatorKey: (f.context_label ?? "").trim() || undefined,
           contextHint:
             f.context_hint === "same_line_after_label" ||
             f.context_hint === "next_line_after_label" ||
@@ -831,7 +1004,7 @@ export class SessionsService {
           stringifyArray(field.altRegexRules),
           field.sectionHint ?? null,
           field.contextHint ?? null,
-          field.contextLabel?.trim() || null,
+          field.sectionIndicatorKey?.trim() || field.contextLabel?.trim() || null,
           field.mandatory ? 1 : 0,
           field.expectedFormat?.trim() || null,
           field.minLength ?? null,

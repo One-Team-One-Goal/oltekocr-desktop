@@ -187,10 +187,15 @@ export class SchemaPresetFieldDto {
   @IsString({ each: true })
   altRegexRules?: string[];
 
-  @ApiPropertyOptional({ enum: ["RATES", "ORIGIN_ARB", "DEST_ARB", "HEADER"], example: "RATES" })
+  @ApiPropertyOptional({ example: "RATES", description: "Optional section tag (supports custom values)." })
   @IsOptional()
-  @IsEnum(["RATES", "ORIGIN_ARB", "DEST_ARB", "HEADER"])
+  @IsString()
   sectionHint?: string;
+
+  @ApiPropertyOptional({ example: "6-1. General Rate", description: "Optional marker text used to identify a custom section." })
+  @IsOptional()
+  @IsString()
+  sectionIndicatorKey?: string;
 
   @ApiPropertyOptional({ enum: ["same_line_after_label", "next_line_after_label", "table_cell"], example: "same_line_after_label" })
   @IsOptional()
@@ -247,6 +252,23 @@ export class UpsertSchemaPresetDto {
   @IsString()
   @IsNotEmpty()
   name!: string;
+
+  @ApiPropertyOptional({
+    enum: ["AUTO", "CONTRACT_BIASED", "GENERIC"],
+    example: "AUTO",
+    description: "Engine selection for this schema preset.",
+  })
+  @IsOptional()
+  @IsEnum(["AUTO", "CONTRACT_BIASED", "GENERIC"])
+  extractionMode?: "AUTO" | "CONTRACT_BIASED" | "GENERIC";
+
+  @ApiPropertyOptional({
+    example: "INVOICE",
+    description: "Optional regex/text marker used to split multi-record documents.",
+  })
+  @IsOptional()
+  @IsString()
+  recordStartRegex?: string;
 
   @ApiProperty({ type: [SchemaPresetTabDto] })
   @IsArray()

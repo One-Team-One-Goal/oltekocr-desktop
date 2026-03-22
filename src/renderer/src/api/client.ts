@@ -147,7 +147,8 @@ export interface SchemaPresetFieldPayload {
   pageRange?: string;
   postProcessing?: string[];
   altRegexRules?: string[];
-  sectionHint?: "RATES" | "ORIGIN_ARB" | "DEST_ARB" | "HEADER";
+  sectionHint?: string;
+  sectionIndicatorKey?: string;
   contextHint?: "same_line_after_label" | "next_line_after_label" | "table_cell";
   contextLabel?: string;
   mandatory?: boolean;
@@ -165,6 +166,8 @@ export interface SchemaPresetTabPayload {
 export interface SchemaPresetPayload {
   id: string;
   name: string;
+  extractionMode?: "AUTO" | "CONTRACT_BIASED" | "GENERIC";
+  recordStartRegex?: string;
   tabs: SchemaPresetTabPayload[];
 }
 
@@ -220,17 +223,34 @@ export const sessionsApi = {
       body: JSON.stringify({ fields }),
     }),
   listSchemaPresets: () =>
-    request<Array<{ id: string; name: string }>>(`/sessions/schema-presets`),
+    request<
+      Array<{
+        id: string;
+        name: string;
+        extractionMode?: "AUTO" | "CONTRACT_BIASED" | "GENERIC";
+        recordStartRegex?: string;
+      }>
+    >(`/sessions/schema-presets`),
   getSchemaPreset: (presetId: string) =>
     request<SchemaPresetPayload>(`/sessions/schema-presets/${presetId}`),
-  createSchemaPreset: (data: { name: string; tabs: SchemaPresetTabPayload[] }) =>
+  createSchemaPreset: (data: {
+    name: string;
+    extractionMode?: "AUTO" | "CONTRACT_BIASED" | "GENERIC";
+    recordStartRegex?: string;
+    tabs: SchemaPresetTabPayload[];
+  }) =>
     request<SchemaPresetPayload>(`/sessions/schema-presets`, {
       method: "POST",
       body: JSON.stringify(data),
     }),
   updateSchemaPreset: (
     presetId: string,
-    data: { name: string; tabs: SchemaPresetTabPayload[] },
+    data: {
+      name: string;
+      extractionMode?: "AUTO" | "CONTRACT_BIASED" | "GENERIC";
+      recordStartRegex?: string;
+      tabs: SchemaPresetTabPayload[];
+    },
   ) =>
     request<SchemaPresetPayload>(`/sessions/schema-presets/${presetId}`, {
       method: "PATCH",
