@@ -1,7 +1,12 @@
 import { Body, Controller, Get, Param, Post } from "@nestjs/common";
 import { ApiOperation, ApiTags } from "@nestjs/swagger";
 import { AutoSchemasService } from "./auto-schemas.service";
-import { CreateAutoSchemaDto, GenerateAutoSchemaLlmDto } from "./auto-schemas.dto";
+import {
+  CreateAutoSchemaDto,
+  DetectAutoSchemaSectionsDto,
+  GenerateAutoSchemaLlmDto,
+  GenerateAutoSchemaSectionDraftDto,
+} from "./auto-schemas.dto";
 
 @ApiTags("auto-schemas")
 @Controller("auto-schemas")
@@ -27,8 +32,33 @@ export class AutoSchemasController {
   }
 
   @Post(":id/llm-extract")
-  @ApiOperation({ summary: "Generate structured schema JSON from stored Docling JSON using LLM" })
+  @ApiOperation({
+    summary:
+      "Generate structured schema JSON from stored Docling JSON using LLM",
+  })
   generateLlm(@Param("id") id: string, @Body() dto: GenerateAutoSchemaLlmDto) {
     return this.autoSchemasService.generateLlmFromAutoSchema(id, dto);
+  }
+
+  @Post(":id/sections")
+  @ApiOperation({
+    summary: "Detect major section outline from extracted document text",
+  })
+  detectSections(
+    @Param("id") id: string,
+    @Body() dto: DetectAutoSchemaSectionsDto,
+  ) {
+    return this.autoSchemasService.detectSectionsFromAutoSchema(id, dto);
+  }
+
+  @Post(":id/section-draft")
+  @ApiOperation({
+    summary: "Generate schema draft for a single selected section",
+  })
+  generateSectionDraft(
+    @Param("id") id: string,
+    @Body() dto: GenerateAutoSchemaSectionDraftDto,
+  ) {
+    return this.autoSchemasService.generateSectionDraftFromAutoSchema(id, dto);
   }
 }

@@ -27,6 +27,13 @@ export async function bootstrapNestServer(): Promise<number> {
   // Enable CORS for dev (Vite dev server on different port)
   app.enableCors();
 
+  // Allow large local payloads (e.g. extracted OCR JSON from long PDFs).
+  (app as any).useBodyParser("json", { limit: "50mb" });
+  (app as any).useBodyParser("urlencoded", {
+    extended: true,
+    limit: "50mb",
+  });
+
   // ─── OpenAPI / Swagger ─────────────────────────────────
   const config = new DocumentBuilder()
     .setTitle("OltekOCR API")

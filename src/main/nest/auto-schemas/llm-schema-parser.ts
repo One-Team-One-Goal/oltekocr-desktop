@@ -8,7 +8,10 @@ export interface ParsedLlmSchemaField {
   extractionStrategy: "regex" | "table_column" | "header_field" | "page_region";
   dataType: "string" | "currency" | "number" | "date" | "percentage";
   sectionHint?: string;
-  contextHint?: "same_line_after_label" | "next_line_after_label" | "table_cell";
+  contextHint?:
+    | "same_line_after_label"
+    | "next_line_after_label"
+    | "table_cell";
   contextLabel?: string;
   mandatory?: boolean;
   postProcessing?: string[];
@@ -31,11 +34,20 @@ export interface ParsedLlmSchemaTable {
   columns: ParsedLlmSchemaField[];
 }
 
+export interface ParsedLlmSchemaTask {
+  id: string;
+  sectionId?: string;
+  sectionLabel: string;
+  objective: string;
+  fields: ParsedLlmSchemaField[];
+}
+
 export interface ParsedLlmSchema {
   documentId: string;
   company: string;
   extractionMode: "AUTO" | "CONTRACT_BIASED" | "GENERIC";
   recordStartRegex: string;
+  extractionTasks: ParsedLlmSchemaTask[];
   sections: ParsedLlmSchemaSection[];
   tables: ParsedLlmSchemaTable[];
   tabs: ParsedLlmSchemaTab[];
@@ -57,15 +69,24 @@ const asArray = (value: unknown): AnyRecord[] =>
 
 const toScalarString = (value: unknown): string => {
   if (Array.isArray(value)) {
-    const first = value.find((v) => typeof v === "string" && v.trim().length > 0);
+    const first = value.find(
+      (v) => typeof v === "string" && v.trim().length > 0,
+    );
     return typeof first === "string" ? first : "";
   }
   return typeof value === "string" ? value : String(value || "");
 };
 
-const normalizeDataType = (value: unknown): ParsedLlmSchemaField["dataType"] => {
+const normalizeDataType = (
+  value: unknown,
+): ParsedLlmSchemaField["dataType"] => {
   const v = String(value || "").toLowerCase();
-  if (v === "currency" || v === "number" || v === "date" || v === "percentage") {
+  if (
+    v === "currency" ||
+    v === "number" ||
+    v === "date" ||
+    v === "percentage"
+  ) {
     return v;
   }
   return "string";
@@ -76,16 +97,27 @@ const normalizeExtractionStrategy = (
   fallback: ParsedLlmSchemaField["extractionStrategy"],
 ): ParsedLlmSchemaField["extractionStrategy"] => {
   const v = String(value || "").toLowerCase();
-  if (v === "regex" || v === "table_column" || v === "header_field" || v === "page_region") {
+  if (
+    v === "regex" ||
+    v === "table_column" ||
+    v === "header_field" ||
+    v === "page_region"
+  ) {
     return v;
   }
   if (v === "first_line") return "header_field";
   return fallback;
 };
 
-const normalizeContextHint = (value: unknown): ParsedLlmSchemaField["contextHint"] => {
+const normalizeContextHint = (
+  value: unknown,
+): ParsedLlmSchemaField["contextHint"] => {
   const v = String(value || "").toLowerCase();
-  if (v === "same_line_after_label" || v === "next_line_after_label" || v === "table_cell") {
+  if (
+    v === "same_line_after_label" ||
+    v === "next_line_after_label" ||
+    v === "table_cell"
+  ) {
     return v;
   }
   return undefined;
@@ -112,7 +144,8 @@ const parseField = (
   const ruleType = String(rule.type || "").toLowerCase();
 
   const explicitRegex = String(rawField.regex_rule || rawField.regexRule || "");
-  const regexRule = explicitRegex || (ruleType === "regex" ? String(rule.pattern || "") : "");
+  const regexRule =
+    explicitRegex || (ruleType === "regex" ? String(rule.pattern || "") : "");
 
   return {
     id,
@@ -132,44 +165,94 @@ const parseField = (
       : rawField.sectionHint
         ? String(rawField.sectionHint)
         : undefined,
-    contextHint: normalizeContextHint(rawField.context_hint || rawField.contextHint),
+    contextHint: normalizeContextHint(
+      rawField.context_hint || rawField.contextHint,
+    ),
     contextLabel:
       rawField.context_label !== undefined
         ? String(rawField.context_label || "")
         : rawField.contextLabel !== undefined
           ? String(rawField.contextLabel || "")
           : undefined,
-    mandatory: typeof rawField.mandatory === "boolean" ? rawField.mandatory : undefined,
-    postProcessing: normalizePostProcessing(rawField.post_processing || rawField.postProcessing),
+    mandatory:
+      typeof rawField.mandatory === "boolean" ? rawField.mandatory : undefined,
+    postProcessing: normalizePostProcessing(
+      rawField.post_processing || rawField.postProcessing,
+    ),
   };
 };
 
 export function parseLlmSchemaOutput(input: unknown): ParsedLlmSchema {
-  const root = (input && typeof input === "object" ? (input as AnyRecord) : {}) as AnyRecord;
+  const root = (
+    input && typeof input === "object" ? (input as AnyRecord) : {}
+  ) as AnyRecord;
 
+  const taskNodes =
+    asArray(root.extraction_tasks).length > 0
+      ? asArray(root.extraction_tasks)
+      : asArray(root.extractionTasks);
   const sectionNodes = asArray(root.sections);
   const tableNodes = asArray(root.tables);
 
-  const sections: ParsedLlmSchemaSection[] = sectionNodes.map((section, sectionIdx) => {
-    const sectionId = String(section.id || `section_${sectionIdx + 1}`);
-    const sectionLabel = String(section.label || `Section ${sectionIdx + 1}`);
-    const fields = asArray(section.fields)
-      .filter((field) => field.is_active !== false)
-      .map((field, fieldIdx) =>
-        parseField(
-          field,
-          `${sectionId}_field_${fieldIdx + 1}`,
-          `Field ${fieldIdx + 1}`,
-          "regex",
-        ),
+  const extractionTasks: ParsedLlmSchemaTask[] = taskNodes
+    .filter((task) => task.is_active !== false)
+    .map((task, taskIdx) => {
+      const taskId = String(task.id || `task_${taskIdx + 1}`);
+      const sectionLabel = String(
+        task.section_label ||
+          task.sectionLabel ||
+          task.label ||
+          `Section ${taskIdx + 1}`,
       );
+      const objective = String(task.objective || "").trim();
+      const fields = asArray(task.fields)
+        .filter((field) => field.is_active !== false)
+        .map((field, fieldIdx) =>
+          parseField(
+            field,
+            `${taskId}_field_${fieldIdx + 1}`,
+            `Field ${fieldIdx + 1}`,
+            "regex",
+          ),
+        );
 
-    return {
-      id: sectionId,
-      label: sectionLabel,
-      fields,
-    };
-  });
+      return {
+        id: taskId,
+        sectionId:
+          task.section_id !== undefined
+            ? String(task.section_id || "")
+            : task.sectionId !== undefined
+              ? String(task.sectionId || "")
+              : undefined,
+        sectionLabel,
+        objective,
+        fields,
+      };
+    })
+    .filter((task) => task.fields.length > 0);
+
+  const sections: ParsedLlmSchemaSection[] = sectionNodes.map(
+    (section, sectionIdx) => {
+      const sectionId = String(section.id || `section_${sectionIdx + 1}`);
+      const sectionLabel = String(section.label || `Section ${sectionIdx + 1}`);
+      const fields = asArray(section.fields)
+        .filter((field) => field.is_active !== false)
+        .map((field, fieldIdx) =>
+          parseField(
+            field,
+            `${sectionId}_field_${fieldIdx + 1}`,
+            `Field ${fieldIdx + 1}`,
+            "regex",
+          ),
+        );
+
+      return {
+        id: sectionId,
+        label: sectionLabel,
+        fields,
+      };
+    },
+  );
 
   const tables: ParsedLlmSchemaTable[] = tableNodes
     .filter((table) => table.is_active !== false)
@@ -215,19 +298,24 @@ export function parseLlmSchemaOutput(input: unknown): ParsedLlmSchema {
     })
     .filter((tab) => tab.fields.length > 0);
 
+  const taskTabs = extractionTasks
+    .map((task) => ({
+      name: task.sectionLabel,
+      fields: task.fields,
+    }))
+    .filter((tab) => tab.fields.length > 0);
+
   const tabs: ParsedLlmSchemaTab[] =
     explicitTabs.length > 0
       ? explicitTabs
-      : [
-          ...sections.map((section) => ({
-            name: section.label,
-            fields: section.fields,
-          })),
-          ...tables.map((table) => ({
-            name: table.label,
-            fields: table.columns,
-          })),
-        ].filter((tab) => tab.fields.length > 0);
+      : taskTabs.length > 0
+        ? taskTabs
+        : [
+            ...sections.map((section) => ({
+              name: section.label,
+              fields: section.fields,
+            })),
+          ].filter((tab) => tab.fields.length > 0);
 
   return {
     documentId: toScalarString(root.document_id),
@@ -239,6 +327,7 @@ export function parseLlmSchemaOutput(input: unknown): ParsedLlmSchema {
           ? "GENERIC"
           : "AUTO",
     recordStartRegex: String(root.record_start_regex || ""),
+    extractionTasks,
     sections,
     tables,
     tabs,

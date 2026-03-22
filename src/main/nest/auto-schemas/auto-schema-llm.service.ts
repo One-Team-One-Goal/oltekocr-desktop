@@ -12,7 +12,13 @@ export class AutoSchemaLlmService {
   constructor(private readonly settings: SettingsService) {}
 
   private get scriptPath(): string {
-    return join(process.cwd(), "src", "main", "python", "pdf_automatic_extractor_llm.py");
+    return join(
+      process.cwd(),
+      "src",
+      "main",
+      "python",
+      "pdf_automatic_extractor_llm.py",
+    );
   }
 
   private resolvePythonExe(): string {
@@ -37,6 +43,7 @@ export class AutoSchemaLlmService {
     doclingJson: Record<string, unknown>;
     model?: string;
     baseUrl?: string;
+    selectedSections?: string[];
   }): Promise<Record<string, unknown>> {
     const script = this.scriptPath;
     if (!existsSync(script)) {
@@ -44,22 +51,33 @@ export class AutoSchemaLlmService {
     }
 
     const pythonExe = this.resolvePythonExe();
-    const timeoutSec = Math.max((this.settings.getAll().ocr.timeout ?? 120) * 4, 480);
+    const timeoutSec = Math.max(
+      (this.settings.getAll().ocr.timeout ?? 120) * 4,
+      480,
+    );
     const timeoutMs = timeoutSec * 1000;
     const modelId = params.model?.trim() || this.getSelectedModelId();
     const baseUrl = params.baseUrl?.trim() || "http://127.0.0.1:11434";
 
     return new Promise((resolve, reject) => {
-      const child = spawn(pythonExe, [script, "--model", modelId, "--base-url", baseUrl], {
-        windowsHide: true,
-      });
+      const child = spawn(
+        pythonExe,
+        [script, "--model", modelId, "--base-url", baseUrl],
+        {
+          windowsHide: true,
+        },
+      );
 
       let stdout = "";
       let stderr = "";
 
       const timer = setTimeout(() => {
         child.kill();
-        reject(new Error(`Auto schema LLM extraction timed out after ${timeoutSec}s`));
+        reject(
+          new Error(
+            `Auto schema LLM extraction timed out after ${timeoutSec}s`,
+          ),
+        );
       }, timeoutMs);
 
       child.stdout.on("data", (chunk: Buffer) => {
@@ -74,7 +92,9 @@ export class AutoSchemaLlmService {
         clearTimeout(timer);
 
         if (stderr.trim()) {
-          this.logger.warn(`[pdf_automatic_extractor_llm stderr] ${stderr.trim()}`);
+          this.logger.warn(
+            `[pdf_automatic_extractor_llm stderr] ${stderr.trim()}`,
+          );
         }
 
         if (code !== 0) {
@@ -82,7 +102,7 @@ export class AutoSchemaLlmService {
           const errorContext = stderr.trim() || stdout.trim().slice(0, 500);
           reject(
             new Error(
-              `LLM schema sidecar exited with code ${code}. Details: ${errorContext || "(no output)"}`
+              `LLM schema sidecar exited with code ${code}. Details: ${errorContext || "(no output)"}`,
             ),
           );
           return;
@@ -107,7 +127,7 @@ export class AutoSchemaLlmService {
         } catch (parseErr) {
           reject(
             new Error(
-              `Failed to parse LLM response. stdout: ${stdout.slice(0, 500)}, stderr: ${stderr.slice(0, 500)}`
+              `Failed to parse LLM response. stdout: ${stdout.slice(0, 500)}, stderr: ${stderr.slice(0, 500)}`,
             ),
           );
         }
@@ -120,9 +140,27 @@ export class AutoSchemaLlmService {
 
       this.logger.log(`Using LLM model for auto schema extraction: ${modelId}`);
 
+      const selectedSections = Array.isArray(params.selectedSections)
+        ? params.selectedSections
+        : [];
+      const payloadPreview = {
+        selectedSections,
+        fullTextChars: String(
+          params.doclingJson?.fullText || params.doclingJson?.markdown || "",
+        ).length,
+        textBlocksCount: Array.isArray(params.doclingJson?.textBlocks)
+          ? params.doclingJson.textBlocks.length
+          : 0,
+        focus: params.doclingJson?.__focus || null,
+      };
+      this.logger.log(
+        `Auto-schema focused payload summary: ${JSON.stringify(payloadPreview).slice(0, 1200)}`,
+      );
+
       child.stdin.write(
         JSON.stringify({
           docling_json: params.doclingJson,
+          selected_sections: selectedSections,
         }),
       );
       child.stdin.end();

@@ -151,11 +151,50 @@ export interface AutoSchemaRecord {
   isAutoSchema?: boolean;
 }
 
+export interface AutoSchemaSectionNode {
+  id: string;
+  token: string;
+  title: string;
+  level: number;
+  confidence: number;
+  lineNumber: number;
+  pageStart: number | null;
+  pageEnd: number | null;
+  windowPages: number[];
+  children: AutoSchemaSectionNode[];
+}
+
 export interface AutoSchemaLlmParsed {
   documentId: string;
   company: string;
   extractionMode?: "AUTO" | "CONTRACT_BIASED" | "GENERIC";
   recordStartRegex?: string;
+  extractionTasks?: Array<{
+    id: string;
+    sectionId?: string;
+    sectionLabel: string;
+    objective: string;
+    fields: Array<{
+      id: string;
+      label: string;
+      fieldKey: string;
+      regexRule: string;
+      extractionStrategy:
+        | "regex"
+        | "table_column"
+        | "header_field"
+        | "page_region";
+      dataType: "string" | "currency" | "number" | "date" | "percentage";
+      sectionHint?: string;
+      contextHint?:
+        | "same_line_after_label"
+        | "next_line_after_label"
+        | "table_cell";
+      contextLabel?: string;
+      mandatory?: boolean;
+      postProcessing?: string[];
+    }>;
+  }>;
   sections: Array<{
     id: string;
     label: string;
@@ -164,10 +203,17 @@ export interface AutoSchemaLlmParsed {
       label: string;
       fieldKey: string;
       regexRule: string;
-      extractionStrategy: "regex" | "table_column" | "header_field" | "page_region";
+      extractionStrategy:
+        | "regex"
+        | "table_column"
+        | "header_field"
+        | "page_region";
       dataType: "string" | "currency" | "number" | "date" | "percentage";
       sectionHint?: string;
-      contextHint?: "same_line_after_label" | "next_line_after_label" | "table_cell";
+      contextHint?:
+        | "same_line_after_label"
+        | "next_line_after_label"
+        | "table_cell";
       contextLabel?: string;
       mandatory?: boolean;
       postProcessing?: string[];
@@ -181,10 +227,17 @@ export interface AutoSchemaLlmParsed {
       label: string;
       fieldKey: string;
       regexRule: string;
-      extractionStrategy: "regex" | "table_column" | "header_field" | "page_region";
+      extractionStrategy:
+        | "regex"
+        | "table_column"
+        | "header_field"
+        | "page_region";
       dataType: "string" | "currency" | "number" | "date" | "percentage";
       sectionHint?: string;
-      contextHint?: "same_line_after_label" | "next_line_after_label" | "table_cell";
+      contextHint?:
+        | "same_line_after_label"
+        | "next_line_after_label"
+        | "table_cell";
       contextLabel?: string;
       mandatory?: boolean;
       postProcessing?: string[];
@@ -197,15 +250,48 @@ export interface AutoSchemaLlmParsed {
       label: string;
       fieldKey: string;
       regexRule: string;
-      extractionStrategy: "regex" | "table_column" | "header_field" | "page_region";
+      extractionStrategy:
+        | "regex"
+        | "table_column"
+        | "header_field"
+        | "page_region";
       dataType: "string" | "currency" | "number" | "date" | "percentage";
       sectionHint?: string;
-      contextHint?: "same_line_after_label" | "next_line_after_label" | "table_cell";
+      contextHint?:
+        | "same_line_after_label"
+        | "next_line_after_label"
+        | "table_cell";
       contextLabel?: string;
       mandatory?: boolean;
       postProcessing?: string[];
     }>;
   }>;
+}
+
+export interface AutoSchemaSectionDraftResponse {
+  autoSchemaId: string;
+  documentId: string;
+  uploadedFileName: string;
+  section: {
+    id: string;
+    token: string;
+    title: string;
+    pageStart: number | null;
+    pageEnd: number | null;
+  };
+  focusedPages: number[];
+  focusContext?: {
+    strategy: string;
+    selectedSections: string[];
+    focusedPages: number[];
+    focusedLines: number[];
+    fullTextChars: number;
+    preview: string;
+    contextText: string;
+    contextTextTruncated: boolean;
+  };
+  llmJson: Record<string, unknown>;
+  parsed: AutoSchemaLlmParsed;
 }
 
 export const autoSchemasApi = {
@@ -223,17 +309,67 @@ export const autoSchemasApi = {
       method: "POST",
       body: JSON.stringify(data),
     }),
-  generateLlm: (id: string, data?: { model?: string; baseUrl?: string }) =>
+  generateLlm: (
+    id: string,
+    data?: {
+      model?: string;
+      baseUrl?: string;
+      selectedSections?: string[];
+      sectionWindowPages?: number;
+    },
+  ) =>
     request<{
       autoSchemaId: string;
       documentId: string;
       uploadedFileName: string;
       llmJson: Record<string, unknown>;
       parsed: AutoSchemaLlmParsed;
+      focusedPages?: number[];
+      focusedSectionCount?: number;
+      focusContext?: {
+        strategy: string;
+        selectedSections: string[];
+        focusedPages: number[];
+        focusedLines: number[];
+        fullTextChars: number;
+        preview: string;
+        contextText: string;
+        contextTextTruncated: boolean;
+      };
     }>(`/auto-schemas/${id}/llm-extract`, {
       method: "POST",
       body: JSON.stringify(data || {}),
     }),
+  detectSections: (
+    id: string,
+    data?: { minConfidence?: number; maxNodes?: number },
+  ) =>
+    request<{
+      autoSchemaId: string;
+      documentId: string;
+      uploadedFileName: string;
+      textLength: number;
+      sections: AutoSchemaSectionNode[];
+    }>(`/auto-schemas/${id}/sections`, {
+      method: "POST",
+      body: JSON.stringify(data || {}),
+    }),
+  generateSectionDraft: (
+    id: string,
+    data: {
+      sectionId: string;
+      sectionWindowPages?: number;
+      model?: string;
+      baseUrl?: string;
+    },
+  ) =>
+    request<AutoSchemaSectionDraftResponse>(
+      `/auto-schemas/${id}/section-draft`,
+      {
+        method: "POST",
+        body: JSON.stringify(data),
+      },
+    ),
 };
 
 // ─── Sessions ────────────────────────────────────────────
@@ -248,14 +384,21 @@ export interface SchemaPresetFieldPayload {
   label: string;
   fieldKey: string;
   regexRule: string;
-  extractionStrategy?: "regex" | "table_column" | "header_field" | "page_region";
+  extractionStrategy?:
+    | "regex"
+    | "table_column"
+    | "header_field"
+    | "page_region";
   dataType?: "string" | "currency" | "number" | "date" | "percentage";
   pageRange?: string;
   postProcessing?: string[];
   altRegexRules?: string[];
   sectionHint?: string;
   sectionIndicatorKey?: string;
-  contextHint?: "same_line_after_label" | "next_line_after_label" | "table_cell";
+  contextHint?:
+    | "same_line_after_label"
+    | "next_line_after_label"
+    | "table_cell";
   contextLabel?: string;
   mandatory?: boolean;
   expectedFormat?: string;
@@ -365,17 +508,18 @@ export const sessionsApi = {
   deleteSchemaPreset: (presetId: string) =>
     request<void>(`/sessions/schema-presets/${presetId}`, { method: "DELETE" }),
   getSessionSchemaPreset: (id: string) =>
-    request<{ schemaPresetId: string | null; preset: SchemaPresetPayload | null }>(
-      `/sessions/${id}/schema-preset`,
-    ),
+    request<{
+      schemaPresetId: string | null;
+      preset: SchemaPresetPayload | null;
+    }>(`/sessions/${id}/schema-preset`),
   assignSessionSchemaPreset: (id: string, schemaPresetId?: string | null) =>
-    request<{ schemaPresetId: string | null; preset: SchemaPresetPayload | null }>(
-      `/sessions/${id}/schema-preset`,
-      {
-        method: "PATCH",
-        body: JSON.stringify({ schemaPresetId: schemaPresetId ?? null }),
-      },
-    ),
+    request<{
+      schemaPresetId: string | null;
+      preset: SchemaPresetPayload | null;
+    }>(`/sessions/${id}/schema-preset`, {
+      method: "PATCH",
+      body: JSON.stringify({ schemaPresetId: schemaPresetId ?? null }),
+    }),
   duplicate: (
     id: string,
     data: { strategy: "FULL" | "COLUMNS_ONLY"; name?: string },
