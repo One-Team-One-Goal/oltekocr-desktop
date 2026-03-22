@@ -56,40 +56,55 @@ export function PdfSessionDetail() {
   const prevQueueActiveRef = useRef(false);
   const statusMapRef = useRef<Record<string, string>>({});
   const statusInitializedRef = useRef(false);
+  const refreshInFlightRef = useRef(false);
+  const refreshQueuedRef = useRef(false);
   const isRunning = documents.some(
     (d) => d.status === "SCANNING" || d.status === "PROCESSING",
   );
 
   const refresh = useCallback(async () => {
     if (!id) return;
+    if (refreshInFlightRef.current) {
+      refreshQueuedRef.current = true;
+      return;
+    }
+
+    refreshInFlightRef.current = true;
     try {
-      const [sessionData, docsData] = await Promise.all([
-        sessionsApi.get(id),
-        sessionsApi.getDocuments(id),
-      ]);
+      do {
+        refreshQueuedRef.current = false;
+        try {
+          const [sessionData, docsData] = await Promise.all([
+            sessionsApi.get(id),
+            sessionsApi.getDocuments(id),
+          ]);
 
-      // Non-PDF sessions should use the legacy detail page.
-      if (sessionData.mode !== "PDF_EXTRACT") {
-        navigate(`/sessions/${id}`, { replace: true });
-        return;
-      }
+          // Non-PDF sessions should use the legacy detail page.
+          if (sessionData.mode !== "PDF_EXTRACT") {
+            navigate(`/sessions/${id}`, { replace: true });
+            return;
+          }
 
-      setSession(sessionData);
-      setDocuments(docsData);
+          setSession(sessionData);
+          setDocuments(docsData);
 
-      if (docsData.length > 0) {
-        setSelectedDocId((prev) => prev ?? docsData[0].id);
-      } else {
-        setSelectedDocId(null);
-      }
+          if (docsData.length > 0) {
+            setSelectedDocId((prev) => prev ?? docsData[0].id);
+          } else {
+            setSelectedDocId(null);
+          }
 
-      const unsaved = checkUnsaved(id);
-      setIsUnsaved(unsaved);
-      if (unsaved) setSaveName(sessionData.name);
-    } catch (err) {
-      console.error("Failed to fetch PDF session:", err);
+          const unsaved = checkUnsaved(id);
+          setIsUnsaved(unsaved);
+          if (unsaved) setSaveName(sessionData.name);
+        } catch (err) {
+          console.error("Failed to fetch PDF session:", err);
+        } finally {
+          setLoading(false);
+        }
+      } while (refreshQueuedRef.current);
     } finally {
-      setLoading(false);
+      refreshInFlightRef.current = false;
     }
   }, [id, navigate]);
 

@@ -744,6 +744,8 @@ export function ExtractionView({
   const [viewName, setViewName] = useState("");
   const [rawOpenInternal, setRawOpenInternal] = useState(false);
   const [rawTab, setRawTab] = useState<"text" | "json">("text");
+  const docRefreshInFlightRef = useRef(false);
+  const lastDocStatusRef = useRef<string | null>(null);
 
   const effectiveRawOpen =
     rawOpenProp !== undefined ? rawOpenProp : rawOpenInternal;
@@ -755,12 +757,22 @@ export function ExtractionView({
   const [sectionCols, setSectionCols] = useState<Record<string, ColDef[]>>({});
 
   const refreshCurrentDoc = useCallback(async () => {
+    if (docRefreshInFlightRef.current) return;
+    docRefreshInFlightRef.current = true;
     try {
       const nextDoc = await documentsApi.get(documentId);
       setDoc(nextDoc);
-      onRefresh?.();
+      if (
+        lastDocStatusRef.current !== null &&
+        lastDocStatusRef.current !== nextDoc.status
+      ) {
+        onRefresh?.();
+      }
+      lastDocStatusRef.current = nextDoc.status;
     } catch (err) {
       console.error(err);
+    } finally {
+      docRefreshInFlightRef.current = false;
     }
   }, [documentId, onRefresh]);
 

@@ -275,7 +275,7 @@ class _DoclingDocumentAdapter:
         return None
 
 
-def _load_docling_payload(path: str) -> Dict[str, Any]:
+def _load_docling_payload(path: str, chunk_size: int = 10, mode: str = "ocr") -> Dict[str, Any]:
     script_dir = os.path.dirname(os.path.abspath(__file__))
     extractor_path = os.path.join(script_dir, "pdf_extract.py")
     spec = importlib.util.spec_from_file_location("pdf_extract", extractor_path)
@@ -283,7 +283,7 @@ def _load_docling_payload(path: str) -> Dict[str, Any]:
         raise RuntimeError("Unable to load pdf_extract.py for Docling extraction")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    result = mod.extract_docling(path, chunk_size=25, mode="ocr")
+    result = mod.extract_docling(path, chunk_size=chunk_size, mode=mode)
     if not isinstance(result, dict):
         raise RuntimeError("Docling extractor returned non-dict payload")
     if result.get("error"):
@@ -291,9 +291,31 @@ def _load_docling_payload(path: str) -> Dict[str, Any]:
     return result
 
 
+def _looks_like_memory_error(message: str) -> bool:
+    msg = (message or "").lower()
+    return any(
+        marker in msg
+        for marker in [
+            "unable to allocate",
+            "memoryerror",
+            "_arraymemoryerror",
+            "out of memory",
+            "bad_alloc",
+        ]
+    )
+
+
 def open_pdf_document(path: str, extractor: str = "pdfplumber") -> Any:
     if extractor == "docling":
-        payload = _load_docling_payload(path)
+        try:
+            payload = _load_docling_payload(path, chunk_size=10, mode="ocr")
+        except Exception as exc:
+            # If OCR mode runs out of memory on very large scans, retry in text mode
+            # so extraction can continue instead of crashing the worker process.
+            if not _looks_like_memory_error(str(exc)):
+                raise
+            log_progress(7, "Docling OCR hit memory limits; retrying with text mode")
+            payload = _load_docling_payload(path, chunk_size=8, mode="text")
         return _DoclingDocumentAdapter(payload)
     return _PlumberDocumentAdapter(pdfplumber.open(path))
 

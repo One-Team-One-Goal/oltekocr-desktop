@@ -75,7 +75,9 @@ def _make_pipeline_opts(mode: str):
     try:
         from docling.datamodel.pipeline_options import PdfPipelineOptions
         opts = PdfPipelineOptions()
-        opts.images_scale = 1.0
+        # OCR mode can exhaust memory on large scanned pages at full scale.
+        # Lowering the render scale keeps extraction stable with minimal quality loss.
+        opts.images_scale = 0.6 if mode == "ocr" else 1.0
         for attr in [
             "do_table_structure",
             "do_cell_matching",
