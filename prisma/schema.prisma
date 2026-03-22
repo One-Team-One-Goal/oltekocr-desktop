@@ -44,6 +44,20 @@ model SchemaPreset {
   @@map("schema_presets")
 }
 
+model AutoSchema {
+  id        String   @id @default(uuid())
+  name      String
+  documentId String  @default("") @map("document_id")
+  uploadedFileName String @default("") @map("uploaded_file_name")
+  rawJson   String   @default("{}") @map("raw_json")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([documentId])
+  @@index([createdAt])
+  @@map("auto_schemas")
+}
+
 model SchemaPresetTab {
   id        String              @id @default(uuid())
   presetId  String              @map("preset_id")

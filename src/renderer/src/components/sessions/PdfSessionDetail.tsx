@@ -1,4 +1,8 @@
+<<<<<<< Updated upstream
 import { useState, useCallback, useEffect, useRef } from "react";
+=======
+import { useState, useCallback, useEffect, useMemo } from "react";
+>>>>>>> Stashed changes
 import { useParams, useNavigate } from "react-router-dom";
 import {
   sessionsApi,
@@ -15,6 +19,7 @@ import {
   SchemaBuilderDialog,
   type SchemaPresetDraft,
 } from "@/components/sessions/SchemaBuilderDialog";
+import { AutoSchemaBuilderDialog } from "@/components/sessions/AutoSchemaBuilderDialog";
 import { checkUnsaved, markSaved } from "@/lib/unsaved-sessions";
 import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -59,7 +64,19 @@ export function PdfSessionDetail() {
   const [tablesOpen, setTablesOpen] = useState(false);
   const [schemaBuilderOpen, setSchemaBuilderOpen] = useState(false);
   const [schemaSubmitting, setSchemaSubmitting] = useState(false);
-  const [schemaPresets, setSchemaPresets] = useState<Array<{ id: string; name: string }>>([]);
+  const [schemaPresets, setSchemaPresets] = useState<
+    Array<{
+      id: string;
+      name: string;
+      source?: string;
+      origin?: string;
+      type?: string;
+      table?: string;
+      isAutoSchema?: boolean;
+      isAuto?: boolean;
+      fromAutoSchema?: boolean;
+    }>
+  >([]);
   const [selectedSchemaPresetId, setSelectedSchemaPresetId] = useState<string>("");
   const [selectedSchemaPreset, setSelectedSchemaPreset] = useState<SchemaPresetDraft | null>(null);
   const [queueState, setQueueState] = useState<{
@@ -75,6 +92,25 @@ export function PdfSessionDetail() {
   const isRunning = documents.some(
     (d) => d.status === "SCANNING" || d.status === "PROCESSING",
   );
+
+  const schemaBuilderInitialMode = useMemo<"manual" | "automatic">(() => {
+    const selectedMeta = schemaPresets.find((p) => p.id === selectedSchemaPresetId);
+    if (!selectedMeta) return "manual";
+
+    const source = String(
+      selectedMeta.source || selectedMeta.origin || selectedMeta.table || "",
+    ).toLowerCase();
+    const type = String(selectedMeta.type || "").toLowerCase();
+    const autoByFlag =
+      selectedMeta.isAutoSchema || selectedMeta.isAuto || selectedMeta.fromAutoSchema;
+    const autoBySource = source.includes("auto");
+    const autoByType = type.includes("auto");
+    const autoById = selectedMeta.id.startsWith("auto_");
+
+    return autoByFlag || autoBySource || autoByType || autoById
+      ? "automatic"
+      : "manual";
+  }, [schemaPresets, selectedSchemaPresetId]);
 
   const refresh = useCallback(async () => {
     if (!id) return;
@@ -511,7 +547,7 @@ export function PdfSessionDetail() {
       </div>
 
       <SchemaBuilderDialog
-        open={schemaBuilderOpen}
+        open={schemaBuilderOpen && schemaBuilderInitialMode === "manual"}
         onClose={() => setSchemaBuilderOpen(false)}
         initialPreset={selectedSchemaPreset}
         submitting={schemaSubmitting}
@@ -519,15 +555,60 @@ export function PdfSessionDetail() {
           if (!id) return;
           setSchemaSubmitting(true);
           try {
-            const saved = preset.id
-              ? await sessionsApi.updateSchemaPreset(preset.id, {
-                  name: preset.name,
-                  tabs: preset.tabs,
-                })
-              : await sessionsApi.createSchemaPreset({
-                  name: preset.name,
-                  tabs: preset.tabs,
-                });
+            const isExistingPreset = !!preset.id && !preset.id.startsWith("auto_");
+            let saved;
+            if (isExistingPreset && preset.id) {
+              saved = await sessionsApi.updateSchemaPreset(preset.id, {
+                name: preset.name,
+                extractionMode: preset.extractionMode,
+                recordStartRegex: preset.recordStartRegex,
+                tabs: preset.tabs,
+              });
+            } else {
+              saved = await sessionsApi.createSchemaPreset({
+                name: preset.name,
+                extractionMode: preset.extractionMode,
+                recordStartRegex: preset.recordStartRegex,
+                tabs: preset.tabs,
+              });
+            }
+
+            const presets = await sessionsApi.listSchemaPresets();
+            setSchemaPresets(presets);
+
+            await assignSchemaPreset(saved.id);
+            setSchemaBuilderOpen(false);
+          } finally {
+            setSchemaSubmitting(false);
+          }
+        }}
+      />
+
+      <AutoSchemaBuilderDialog
+        open={schemaBuilderOpen && schemaBuilderInitialMode === "automatic"}
+        onClose={() => setSchemaBuilderOpen(false)}
+        submitting={schemaSubmitting}
+        onSubmit={async (preset: SchemaPresetDraft) => {
+          if (!id) return;
+          setSchemaSubmitting(true);
+          try {
+            const isExistingPreset = !!preset.id && !preset.id.startsWith("auto_");
+            let saved;
+            if (isExistingPreset && preset.id) {
+              saved = await sessionsApi.updateSchemaPreset(preset.id, {
+                name: preset.name,
+                extractionMode: preset.extractionMode,
+                recordStartRegex: preset.recordStartRegex,
+                tabs: preset.tabs,
+              });
+            } else {
+              saved = await sessionsApi.createSchemaPreset({
+                name: preset.name,
+                extractionMode: preset.extractionMode,
+                recordStartRegex: preset.recordStartRegex,
+                tabs: preset.tabs,
+              });
+            }
 
             const presets = await sessionsApi.listSchemaPresets();
             setSchemaPresets(presets);
