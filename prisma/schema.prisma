@@ -50,6 +50,8 @@ model AutoSchema {
   documentId String  @default("") @map("document_id")
   uploadedFileName String @default("") @map("uploaded_file_name")
   rawJson   String   @default("{}") @map("raw_json")
+  llmJson   String   @default("{}") @map("llm_json")
+  schemaJson String  @default("{}") @map("schema_json")
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 

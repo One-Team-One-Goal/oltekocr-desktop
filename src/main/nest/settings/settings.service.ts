@@ -53,7 +53,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   },
   llm: {
     provider: "groq",
-    defaultModel: "qwen2.5:1.5b",
+    defaultModel: "qwen3:30b",
     temperature: 0.2,
   },
 };

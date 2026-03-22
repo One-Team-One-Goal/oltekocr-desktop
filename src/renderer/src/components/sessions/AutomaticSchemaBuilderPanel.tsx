@@ -6,7 +6,6 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { AlertCircle, Loader2, Check, Zap } from "lucide-react";
 import {
   autoSchemasApi,
-  AutoSchemaRecord,
   ocrApi,
   sessionsApi,
   SchemaPresetPayload,
@@ -26,6 +25,7 @@ type AutoBuildSnapshot = {
   status: AutoBuildStatus;
   buildLog: string;
   builtSchema: any | null;
+  llmJsonOutput: Record<string, unknown> | null;
   error: string | null;
   processedDocumentId: string;
   fileName: string;
@@ -36,6 +36,7 @@ const initialAutoBuildSnapshot: AutoBuildSnapshot = {
   status: "idle",
   buildLog: "",
   builtSchema: null,
+  llmJsonOutput: null,
   error: null,
   processedDocumentId: "",
   fileName: "",
@@ -136,13 +137,12 @@ const inferTabsFromOcr = (ocrResult: any) => {
 const startAutoBuildJob = async (params: {
   uploadedFile: File;
   schemaName: string;
-  extractionMode: "AUTO" | "CONTRACT_BIASED" | "GENERIC";
 }) => {
   if (autoBuildSnapshot.status === "running") {
     return;
   }
 
-  const { uploadedFile, schemaName, extractionMode } = params;
+  const { uploadedFile, schemaName } = params;
   const filePath = (uploadedFile as any)?.path;
   if (!filePath) {
     throw new Error("Unable to read local file path from upload.");
@@ -152,6 +152,7 @@ const startAutoBuildJob = async (params: {
     status: "running",
     buildLog: "Starting automatic schema extraction...\n",
     builtSchema: null,
+    llmJsonOutput: null,
     error: null,
     processedDocumentId: "",
     fileName: uploadedFile.name,
@@ -184,25 +185,6 @@ const startAutoBuildJob = async (params: {
     }
 
     const inferredTabs = inferTabsFromOcr(ocrResult);
-    const built = {
-      id: firstDoc.id,
-      name: schemaName,
-      rawDocument: ocrResult,
-      processingLog: Array.isArray(ocrResult?.warnings) ? ocrResult.warnings : [],
-      normalizedSchema: {
-        extractionMode,
-        tabs: inferredTabs,
-        summary: {
-          sections: [],
-          tables: inferredTabs.map((tab: any, idx: number) => ({
-            id: `table_${idx + 1}`,
-            label: tab.name,
-            columnCount: Array.isArray(tab.fields) ? tab.fields.length : 0,
-          })),
-        },
-        warnings: Array.isArray(ocrResult?.warnings) ? ocrResult.warnings : [],
-      },
-    };
 
     appendAutoBuildLog("Saving auto-schema JSON to database...\n");
     const savedAutoSchema = await autoSchemasApi.create({
@@ -212,9 +194,49 @@ const startAutoBuildJob = async (params: {
       rawJson: ocrResult as Record<string, unknown>,
     });
 
+    appendAutoBuildLog("Generating LLM schema from extracted Docling JSON...\n");
+    const llmResponse = await autoSchemasApi.generateLlm(savedAutoSchema.id);
+
+    const parsedTabs = llmResponse.parsed.tabs || [];
+    const tabsForPreset = parsedTabs.length > 0 ? parsedTabs : inferredTabs;
+
+    if (parsedTabs.length === 0) {
+      appendAutoBuildLog("LLM returned no tabs; falling back to inferred Docling table structure.\n");
+    } else {
+      appendAutoBuildLog("LLM schema generation complete.\n");
+    }
+
+    const built = {
+      id: firstDoc.id,
+      name: schemaName,
+      rawDocument: ocrResult,
+      processingLog: Array.isArray(ocrResult?.warnings) ? ocrResult.warnings : [],
+      normalizedSchema: {
+        extractionMode: llmResponse.parsed.extractionMode || "AUTO",
+        recordStartRegex: llmResponse.parsed.recordStartRegex || "",
+        tabs: tabsForPreset,
+        summary: {
+          sections: llmResponse.parsed.sections || [],
+          tables:
+            llmResponse.parsed.tables?.map((table: any) => ({
+              id: table.id,
+              label: table.label,
+              columnCount: Array.isArray(table.columns) ? table.columns.length : 0,
+            })) ||
+            tabsForPreset.map((tab: any, idx: number) => ({
+              id: `table_${idx + 1}`,
+              label: tab.name,
+              columnCount: Array.isArray(tab.fields) ? tab.fields.length : 0,
+            })),
+        },
+        warnings: Array.isArray(ocrResult?.warnings) ? ocrResult.warnings : [],
+      },
+    };
+
     patchAutoBuildSnapshot({
       status: "done",
       builtSchema: built,
+      llmJsonOutput: llmResponse.llmJson,
       processedDocumentId: firstDoc.id,
       autoSchemaId: savedAutoSchema.id,
       error: null,
@@ -238,7 +260,6 @@ export function AutomaticSchemaBuilderPanel({
   const [step, setStep] = useState<AutomaticBuilderStep>("upload");
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [schemaName, setSchemaName] = useState("");
-  const [extractionMode, setExtractionMode] = useState<"AUTO" | "CONTRACT_BIASED" | "GENERIC">("AUTO");
   const [selectedFieldIds, setSelectedFieldIds] = useState<Set<string>>(new Set());
   
   const [building, setBuilding] = useState(false);
@@ -248,20 +269,14 @@ export function AutomaticSchemaBuilderPanel({
   const [processedDocumentId, setProcessedDocumentId] = useState<string>("");
   const [activeFileName, setActiveFileName] = useState<string>("");
   const [llmJsonOutput, setLlmJsonOutput] = useState<Record<string, unknown> | null>(null);
-  const [llmGenerating, setLlmGenerating] = useState(false);
   const [llmError, setLlmError] = useState<string | null>(null);
-  const [autoSchemaRecords, setAutoSchemaRecords] = useState<AutoSchemaRecord[]>([]);
-  const [selectedAutoSchemaId, setSelectedAutoSchemaId] = useState("");
-  const [loadingAutoSchemas, setLoadingAutoSchemas] = useState(false);
 
   useEffect(() => {
     return subscribeAutoBuild((snapshot) => {
       setBuildLog(snapshot.buildLog);
       setProcessedDocumentId(snapshot.processedDocumentId);
       setActiveFileName(snapshot.fileName);
-      if (snapshot.autoSchemaId) {
-        setSelectedAutoSchemaId(snapshot.autoSchemaId);
-      }
+      setLlmJsonOutput(snapshot.llmJsonOutput);
 
       if (snapshot.status === "running") {
         setBuilding(true);
@@ -278,6 +293,7 @@ export function AutomaticSchemaBuilderPanel({
         setBuilding(false);
         setBuiltSchema(snapshot.builtSchema);
         setSelectedFieldIds(new Set(fieldIds));
+        setLlmError(null);
         setErrors([]);
         setStep("review");
         return;
@@ -285,37 +301,11 @@ export function AutomaticSchemaBuilderPanel({
 
       if (snapshot.status === "error") {
         setBuilding(false);
+        setLlmJsonOutput(null);
         setErrors(snapshot.error ? [snapshot.error] : ["Failed to build schema"]);
         setStep("upload");
       }
     });
-  }, []);
-
-  useEffect(() => {
-    let active = true;
-    setLoadingAutoSchemas(true);
-
-    autoSchemasApi
-      .list()
-      .then((rows) => {
-        if (!active) return;
-        setAutoSchemaRecords(rows);
-
-        if (!selectedAutoSchemaId && rows.length > 0) {
-          setSelectedAutoSchemaId(rows[0].id);
-        }
-      })
-      .catch((err) => {
-        if (!active) return;
-        setLlmError(err instanceof Error ? err.message : "Failed to load auto-schema records");
-      })
-      .finally(() => {
-        if (active) setLoadingAutoSchemas(false);
-      });
-
-    return () => {
-      active = false;
-    };
   }, []);
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -345,69 +335,12 @@ export function AutomaticSchemaBuilderPanel({
       await startAutoBuildJob({
         uploadedFile,
         schemaName: schemaName.trim(),
-        extractionMode,
       });
-
-      const refreshed = await autoSchemasApi.list();
-      setAutoSchemaRecords(refreshed);
-      if (refreshed.length > 0) {
-        setSelectedAutoSchemaId((prev) => prev || refreshed[0].id);
-      }
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Failed to build schema";
       setErrors([message]);
       setStep("upload");
-    }
-  };
-
-  const handleGenerateLlmJson = async () => {
-    if (!selectedAutoSchemaId) {
-      setLlmError("Select an auto-schema record first.");
-      return;
-    }
-
-    setLlmGenerating(true);
-    setLlmError(null);
-
-    try {
-      const response = await autoSchemasApi.generateLlm(selectedAutoSchemaId);
-      setLlmJsonOutput(response.llmJson);
-
-      const parsedTabs = response.parsed.tabs || [];
-      const fieldIds = parsedTabs
-        .flatMap((tab: any) => tab.fields?.map((f: any) => f.id) || [])
-        .filter((id: string | undefined): id is string => !!id);
-
-      const nextBuiltSchema = {
-        id: response.documentId,
-        name: schemaName || builtSchema?.name || "LLM Generated Schema",
-        rawDocument: builtSchema?.rawDocument || null,
-        processingLog: [],
-        normalizedSchema: {
-          extractionMode,
-          tabs: parsedTabs,
-          summary: {
-            sections: response.parsed.sections,
-            tables: response.parsed.tables.map((table: any) => ({
-              id: table.id,
-              label: table.label,
-              columnCount: Array.isArray(table.columns) ? table.columns.length : 0,
-            })),
-          },
-          warnings: [],
-        },
-      };
-
-      setBuiltSchema(nextBuiltSchema);
-      setSelectedFieldIds(new Set(fieldIds));
-      setStep("review");
-      setActiveDataTab("docling");
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to generate LLM JSON";
-      setLlmError(message);
-    } finally {
-      setLlmGenerating(false);
     }
   };
 
@@ -428,10 +361,13 @@ export function AutomaticSchemaBuilderPanel({
 
     try {
       const selected = new Set(selectedFieldIds);
+      const resolvedExtractionMode =
+        builtSchema.normalizedSchema?.extractionMode || "AUTO";
       const preset: SchemaPresetPayload = {
         id: `auto_${processedDocumentId || Date.now()}`,
         name: presetName,
-        extractionMode,
+        extractionMode: resolvedExtractionMode,
+        recordStartRegex: builtSchema.normalizedSchema?.recordStartRegex,
         tabs: (builtSchema.normalizedSchema?.tabs || []).map((tab: any) => ({
           name: tab.name,
           fields: (tab.fields || [])
@@ -439,9 +375,14 @@ export function AutomaticSchemaBuilderPanel({
             .map((field: any) => ({
               label: field.label,
               fieldKey: field.fieldKey,
-              regexRule: "",
+              regexRule: field.regexRule || "",
               extractionStrategy: field.extractionStrategy || "table_column",
               dataType: field.dataType || "string",
+              sectionHint: field.sectionHint,
+              contextHint: field.contextHint,
+              contextLabel: field.contextLabel,
+              mandatory: field.mandatory,
+              postProcessing: field.postProcessing,
             })),
         })),
       };
@@ -543,9 +484,7 @@ export function AutomaticSchemaBuilderPanel({
               ) : (
                 <div className="p-4 text-center text-muted-foreground">
                   <p className="text-xs">No LLM JSON output yet</p>
-                  <p className="text-xs mt-2 opacity-60">
-                    Open the LLM tab and use the button on the right to generate output.
-                  </p>
+                  <p className="text-xs mt-2 opacity-60">Run Process PDF to generate LLM output automatically.</p>
                   {llmError && <p className="text-xs mt-2 text-destructive">{llmError}</p>}
                 </div>
               )
@@ -555,50 +494,7 @@ export function AutomaticSchemaBuilderPanel({
 
         {/* Right Column: Upload & Configuration */}
         <div className="flex-1 flex flex-col overflow-hidden">
-          {activeDataTab === "llm" ? (
-            <div className="flex-1 flex flex-col items-center justify-center px-6 py-8 text-center space-y-3">
-              <h4 className="text-sm font-semibold">LLM JSON Output</h4>
-              <p className="text-xs text-muted-foreground max-w-sm">
-                Pick an auto-schema DB record, feed its Docling JSON to Ollama, then build selectable fields from the parsed result.
-              </p>
-
-              <div className="w-full max-w-md text-left space-y-1">
-                <Label className="text-xs">Auto-Schema Record</Label>
-                <select
-                  value={selectedAutoSchemaId}
-                  onChange={(e) => setSelectedAutoSchemaId(e.target.value)}
-                  className="w-full px-3 py-2 border rounded-md bg-background text-sm"
-                  disabled={loadingAutoSchemas || llmGenerating}
-                >
-                  <option value="">Select record...</option>
-                  {autoSchemaRecords.map((record) => (
-                    <option key={record.id} value={record.id}>
-                      {record.name} - {record.uploadedFileName}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <Button
-                onClick={handleGenerateLlmJson}
-                disabled={llmGenerating || loadingAutoSchemas || !selectedAutoSchemaId}
-                size="sm"
-              >
-                {llmGenerating ? "Generating LLM JSON..." : "Generate JSON from LLM"}
-              </Button>
-
-              {loadingAutoSchemas && (
-                <p className="text-xs text-muted-foreground">Loading auto-schema records...</p>
-              )}
-              {!selectedAutoSchemaId && !loadingAutoSchemas && (
-                <p className="text-xs text-muted-foreground">
-                  Select a stored record to enable LLM generation.
-                </p>
-              )}
-              {llmError && <p className="text-xs text-destructive">{llmError}</p>}
-            </div>
-          ) : (
-            <>
+          <>
               <ScrollArea className="flex-1">
                 <div className="space-y-4 p-4">
                   {/* Step: Upload & Build */}
@@ -674,23 +570,6 @@ export function AutomaticSchemaBuilderPanel({
                             </div>
                           )}
                         </div>
-                      </div>
-
-                      <div>
-                        <Label className="text-sm">Extraction Mode</Label>
-                        <select
-                          value={extractionMode}
-                          onChange={(e) => 
-                            setExtractionMode(
-                              e.target.value as "AUTO" | "CONTRACT_BIASED" | "GENERIC"
-                            )
-                          }
-                          className="w-full px-3 py-2 border rounded-md bg-background text-sm"
-                        >
-                          <option value="AUTO">Auto (Recommended)</option>
-                          <option value="CONTRACT_BIASED">Contract Biased</option>
-                          <option value="GENERIC">Generic</option>
-                        </select>
                       </div>
 
                       <div>
@@ -823,10 +702,10 @@ export function AutomaticSchemaBuilderPanel({
                   </Button>
                 )}
               </div>
-            </>
-          )}
+          </>
         </div>
       </div>
+
     </div>
   );
 }

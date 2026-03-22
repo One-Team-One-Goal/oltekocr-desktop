@@ -170,9 +170,9 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
 
   const llmDownloadedOptions = Array.from(
     new Set([
-      settings.llm.defaultModel || "qwen2.5:1.5b",
+      settings.llm.defaultModel || "qwen3:30b",
       ...llmModels.filter((m) => m.downloaded).map((m) => m.id),
-      "qwen2.5:1.5b",
+      "qwen3:30b",
     ]),
   );
 

@@ -143,6 +143,8 @@ export interface AutoSchemaRecord {
   documentId: string;
   uploadedFileName: string;
   rawJson: Record<string, unknown>;
+  llmJson: Record<string, unknown>;
+  schemaJson: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
   source?: string;
@@ -152,6 +154,8 @@ export interface AutoSchemaRecord {
 export interface AutoSchemaLlmParsed {
   documentId: string;
   company: string;
+  extractionMode?: "AUTO" | "CONTRACT_BIASED" | "GENERIC";
+  recordStartRegex?: string;
   sections: Array<{
     id: string;
     label: string;
@@ -161,7 +165,12 @@ export interface AutoSchemaLlmParsed {
       fieldKey: string;
       regexRule: string;
       extractionStrategy: "regex" | "table_column" | "header_field" | "page_region";
-      dataType: "string";
+      dataType: "string" | "currency" | "number" | "date" | "percentage";
+      sectionHint?: string;
+      contextHint?: "same_line_after_label" | "next_line_after_label" | "table_cell";
+      contextLabel?: string;
+      mandatory?: boolean;
+      postProcessing?: string[];
     }>;
   }>;
   tables: Array<{
@@ -173,7 +182,12 @@ export interface AutoSchemaLlmParsed {
       fieldKey: string;
       regexRule: string;
       extractionStrategy: "regex" | "table_column" | "header_field" | "page_region";
-      dataType: "string";
+      dataType: "string" | "currency" | "number" | "date" | "percentage";
+      sectionHint?: string;
+      contextHint?: "same_line_after_label" | "next_line_after_label" | "table_cell";
+      contextLabel?: string;
+      mandatory?: boolean;
+      postProcessing?: string[];
     }>;
   }>;
   tabs: Array<{
@@ -184,7 +198,12 @@ export interface AutoSchemaLlmParsed {
       fieldKey: string;
       regexRule: string;
       extractionStrategy: "regex" | "table_column" | "header_field" | "page_region";
-      dataType: "string";
+      dataType: "string" | "currency" | "number" | "date" | "percentage";
+      sectionHint?: string;
+      contextHint?: "same_line_after_label" | "next_line_after_label" | "table_cell";
+      contextLabel?: string;
+      mandatory?: boolean;
+      postProcessing?: string[];
     }>;
   }>;
 }
@@ -197,6 +216,8 @@ export const autoSchemasApi = {
     documentId: string;
     uploadedFileName: string;
     rawJson: Record<string, unknown>;
+    llmJson?: Record<string, unknown>;
+    schemaJson?: Record<string, unknown>;
   }) =>
     request<AutoSchemaRecord>("/auto-schemas", {
       method: "POST",

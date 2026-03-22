@@ -117,11 +117,11 @@ interface LlmInstallProgress {
 
 const LLM_CATALOG: LlmCatalogDef[] = [
   {
-    id: "phi4-mini",
-    name: "phi4-mini",
+    id: "qwen3:30b",
+    name: "qwen3:30b",
     description:
-      "Existing reliable local extractor profile for structured field QA.",
-    size: "~2.2 GB",
+      "High-capacity Qwen model for stronger extraction quality on workstation-class systems.",
+    size: "~18-20 GB",
   },
   {
     id: "qwen2.5:1.5b",

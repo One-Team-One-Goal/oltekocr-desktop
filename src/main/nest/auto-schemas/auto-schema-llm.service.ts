@@ -7,7 +7,7 @@ import { SettingsService } from "../settings/settings.service";
 @Injectable()
 export class AutoSchemaLlmService {
   private readonly logger = new Logger(AutoSchemaLlmService.name);
-  private readonly fallbackModelId = "phi4-mini";
+  private readonly fallbackModelId = "qwen3:30b";
 
   constructor(private readonly settings: SettingsService) {}
 

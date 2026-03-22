@@ -29,6 +29,47 @@ import urllib.error
 import urllib.request
 
 
+def _extract_balanced_json_object(text: str) -> str | None:
+    """Return the first balanced JSON object substring from text."""
+    if not text:
+        return None
+
+    start = text.find("{")
+    if start < 0:
+        return None
+
+    depth = 0
+    in_string = False
+    escape = False
+
+    for idx in range(start, len(text)):
+        ch = text[idx]
+
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+
+        if ch == '"':
+            in_string = True
+            continue
+
+        if ch == "{":
+            depth += 1
+            continue
+
+        if ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : idx + 1]
+
+    return None
+
+
 def _extract_json_from_response(text: str) -> dict:
     """Extract JSON object from LLM response, handling markdown code blocks."""
     raw = (text or "").strip()
@@ -55,6 +96,28 @@ def _extract_json_from_response(text: str) -> dict:
             except json.JSONDecodeError:
                 continue
 
+    # Try to recover the first balanced JSON object from mixed text.
+    candidate = _extract_balanced_json_object(raw)
+    if candidate:
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+    # Some models return JSON as a quoted string; decode once and retry.
+    try:
+        decoded_once = json.loads(raw)
+        if isinstance(decoded_once, str):
+            nested = decoded_once.strip()
+            nested_candidate = _extract_balanced_json_object(nested) or nested
+            parsed = json.loads(nested_candidate)
+            if isinstance(parsed, dict):
+                return parsed
+    except (json.JSONDecodeError, TypeError):
+        pass
+
     raise ValueError("LLM response did not contain a valid JSON object")
 
 
@@ -62,23 +125,63 @@ def query_ollama(model: str, base_url: str, docling_json: dict) -> dict:
     """Send Docling JSON to Ollama and parse structured schema response."""
 
     prompt = (
-        "You are an expert document extraction architect for logistics PDFs. "
-        "Given Docling-extracted document structure, infer and return ONLY a valid JSON object "
-        "with this exact schema: {document_id, company, sections[], tables[]}.\n"
-        "sections: Array of {id, label, bbox, is_active, fields[]}. "
-        "Each field: {id, label, bbox, is_active, extractionStrategy}.\n"
-        "tables: Array of {id, label, is_active, multi_page, columns[]}. "
-        "Each column: {id, label, x_range}.\n"
-        "Use concise snake_case ids, infer boundaries from layout, validate structure. "
-        "Return ONLY the JSON object, no markdown, code fences, or text.\n\n"
+        "You are an expert document extraction architect for logistics and invoice PDFs. "
+        "Given Docling-extracted structure, infer a production-ready extraction schema and return ONLY valid JSON. "
+        "Do not return prose, markdown, or code fences.\n"
+        "Return this exact top-level object shape:\n"
+        "{\n"
+        "  document_id: string,\n"
+        "  company: string,\n"
+        "  extraction_mode: 'AUTO',\n"
+        "  record_start_regex: string,\n"
+        "  sections: [\n"
+        "    {\n"
+        "      id: string, label: string, bbox: any, is_active: boolean,\n"
+        "      fields: [\n"
+        "        {\n"
+        "          id: string, label: string, field_key: string, regex_rule: string,\n"
+        "          extraction_strategy: 'regex' | 'header_field' | 'table_column' | 'page_region',\n"
+        "          data_type: 'string' | 'currency' | 'number' | 'date' | 'percentage',\n"
+        "          section_hint: string, context_hint: 'same_line_after_label' | 'next_line_after_label' | 'table_cell',\n"
+        "          context_label: string, mandatory: boolean, post_processing: string[]\n"
+        "        }\n"
+        "      ]\n"
+        "    }\n"
+        "  ],\n"
+        "  tables: [\n"
+        "    {\n"
+        "      id: string, label: string, is_active: boolean, multi_page: boolean,\n"
+        "      columns: [\n"
+        "        {\n"
+        "          id: string, label: string, field_key: string, regex_rule: string,\n"
+        "          extraction_strategy: 'table_column',\n"
+        "          data_type: 'string' | 'currency' | 'number' | 'date' | 'percentage',\n"
+        "          section_hint: string, context_hint: 'table_cell',\n"
+        "          context_label: string, mandatory: boolean, post_processing: string[]\n"
+        "        }\n"
+        "      ]\n"
+        "    }\n"
+        "  ],\n"
+        "  tabs: [\n"
+        "    { name: string, fields: [same field shape as section fields above] }\n"
+        "  ]\n"
+        "}\n"
+        "Rules:\n"
+        "- sections/tables/tabs must not be empty for structured docs.\n"
+        "- fields/columns must include usable field_key and regex_rule when possible.\n"
+        "- infer regex rules from labels/text patterns and inferred layout.\n"
+        "- choose realistic data_type and post_processing (e.g., trim, remove_commas, remove_currency).\n"
+        "- use snake_case ids and field_key unless a label style key is clearly better.\n"
+        "- is_active must be true/false only (never null).\n\n"
         "DOCLING JSON:\n"
-        f"{json.dumps(docling_json, ensure_ascii=False)[:4000]}\n\n"
+        f"{json.dumps(docling_json, ensure_ascii=False)[:20000]}\n\n"
         "JSON:"
     )
 
     payload = json.dumps({
         "model": model,
         "prompt": prompt,
+        "format": "json",
         "stream": False,
         "options": {
             "temperature": 0.0,
@@ -120,14 +223,23 @@ def query_ollama(model: str, base_url: str, docling_json: dict) -> dict:
             f"Details: {exc}"
         ) from exc
 
+    if isinstance(body, dict) and body.get("error"):
+        raise RuntimeError(str(body.get("error")))
+
     raw_response = str(body.get("response", "")).strip()
+    if not raw_response:
+        raise RuntimeError("Ollama returned an empty response")
+
     parsed = _extract_json_from_response(raw_response)
 
     # Ensure all required top-level keys exist with sensible defaults
     parsed.setdefault("document_id", "")
     parsed.setdefault("company", "")
+    parsed.setdefault("extraction_mode", "AUTO")
+    parsed.setdefault("record_start_regex", "")
     parsed.setdefault("sections", [])
     parsed.setdefault("tables", [])
+    parsed.setdefault("tabs", [])
 
     return parsed
 
@@ -136,7 +248,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Ollama auto-schema extractor")
     parser.add_argument(
         "--model",
-        default="phi4-mini",
+        default="qwen3:30b",
         help="Ollama model name",
     )
     parser.add_argument(

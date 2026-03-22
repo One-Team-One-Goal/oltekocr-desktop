@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo, useRef } from "react";
+﻿import { useState, useCallback, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
   sessionsApi,
@@ -9,22 +9,11 @@ import {
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { WindowControls } from "@/components/layout/SidebarContext";
 import { ExtractionView } from "./ExtractionPanel";
-import {
-  SchemaBuilderDialog,
-  type SchemaPresetDraft,
-} from "@/components/sessions/SchemaBuilderDialog";
-import { AutoSchemaBuilderDialog } from "@/components/sessions/AutoSchemaBuilderDialog";
+import { QueueMonitor } from "./QueueMonitor";
 import { checkUnsaved, markSaved } from "@/lib/unsaved-sessions";
 import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import {
   ArrowLeft,
   RefreshCw,
@@ -33,8 +22,6 @@ import {
   SaveOff,
   Pencil,
   X,
-  Database,
-  FileCog,
 } from "lucide-react";
 import type { SessionRecord, DocumentListItem, WsEvent } from "@shared/types";
 
@@ -44,6 +31,12 @@ const noDrag = { WebkitAppRegion: "no-drag" } as React.CSSProperties;
 export function PdfSessionDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+
+  type SelectedSchemaPreset = {
+    id: string;
+    name: string;
+    tabs: Array<any>;
+  };
 
   const [session, setSession] = useState<SessionRecord | null>(null);
   const [documents, setDocuments] = useState<DocumentListItem[]>([]);
@@ -55,23 +48,8 @@ export function PdfSessionDetail() {
   const [isExporting, setIsExporting] = useState(false);
   const [isRenaming, setIsRenaming] = useState(false);
   const [rawOpen, setRawOpen] = useState(false);
-  const [schemaBuilderOpen, setSchemaBuilderOpen] = useState(false);
-  const [schemaSubmitting, setSchemaSubmitting] = useState(false);
-  const [schemaPresets, setSchemaPresets] = useState<
-    Array<{
-      id: string;
-      name: string;
-      source?: string;
-      origin?: string;
-      type?: string;
-      table?: string;
-      isAutoSchema?: boolean;
-      isAuto?: boolean;
-      fromAutoSchema?: boolean;
-    }>
-  >([]);
-  const [selectedSchemaPresetId, setSelectedSchemaPresetId] = useState<string>("");
-  const [selectedSchemaPreset, setSelectedSchemaPreset] = useState<SchemaPresetDraft | null>(null);
+  const [tablesOpen, setTablesOpen] = useState(false);
+  const [selectedSchemaPreset, setSelectedSchemaPreset] = useState<SelectedSchemaPreset | null>(null);
   const [queueState, setQueueState] = useState<{
     size: number;
     processing: string | null;
@@ -85,25 +63,6 @@ export function PdfSessionDetail() {
   const isRunning = documents.some(
     (d) => d.status === "SCANNING" || d.status === "PROCESSING",
   );
-
-  const schemaBuilderInitialMode = useMemo<"manual" | "automatic">(() => {
-    const selectedMeta = schemaPresets.find((p) => p.id === selectedSchemaPresetId);
-    if (!selectedMeta) return "manual";
-
-    const source = String(
-      selectedMeta.source || selectedMeta.origin || selectedMeta.table || "",
-    ).toLowerCase();
-    const type = String(selectedMeta.type || "").toLowerCase();
-    const autoByFlag =
-      selectedMeta.isAutoSchema || selectedMeta.isAuto || selectedMeta.fromAutoSchema;
-    const autoBySource = source.includes("auto");
-    const autoByType = type.includes("auto");
-    const autoById = selectedMeta.id.startsWith("auto_");
-
-    return autoByFlag || autoBySource || autoByType || autoById
-      ? "automatic"
-      : "manual";
-  }, [schemaPresets, selectedSchemaPresetId]);
 
   const refresh = useCallback(async () => {
     if (!id) return;
@@ -230,21 +189,15 @@ export function PdfSessionDetail() {
 
   useEffect(() => {
     if (!id) {
-      setSchemaPresets([]);
-      setSelectedSchemaPresetId("");
       setSelectedSchemaPreset(null);
       return;
     }
 
     let active = true;
-    Promise.all([
-      sessionsApi.listSchemaPresets(),
-      sessionsApi.getSessionSchemaPreset(id),
-    ])
-      .then(([presets, assignment]) => {
+    sessionsApi
+      .getSessionSchemaPreset(id)
+      .then((assignment) => {
         if (!active) return;
-        setSchemaPresets(presets);
-        setSelectedSchemaPresetId(assignment.schemaPresetId ?? "");
         setSelectedSchemaPreset(
           assignment.preset
             ? {
@@ -258,8 +211,6 @@ export function PdfSessionDetail() {
       .catch((err) => {
         console.error("Failed to load schema presets:", err);
         if (!active) return;
-        setSchemaPresets([]);
-        setSelectedSchemaPresetId("");
         setSelectedSchemaPreset(null);
       });
 
@@ -267,17 +218,6 @@ export function PdfSessionDetail() {
       active = false;
     };
   }, [id]);
-
-  const assignSchemaPreset = async (presetId: string) => {
-    if (!id) return;
-    const payload = await sessionsApi.assignSessionSchemaPreset(id, presetId || null);
-    setSelectedSchemaPresetId(payload.schemaPresetId ?? "");
-    setSelectedSchemaPreset(
-      payload.preset
-        ? { id: payload.preset.id, name: payload.preset.name, tabs: payload.preset.tabs }
-        : null,
-    );
-  };
 
   const handleSave = async () => {
     if (!id || !saveName.trim()) return;
@@ -460,39 +400,6 @@ export function PdfSessionDetail() {
           )}
         </div>
         <div className="flex items-center gap-1.5 shrink-0" style={noDrag}>
-          <Select
-            value={selectedSchemaPresetId || "none"}
-            onValueChange={(val) => {
-              if (val === "none") {
-                assignSchemaPreset("");
-                return;
-              }
-              assignSchemaPreset(val);
-            }}
-          >
-            <SelectTrigger className="h-8 w-[220px] text-xs">
-              <SelectValue placeholder="Select schema preset" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="none">No Schema Preset</SelectItem>
-              {schemaPresets.map((preset) => (
-                <SelectItem key={preset.id} value={preset.id}>
-                  {preset.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          <Button
-            variant="outline"
-            size="sm"
-            className="gap-1.5 text-xs"
-            onClick={() => setSchemaBuilderOpen(true)}
-          >
-            <FileCog className="h-3.5 w-3.5" />
-            {selectedSchemaPreset ? "Edit Schema" : "New Schema"}
-          </Button>
-
           <Button
             variant="outline"
             size="sm"
@@ -501,7 +408,7 @@ export function PdfSessionDetail() {
             disabled={isExporting}
           >
             <FileOutput className="h-3.5 w-3.5" />
-            {isExporting ? "Exporting…" : "Export"}
+            {isExporting ? "Exportingâ€¦" : "Export"}
           </Button>
           <Button variant="ghost" size="icon" onClick={refresh}>
             <RefreshCw className="h-4 w-4" />
@@ -541,81 +448,12 @@ export function PdfSessionDetail() {
         )}
       </div>
 
-      <SchemaBuilderDialog
-        open={schemaBuilderOpen && schemaBuilderInitialMode === "manual"}
-        onClose={() => setSchemaBuilderOpen(false)}
-        initialPreset={selectedSchemaPreset}
-        submitting={schemaSubmitting}
-        onSubmit={async (preset: SchemaPresetDraft) => {
-          if (!id) return;
-          setSchemaSubmitting(true);
-          try {
-            const isExistingPreset = !!preset.id && !preset.id.startsWith("auto_");
-            let saved;
-            if (isExistingPreset && preset.id) {
-              saved = await sessionsApi.updateSchemaPreset(preset.id, {
-                name: preset.name,
-                extractionMode: preset.extractionMode,
-                recordStartRegex: preset.recordStartRegex,
-                tabs: preset.tabs,
-              });
-            } else {
-              saved = await sessionsApi.createSchemaPreset({
-                name: preset.name,
-                extractionMode: preset.extractionMode,
-                recordStartRegex: preset.recordStartRegex,
-                tabs: preset.tabs,
-              });
-            }
-
-            const presets = await sessionsApi.listSchemaPresets();
-            setSchemaPresets(presets);
-
-            await assignSchemaPreset(saved.id);
-            setSchemaBuilderOpen(false);
-          } finally {
-            setSchemaSubmitting(false);
-          }
-        }}
+      <QueueMonitor
+        documents={documents}
+        queueSize={queueState.size}
+        processingId={queueState.processing}
+        progressByDocId={progressByDocId}
       />
-
-      <AutoSchemaBuilderDialog
-        open={schemaBuilderOpen && schemaBuilderInitialMode === "automatic"}
-        onClose={() => setSchemaBuilderOpen(false)}
-        submitting={schemaSubmitting}
-        onSubmit={async (preset: SchemaPresetDraft) => {
-          if (!id) return;
-          setSchemaSubmitting(true);
-          try {
-            const isExistingPreset = !!preset.id && !preset.id.startsWith("auto_");
-            let saved;
-            if (isExistingPreset && preset.id) {
-              saved = await sessionsApi.updateSchemaPreset(preset.id, {
-                name: preset.name,
-                extractionMode: preset.extractionMode,
-                recordStartRegex: preset.recordStartRegex,
-                tabs: preset.tabs,
-              });
-            } else {
-              saved = await sessionsApi.createSchemaPreset({
-                name: preset.name,
-                extractionMode: preset.extractionMode,
-                recordStartRegex: preset.recordStartRegex,
-                tabs: preset.tabs,
-              });
-            }
-
-            const presets = await sessionsApi.listSchemaPresets();
-            setSchemaPresets(presets);
-
-            await assignSchemaPreset(saved.id);
-            setSchemaBuilderOpen(false);
-          } finally {
-            setSchemaSubmitting(false);
-          }
-        }}
-      />
-
     </div>
   );
 }

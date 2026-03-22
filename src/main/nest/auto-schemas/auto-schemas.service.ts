@@ -2,7 +2,7 @@ import { Injectable, NotFoundException } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { CreateAutoSchemaDto, GenerateAutoSchemaLlmDto } from "./auto-schemas.dto";
 import { AutoSchemaLlmService } from "./auto-schema-llm.service";
-import { parsePdfAutomaticExtractorOutput } from "./pdf-automatic-extractor";
+import { parseLlmSchemaOutput } from "./llm-schema-parser";
 
 @Injectable()
 export class AutoSchemasService {
@@ -39,6 +39,8 @@ export class AutoSchemasService {
         documentId: dto.documentId,
         uploadedFileName: dto.uploadedFileName,
         rawJson: JSON.stringify(dto.rawJson ?? {}),
+        llmJson: JSON.stringify(dto.llmJson ?? {}),
+        schemaJson: JSON.stringify(dto.schemaJson ?? {}),
       },
     });
 
@@ -61,7 +63,15 @@ export class AutoSchemasService {
       baseUrl: dto.baseUrl,
     });
 
-    const parsed = parsePdfAutomaticExtractorOutput(llmJson);
+    const parsed = parseLlmSchemaOutput(llmJson);
+
+    await (this.prisma as any).autoSchema.update({
+      where: { id: row.id },
+      data: {
+        llmJson: JSON.stringify(llmJson ?? {}),
+        schemaJson: JSON.stringify(parsed ?? {}),
+      },
+    });
 
     return {
       autoSchemaId: row.id,
@@ -79,6 +89,8 @@ export class AutoSchemasService {
       documentId: row.documentId,
       uploadedFileName: row.uploadedFileName,
       rawJson: this.tryParse(row.rawJson),
+      llmJson: this.tryParse(row.llmJson),
+      schemaJson: this.tryParse(row.schemaJson),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       source: "auto_schema",

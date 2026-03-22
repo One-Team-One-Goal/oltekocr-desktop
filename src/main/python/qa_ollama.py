@@ -148,7 +148,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Ollama QA sidecar")
     parser.add_argument(
         "--model",
-        default="phi4-mini",
+        default="qwen3:30b",
         help="Ollama model name",
     )
     parser.add_argument(

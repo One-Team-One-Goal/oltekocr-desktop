@@ -1,6 +1,6 @@
 type AnyRecord = Record<string, unknown>;
 
-export interface ParsedExtractorField {
+export interface ParsedLlmSchemaField {
   id: string;
   label: string;
   fieldKey: string;
@@ -14,31 +14,31 @@ export interface ParsedExtractorField {
   postProcessing?: string[];
 }
 
-export interface ParsedExtractorTab {
+export interface ParsedLlmSchemaTab {
   name: string;
-  fields: ParsedExtractorField[];
+  fields: ParsedLlmSchemaField[];
 }
 
-export interface ParsedSection {
+export interface ParsedLlmSchemaSection {
   id: string;
   label: string;
-  fields: ParsedExtractorField[];
+  fields: ParsedLlmSchemaField[];
 }
 
-export interface ParsedTable {
+export interface ParsedLlmSchemaTable {
   id: string;
   label: string;
-  columns: ParsedExtractorField[];
+  columns: ParsedLlmSchemaField[];
 }
 
-export interface ParsedPdfAutomaticExtractor {
+export interface ParsedLlmSchema {
   documentId: string;
   company: string;
-  extractionMode?: "AUTO" | "CONTRACT_BIASED" | "GENERIC";
-  recordStartRegex?: string;
-  sections: ParsedSection[];
-  tables: ParsedTable[];
-  tabs: ParsedExtractorTab[];
+  extractionMode: "AUTO" | "CONTRACT_BIASED" | "GENERIC";
+  recordStartRegex: string;
+  sections: ParsedLlmSchemaSection[];
+  tables: ParsedLlmSchemaTable[];
+  tabs: ParsedLlmSchemaTab[];
 }
 
 const toFieldKey = (value: string, fallback: string) => {
@@ -51,7 +51,9 @@ const toFieldKey = (value: string, fallback: string) => {
 };
 
 const asArray = (value: unknown): AnyRecord[] =>
-  Array.isArray(value) ? (value.filter((v) => !!v && typeof v === "object") as AnyRecord[]) : [];
+  Array.isArray(value)
+    ? (value.filter((v) => !!v && typeof v === "object") as AnyRecord[])
+    : [];
 
 const toScalarString = (value: unknown): string => {
   if (Array.isArray(value)) {
@@ -61,7 +63,7 @@ const toScalarString = (value: unknown): string => {
   return typeof value === "string" ? value : String(value || "");
 };
 
-const normalizeDataType = (value: unknown): ParsedExtractorField["dataType"] => {
+const normalizeDataType = (value: unknown): ParsedLlmSchemaField["dataType"] => {
   const v = String(value || "").toLowerCase();
   if (v === "currency" || v === "number" || v === "date" || v === "percentage") {
     return v;
@@ -71,8 +73,8 @@ const normalizeDataType = (value: unknown): ParsedExtractorField["dataType"] => 
 
 const normalizeExtractionStrategy = (
   value: unknown,
-  fallback: ParsedExtractorField["extractionStrategy"],
-): ParsedExtractorField["extractionStrategy"] => {
+  fallback: ParsedLlmSchemaField["extractionStrategy"],
+): ParsedLlmSchemaField["extractionStrategy"] => {
   const v = String(value || "").toLowerCase();
   if (v === "regex" || v === "table_column" || v === "header_field" || v === "page_region") {
     return v;
@@ -81,7 +83,7 @@ const normalizeExtractionStrategy = (
   return fallback;
 };
 
-const normalizeContextHint = (value: unknown): ParsedExtractorField["contextHint"] => {
+const normalizeContextHint = (value: unknown): ParsedLlmSchemaField["contextHint"] => {
   const v = String(value || "").toLowerCase();
   if (v === "same_line_after_label" || v === "next_line_after_label" || v === "table_cell") {
     return v;
@@ -99,11 +101,14 @@ const parseField = (
   rawField: AnyRecord,
   fallbackId: string,
   fallbackLabel: string,
-  fallbackStrategy: ParsedExtractorField["extractionStrategy"],
-): ParsedExtractorField => {
+  fallbackStrategy: ParsedLlmSchemaField["extractionStrategy"],
+): ParsedLlmSchemaField => {
   const id = String(rawField.id || fallbackId);
   const label = String(rawField.label || fallbackLabel);
-  const rule = rawField.rule && typeof rawField.rule === "object" ? (rawField.rule as AnyRecord) : {};
+  const rule =
+    rawField.rule && typeof rawField.rule === "object"
+      ? (rawField.rule as AnyRecord)
+      : {};
   const ruleType = String(rule.type || "").toLowerCase();
 
   const explicitRegex = String(rawField.regex_rule || rawField.regexRule || "");
@@ -112,14 +117,21 @@ const parseField = (
   return {
     id,
     label,
-    fieldKey: toFieldKey(String(rawField.field_key || rawField.fieldKey || rawField.id || label), fallbackId),
+    fieldKey: toFieldKey(
+      String(rawField.field_key || rawField.fieldKey || rawField.id || label),
+      fallbackId,
+    ),
     regexRule,
     extractionStrategy: normalizeExtractionStrategy(
       rawField.extraction_strategy || rawField.extractionStrategy || ruleType,
       fallbackStrategy,
     ),
     dataType: normalizeDataType(rawField.data_type || rawField.dataType),
-    sectionHint: rawField.section_hint ? String(rawField.section_hint) : rawField.sectionHint ? String(rawField.sectionHint) : undefined,
+    sectionHint: rawField.section_hint
+      ? String(rawField.section_hint)
+      : rawField.sectionHint
+        ? String(rawField.sectionHint)
+        : undefined,
     contextHint: normalizeContextHint(rawField.context_hint || rawField.contextHint),
     contextLabel:
       rawField.context_label !== undefined
@@ -132,13 +144,13 @@ const parseField = (
   };
 };
 
-export function parsePdfAutomaticExtractorOutput(input: unknown): ParsedPdfAutomaticExtractor {
+export function parseLlmSchemaOutput(input: unknown): ParsedLlmSchema {
   const root = (input && typeof input === "object" ? (input as AnyRecord) : {}) as AnyRecord;
 
   const sectionNodes = asArray(root.sections);
   const tableNodes = asArray(root.tables);
 
-  const sections: ParsedSection[] = sectionNodes.map((section, sectionIdx) => {
+  const sections: ParsedLlmSchemaSection[] = sectionNodes.map((section, sectionIdx) => {
     const sectionId = String(section.id || `section_${sectionIdx + 1}`);
     const sectionLabel = String(section.label || `Section ${sectionIdx + 1}`);
     const fields = asArray(section.fields)
@@ -159,14 +171,15 @@ export function parsePdfAutomaticExtractorOutput(input: unknown): ParsedPdfAutom
     };
   });
 
-  const tables: ParsedTable[] = tableNodes
+  const tables: ParsedLlmSchemaTable[] = tableNodes
     .filter((table) => table.is_active !== false)
     .map((table, tableIdx) => {
       const tableId = String(table.id || `table_${tableIdx + 1}`);
       const tableLabel = String(table.label || `Table ${tableIdx + 1}`);
-      const sourceColumns = asArray(table.column_definitions).length > 0
-        ? asArray(table.column_definitions)
-        : asArray(table.columns);
+      const sourceColumns =
+        asArray(table.column_definitions).length > 0
+          ? asArray(table.column_definitions)
+          : asArray(table.columns);
       const columns = sourceColumns
         .filter((column) => column.is_active !== false)
         .map((column, colIdx) =>
@@ -202,7 +215,7 @@ export function parsePdfAutomaticExtractorOutput(input: unknown): ParsedPdfAutom
     })
     .filter((tab) => tab.fields.length > 0);
 
-  const tabs: ParsedExtractorTab[] =
+  const tabs: ParsedLlmSchemaTab[] =
     explicitTabs.length > 0
       ? explicitTabs
       : [

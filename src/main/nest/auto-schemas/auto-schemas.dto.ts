@@ -15,6 +15,14 @@ export class CreateAutoSchemaDto {
 
   @IsObject()
   rawJson!: Record<string, unknown>;
+
+  @IsObject()
+  @IsOptional()
+  llmJson?: Record<string, unknown>;
+
+  @IsObject()
+  @IsOptional()
+  schemaJson?: Record<string, unknown>;
 }
 
 export class GenerateAutoSchemaLlmDto {

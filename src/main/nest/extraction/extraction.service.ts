@@ -13,7 +13,7 @@ export interface ExtractionResult {
 @Injectable()
 export class ExtractionService {
   private readonly logger = new Logger(ExtractionService.name);
-  private readonly fallbackModelId = "phi4-mini";
+  private readonly fallbackModelId = "qwen3:30b";
   private ready = false;
   private loadError: string | null = null;
 

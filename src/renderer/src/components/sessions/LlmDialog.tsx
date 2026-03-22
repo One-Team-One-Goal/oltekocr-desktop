@@ -80,8 +80,8 @@ export function LlmDialog({
           return rec.recommendedId;
         }
         if (current && list.some((m) => m.id === current)) return current;
-        if (list.some((m) => m.id === "phi4-mini" && m.downloaded))
-          return "phi4-mini";
+        if (list.some((m) => m.id === "qwen3:30b" && m.downloaded))
+          return "qwen3:30b";
         return list[0]?.id ?? current;
       });
     } catch (err: any) {

@@ -64,8 +64,9 @@ import { markUnsaved, nextUnnamedName } from "@/lib/unsaved-sessions";
 import {
   SchemaBuilderDialog,
   type SchemaPresetDraft,
+  type SchemaPresetTab,
 } from "./SchemaBuilderDialog";
-import { AutoSchemaBuilderDialog } from "./AutoSchemaBuilderDialog";
+import { AutomaticSchemaBuilderPanel } from "./AutomaticSchemaBuilderPanel";
 
 // Load all file-type icons via glob (handles special chars in filenames)
 const _svgModules = import.meta.glob("../../assets/icons/*.svg", {
@@ -794,12 +795,34 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
           onSubmit={(preset) => handleSchemaBuilderSubmit(preset, "manual")}
         />
 
-        <AutoSchemaBuilderDialog
+        <Dialog
           open={autoSchemaBuilderOpen}
-          onClose={() => setAutoSchemaBuilderOpen(false)}
-          submitting={schemaBuilderSubmitting}
-          onSubmit={(preset) => handleSchemaBuilderSubmit(preset, "auto")}
-        />
+          onOpenChange={(isOpen) => !isOpen && setAutoSchemaBuilderOpen(false)}
+        >
+          <DialogContent className="sm:max-w-[1100px] h-[90vh] overflow-hidden flex flex-col">
+            <DialogHeader>
+              <DialogTitle>Auto Schema Builder</DialogTitle>
+            </DialogHeader>
+
+            <AutomaticSchemaBuilderPanel
+              onClose={() => setAutoSchemaBuilderOpen(false)}
+              onComplete={async (preset) => {
+                await handleSchemaBuilderSubmit(
+                  {
+                    // Auto-built schemas should always create a new preset entry.
+                    id: undefined,
+                    name: preset.name,
+                    extractionMode: preset.extractionMode,
+                    recordStartRegex: preset.recordStartRegex,
+                    tabs: preset.tabs as SchemaPresetTab[],
+                  },
+                  "auto",
+                );
+              }}
+              submitting={schemaBuilderSubmitting}
+            />
+          </DialogContent>
+        </Dialog>
       </>
     );
   }
