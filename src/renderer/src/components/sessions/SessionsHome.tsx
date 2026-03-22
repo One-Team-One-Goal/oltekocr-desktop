@@ -57,6 +57,7 @@ import {
   Pencil,
   MoreVertical,
   Star,
+  FolderOpen,
 } from "lucide-react";
 import type { SessionListItem, SessionMode } from "@shared/types";
 import { WindowControls } from "@/components/layout/SidebarContext";
@@ -206,8 +207,7 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
   const [starredIds, setStarredIds] = useState<Set<string>>(new Set());
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [schemaModeDialogOpen, setSchemaModeDialogOpen] = useState(false);
-  const [manualSchemaBuilderOpen, setManualSchemaBuilderOpen] =
-    useState(false);
+  const [manualSchemaBuilderOpen, setManualSchemaBuilderOpen] = useState(false);
   const [autoSchemaBuilderOpen, setAutoSchemaBuilderOpen] = useState(false);
   const [schemaBuilderSubmitting, setSchemaBuilderSubmitting] = useState(false);
 
@@ -349,7 +349,10 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
     });
   };
 
-  const handleSchemaBuilderSubmit = async (preset: SchemaPresetDraft, modeType: "manual" | "auto") => {
+  const handleSchemaBuilderSubmit = async (
+    preset: SchemaPresetDraft,
+    modeType: "manual" | "auto",
+  ) => {
     setSchemaBuilderSubmitting(true);
     try {
       const created = await saveSchemaPreset(preset);
@@ -557,6 +560,7 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
                     <div className="divide-y">
                       {filteredSessions.map((session) => {
                         const isStarred = starredIds.has(session.id);
+                        const isMultiFileSession = session.documentCount > 1;
                         return (
                           <div
                             key={session.id}
@@ -567,11 +571,15 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
                             }}
                           >
                             <div className="flex items-center gap-3 min-w-0">
-                              <img
-                                src={getFileIcon(session.name)}
-                                className="h-5 w-5 shrink-0 opacity-50"
-                                alt=""
-                              />
+                              {isMultiFileSession ? (
+                                <FolderOpen className="h-5 w-5 shrink-0 opacity-50" />
+                              ) : (
+                                <img
+                                  src={getFileIcon(session.name)}
+                                  className="h-5 w-5 shrink-0 opacity-50"
+                                  alt=""
+                                />
+                              )}
                               <div className="min-w-0">
                                 {pdfRenamingId === session.id ? (
                                   <Input
@@ -755,7 +763,8 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
               <DialogTitle>Choose Schema Builder</DialogTitle>
             </DialogHeader>
             <p className="text-sm text-muted-foreground">
-              For Other document types, choose how you want to create the schema.
+              For Other document types, choose how you want to create the
+              schema.
             </p>
             <div className="grid grid-cols-1 gap-2 pt-1">
               <Button
