@@ -31,6 +31,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Extract freight contract tables from a PDF using a schema preset")
     parser.add_argument("--pdf", required=True, help="Absolute path to the PDF file")
     parser.add_argument(
+        "--extractor",
+        choices=["pdfplumber", "docling"],
+        default="pdfplumber",
+        help="Source extractor backend used to build page/table adapters",
+    )
+    parser.add_argument(
         "--schema-json",
         required=True,
         help="Schema preset JSON object with tabs/fields",
@@ -48,7 +54,7 @@ def main() -> None:
         sys.exit(1)
 
     try:
-        doc = legacy.open_pdf_document(args.pdf)
+        doc = legacy.open_pdf_document(args.pdf, extractor=args.extractor)
     except Exception as exc:  # pragma: no cover - subprocess guard
         print(json.dumps({"error": f"Failed to open PDF: {exc}"}))
         sys.stdout.flush()

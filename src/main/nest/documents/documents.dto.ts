@@ -44,6 +44,26 @@ export class LoadFilesDto {
   filePaths!: string[];
 }
 
+export class AnalyzePdfContentDto {
+  @ApiProperty({
+    description: "Array of absolute PDF file paths to analyze",
+    type: [String],
+  })
+  @IsArray()
+  @IsString({ each: true })
+  filePaths!: string[];
+}
+
+export class ExtractPdfTextDto {
+  @ApiProperty({
+    description: "Array of absolute PDF file paths to extract text from",
+    type: [String],
+  })
+  @IsArray()
+  @IsString({ each: true })
+  filePaths!: string[];
+}
+
 export class LoadFolderDto {
   @ApiProperty({ description: "Absolute path to folder" })
   @IsString()

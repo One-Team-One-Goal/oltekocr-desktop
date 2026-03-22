@@ -1,5 +1,16 @@
 const BASE_URL = "http://localhost:3847/api";
 
+export interface PdfContentAnalysisResult {
+  filePath: string;
+  classification: "TEXT_ONLY" | "IMAGE_ONLY" | "MIXED" | "UNKNOWN";
+  textPages: number;
+  imagePages: number;
+  totalPages: number;
+  confidence: number;
+  detector: "pdfplumber" | "pymupdf" | "combined";
+  error: string | null;
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const url = `${BASE_URL}${path}`;
   const headers: Record<string, string> = {
@@ -39,6 +50,11 @@ export const documentsApi = {
   stats: () => request<any>("/documents/stats"),
   loadFiles: (filePaths: string[]) =>
     request<any[]>("/documents/load", {
+      method: "POST",
+      body: JSON.stringify({ filePaths }),
+    }),
+  analyzePdfContent: (filePaths: string[]) =>
+    request<PdfContentAnalysisResult[]>("/documents/analyze-pdf-content", {
       method: "POST",
       body: JSON.stringify({ filePaths }),
     }),
@@ -248,14 +264,21 @@ export interface SchemaPresetFieldPayload {
   label: string;
   fieldKey: string;
   regexRule: string;
-  extractionStrategy?: "regex" | "table_column" | "header_field" | "page_region";
+  extractionStrategy?:
+    | "regex"
+    | "table_column"
+    | "header_field"
+    | "page_region";
   dataType?: "string" | "currency" | "number" | "date" | "percentage";
   pageRange?: string;
   postProcessing?: string[];
   altRegexRules?: string[];
   sectionHint?: string;
   sectionIndicatorKey?: string;
-  contextHint?: "same_line_after_label" | "next_line_after_label" | "table_cell";
+  contextHint?:
+    | "same_line_after_label"
+    | "next_line_after_label"
+    | "table_cell";
   contextLabel?: string;
   mandatory?: boolean;
   expectedFormat?: string;
@@ -365,17 +388,18 @@ export const sessionsApi = {
   deleteSchemaPreset: (presetId: string) =>
     request<void>(`/sessions/schema-presets/${presetId}`, { method: "DELETE" }),
   getSessionSchemaPreset: (id: string) =>
-    request<{ schemaPresetId: string | null; preset: SchemaPresetPayload | null }>(
-      `/sessions/${id}/schema-preset`,
-    ),
+    request<{
+      schemaPresetId: string | null;
+      preset: SchemaPresetPayload | null;
+    }>(`/sessions/${id}/schema-preset`),
   assignSessionSchemaPreset: (id: string, schemaPresetId?: string | null) =>
-    request<{ schemaPresetId: string | null; preset: SchemaPresetPayload | null }>(
-      `/sessions/${id}/schema-preset`,
-      {
-        method: "PATCH",
-        body: JSON.stringify({ schemaPresetId: schemaPresetId ?? null }),
-      },
-    ),
+    request<{
+      schemaPresetId: string | null;
+      preset: SchemaPresetPayload | null;
+    }>(`/sessions/${id}/schema-preset`, {
+      method: "PATCH",
+      body: JSON.stringify({ schemaPresetId: schemaPresetId ?? null }),
+    }),
   duplicate: (
     id: string,
     data: { strategy: "FULL" | "COLUMNS_ONLY"; name?: string },

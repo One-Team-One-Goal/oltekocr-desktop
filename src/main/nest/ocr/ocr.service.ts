@@ -8,6 +8,7 @@ import { DocumentsService } from "../documents/documents.service";
 import { DocumentsGateway } from "../documents/documents.gateway";
 import { SettingsService } from "../settings/settings.service";
 import type { OcrResult, SessionColumn } from "@shared/types";
+import type { PdfTextExtractionResult } from "../documents/documents.service";
 
 interface ProcessingMeta {
   scanTime: number;
@@ -118,7 +119,13 @@ export class OcrService {
 
     // Always re-detect PDF extraction type on processing (fast text/font check).
     // For non-PDFs, only detect if AUTO or not set.
-    let detected: "IMAGE" | "PDF_TEXT" | "PDF_IMAGE" | "EXCEL" | undefined;
+    let detected:
+      | "IMAGE"
+      | "PDF_TEXT"
+      | "PDF_IMAGE"
+      | "EXCEL"
+      | "UNKNOWN"
+      | undefined;
     if (doc.imagePath.toLowerCase().endsWith(".pdf")) {
       // PDFs: always re-detect to ensure correct routing even on reprocess
       detected = this.documentsService.detectExtractionType(doc.imagePath);
@@ -165,6 +172,23 @@ export class OcrService {
     const resolvedType = freshDoc?.extractionType ?? "IMAGE";
     const sessionMode = freshDoc?.session?.mode ?? null;
 
+    if (
+      doc.imagePath.toLowerCase().endsWith(".pdf") &&
+      resolvedType === "UNKNOWN"
+    ) {
+      const unknownTypeError =
+        "PDF content analysis is UNKNOWN. The file was not auto-routed to scanned OCR. Set extraction type to PDF_TEXT or PDF_IMAGE and reprocess.";
+      this.emitLog(unknownTypeError);
+      await this.prisma.document.updateMany({
+        where: { id: documentId },
+        data: {
+          status: "ERROR",
+          ocrWarnings: JSON.stringify([unknownTypeError]),
+        },
+      });
+      throw new Error(unknownTypeError);
+    }
+
     // Default to global settings model; PDF_EXTRACT sessions can override per session.
     const globalPdfModel = this.settings.getAll().ocr?.pdfModel || "pdfplumber";
     let extractionModel = globalPdfModel;
@@ -185,28 +209,27 @@ export class OcrService {
     try {
       // TABLE_EXTRACT-only routing strategy:
       // PDF_TEXT -> pdfplumber
-      // PDF_IMAGE -> Docling (fallback rapidocr)
+      // PDF_IMAGE -> Docling text-only extractor (fallback rapidocr)
       // IMAGE -> Docling (fallback rapidocr)
       if (sessionMode === "TABLE_EXTRACT") {
-        if (resolvedType === "PDF_TEXT") {
-          scanModel = extractionModel;
-          ocrResult = await this.runPdfExtractor(
-            doc.imagePath,
-            extractionModel,
-            "text",
-          );
-        } else if (resolvedType === "PDF_IMAGE") {
-          // Skip Marker (too slow on CPU). Go straight to Docling → RapidOCR fallback.
+        if (resolvedType === "PDF_TEXT" || resolvedType === "PDF_IMAGE") {
           try {
-            scanModel = "docling";
-            ocrResult = await this.runPdfExtractor(
+            const textExtraction = this.documentsService.extractPdfText([
               doc.imagePath,
-              "docling",
-              "ocr",
-            );
-          } catch (doclingErr: any) {
-            const fallbackMsg = `Docling failed for PDF_IMAGE; falling back to RapidOCR. Reason: ${String(
-              doclingErr?.message ?? doclingErr,
+            ])[0] as PdfTextExtractionResult | undefined;
+
+            if (!textExtraction || textExtraction.error) {
+              throw new Error(
+                textExtraction?.error ||
+                  "Plain-text PDF extraction failed with unknown error",
+              );
+            }
+
+            scanModel = textExtraction.modelUsed;
+            ocrResult = this.toOcrResultFromPdfTextExtraction(textExtraction);
+          } catch (textErr: any) {
+            const fallbackMsg = `${resolvedType} text extraction failed; falling back to RapidOCR. Reason: ${String(
+              textErr?.message ?? textErr,
             )}`;
             this.emitLog(fallbackMsg);
             this.logger.warn(fallbackMsg);
@@ -620,6 +643,22 @@ export class OcrService {
         );
       });
     });
+  }
+
+  private toOcrResultFromPdfTextExtraction(
+    extracted: PdfTextExtractionResult,
+  ): OcrResult {
+    const fullText = extracted.fullText || "";
+    return {
+      fullText,
+      markdown: fullText,
+      textBlocks: [],
+      tables: [],
+      avgConfidence: fullText.trim().length > 0 ? 100 : 0,
+      processingTime: Number(extracted.processingTime ?? 0),
+      pageCount: Number(extracted.pageCount ?? extracted.rawPages.length ?? 0),
+      warnings: Array.isArray(extracted.warnings) ? extracted.warnings : [],
+    };
   }
 
   /**

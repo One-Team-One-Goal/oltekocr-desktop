@@ -4,6 +4,7 @@ import { join } from "path";
 import { existsSync } from "fs";
 import { PrismaService } from "../prisma/prisma.service";
 import { SettingsService } from "../settings/settings.service";
+import { DocumentsService } from "../documents/documents.service";
 
 export interface ContractHeader {
   carrier: string;
@@ -29,14 +30,21 @@ interface SessionSchemaFieldRule {
   label: string;
   fieldKey: string;
   regexRule: string;
-  extractionStrategy?: "regex" | "table_column" | "header_field" | "page_region";
+  extractionStrategy?:
+    | "regex"
+    | "table_column"
+    | "header_field"
+    | "page_region";
   dataType?: "string" | "currency" | "number" | "date" | "percentage";
   pageRange?: string;
   postProcessing?: string[];
   altRegexRules?: string[];
   sectionHint?: string;
   sectionIndicatorKey?: string;
-  contextHint?: "same_line_after_label" | "next_line_after_label" | "table_cell";
+  contextHint?:
+    | "same_line_after_label"
+    | "next_line_after_label"
+    | "table_cell";
   contextLabel?: string;
   mandatory?: boolean;
   expectedFormat?: string;
@@ -84,14 +92,27 @@ export class ContractExtractionService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly settings: SettingsService,
+    private readonly documentsService: DocumentsService,
   ) {}
 
   private get legacyScriptPath(): string {
-    return join(process.cwd(), "src", "main", "python", "pdf_contract_extract.py");
+    return join(
+      process.cwd(),
+      "src",
+      "main",
+      "python",
+      "pdf_contract_extract.py",
+    );
   }
 
   private get dynamicScriptPath(): string {
-    return join(process.cwd(), "src", "main", "python", "pdf_contract_extract_dynamic.py");
+    return join(
+      process.cwd(),
+      "src",
+      "main",
+      "python",
+      "pdf_contract_extract_dynamic.py",
+    );
   }
 
   private resolvePythonExe(): string {
@@ -120,11 +141,46 @@ export class ContractExtractionService {
     documentId: string,
     onProgress?: (progress: number, message: string) => void,
   ): Promise<ContractExtractionResult> {
-    const doc = await this.prisma.document.findUnique({ where: { id: documentId } });
+    const doc = await this.prisma.document.findUnique({
+      where: { id: documentId },
+    });
 
     if (!doc) {
       this.logger.warn(`Document ${documentId} no longer exists — skipping`);
       return this.emptyResult();
+    }
+
+    const detectedType = this.documentsService.detectExtractionType(
+      doc.imagePath,
+    );
+    await this.prisma.document.updateMany({
+      where: { id: documentId },
+      data: { extractionType: detectedType },
+    });
+
+    if (detectedType === "UNKNOWN") {
+      const msg =
+        "PDF content analysis is UNKNOWN. This file was not auto-processed. Please set extraction type manually (PDF_TEXT or PDF_IMAGE) and reprocess.";
+      await this.prisma.document.updateMany({
+        where: { id: documentId },
+        data: {
+          status: "ERROR",
+          ocrWarnings: JSON.stringify([msg]),
+        },
+      });
+      throw new Error(msg);
+    }
+
+    if (detectedType === "IMAGE" || detectedType === "EXCEL") {
+      const msg = `Unsupported extraction type for PDF_EXTRACT: ${detectedType}`;
+      await this.prisma.document.updateMany({
+        where: { id: documentId },
+        data: {
+          status: "ERROR",
+          ocrWarnings: JSON.stringify([msg]),
+        },
+      });
+      throw new Error(msg);
     }
 
     await this.prisma.document.updateMany({
@@ -135,12 +191,15 @@ export class ContractExtractionService {
     const schemaPreset = doc.sessionId
       ? await this.getSessionSchemaPreset(doc.sessionId)
       : null;
+    const extractor: "pdfplumber" | "docling" =
+      detectedType === "PDF_IMAGE" ? "docling" : "pdfplumber";
 
     let result: ContractExtractionResult;
     try {
       result = await this.runPythonExtractor(
         doc.imagePath,
         schemaPreset,
+        extractor,
         onProgress,
       );
     } catch (err: any) {
@@ -183,6 +242,7 @@ export class ContractExtractionService {
   private runPythonExtractor(
     pdfPath: string,
     schemaPreset: SessionSchemaPresetRule | null,
+    extractor: "pdfplumber" | "docling",
     onProgress?: (progress: number, message: string) => void,
   ): Promise<ContractExtractionResult> {
     const pythonExe = this.resolvePythonExe();
@@ -193,18 +253,22 @@ export class ContractExtractionService {
     const timeoutMs = CONTRACT_TIMEOUT_S * 1000;
 
     if (!existsSync(script)) {
-      return Promise.reject(new Error(`Contract extraction script not found: ${script}`));
+      return Promise.reject(
+        new Error(`Contract extraction script not found: ${script}`),
+      );
     }
 
     return new Promise((resolve, reject) => {
-      const args = ["-u", script, "--pdf", pdfPath];
+      const args = ["-u", script, "--pdf", pdfPath, "--extractor", extractor];
       if (useDynamic && schemaPreset) {
         this.logger.log(
-          `Using dynamic extractor with schema preset '${schemaPreset.name}' (${schemaPreset.tabs.length} tab(s))`,
+          `Using dynamic extractor (${extractor}) with schema preset '${schemaPreset.name}' (${schemaPreset.tabs.length} tab(s))`,
         );
         args.push("--schema-json", JSON.stringify(schemaPreset));
       } else {
-        this.logger.log("Using legacy standard contract extractor (no schema preset attached)");
+        this.logger.log(
+          `Using legacy standard contract extractor (${extractor}, no schema preset attached)`,
+        );
       }
 
       const child = spawn(pythonExe, args, {
@@ -230,9 +294,7 @@ export class ContractExtractionService {
         for (const rawLine of lines) {
           const parsed = this.parseProgressLine(rawLine);
           if (parsed) {
-            this.logger.log(
-              `[progress] ${parsed.progress}% ${parsed.message}`,
-            );
+            this.logger.log(`[progress] ${parsed.progress}% ${parsed.message}`);
             onProgress?.(parsed.progress, parsed.message);
           }
         }
@@ -240,7 +302,11 @@ export class ContractExtractionService {
 
       const timer = setTimeout(() => {
         child.kill();
-        reject(new Error(`Contract extraction timed out after ${CONTRACT_TIMEOUT_S}s`));
+        reject(
+          new Error(
+            `Contract extraction timed out after ${CONTRACT_TIMEOUT_S}s`,
+          ),
+        );
       }, timeoutMs);
 
       child.on("close", (code) => {
@@ -249,9 +315,7 @@ export class ContractExtractionService {
         if (stderrRemainder.trim()) {
           const parsed = this.parseProgressLine(stderrRemainder);
           if (parsed) {
-            this.logger.log(
-              `[progress] ${parsed.progress}% ${parsed.message}`,
-            );
+            this.logger.log(`[progress] ${parsed.progress}% ${parsed.message}`);
             onProgress?.(parsed.progress, parsed.message);
           }
         }
@@ -284,7 +348,12 @@ export class ContractExtractionService {
 
   private emptyResult(): ContractExtractionResult {
     return {
-      header: { carrier: "", contractId: "", effectiveDate: "", expirationDate: "" },
+      header: {
+        carrier: "",
+        contractId: "",
+        effectiveDate: "",
+        expirationDate: "",
+      },
       rates: [],
       originArbs: [],
       destArbs: [],
@@ -388,7 +457,10 @@ export class ContractExtractionService {
         presetRows[0].extraction_mode === "CONTRACT_BIASED" ||
         presetRows[0].extraction_mode === "GENERIC" ||
         presetRows[0].extraction_mode === "AUTO"
-          ? (presetRows[0].extraction_mode as "AUTO" | "CONTRACT_BIASED" | "GENERIC")
+          ? (presetRows[0].extraction_mode as
+              | "AUTO"
+              | "CONTRACT_BIASED"
+              | "GENERIC")
           : "AUTO",
       recordStartRegex: presetRows[0].record_start_regex ?? undefined,
       tabs: tabRows.map((tab) => ({
@@ -396,7 +468,9 @@ export class ContractExtractionService {
         fields: fieldRows
           .filter((f) => f.tab_id === tab.id)
           .map((f) => {
-            const parseJsonArray = (raw: string | null): string[] | undefined => {
+            const parseJsonArray = (
+              raw: string | null,
+            ): string[] | undefined => {
               if (!raw) return undefined;
               try {
                 const parsed = JSON.parse(raw);
@@ -426,7 +500,8 @@ export class ContractExtractionService {
                 : undefined;
 
             const sectionHint = (f.section_hint ?? "").trim() || undefined;
-            const sectionIndicatorKey = (f.context_label ?? "").trim() || undefined;
+            const sectionIndicatorKey =
+              (f.context_label ?? "").trim() || undefined;
 
             const contextHint =
               f.context_hint === "same_line_after_label" ||

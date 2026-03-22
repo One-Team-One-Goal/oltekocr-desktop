@@ -1,6 +1,8 @@
 import { useState, useEffect, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { sessionsApi, queueApi } from "@/api/client";
+import { toast } from "@/hooks/use-toast";
+import { validatePdfExtractFiles } from "@/lib/pdfExtractValidation";
 import { SessionCard } from "./SessionCard";
 import { NewSessionDialog } from "./NewSessionDialog";
 import { DuplicateSessionDialog } from "./DuplicateSessionDialog";
@@ -60,7 +62,7 @@ import {
 } from "lucide-react";
 import type { SessionListItem, SessionMode } from "@shared/types";
 import { WindowControls } from "@/components/layout/SidebarContext";
-import { markUnsaved, nextUnnamedName } from "@/lib/unsaved-sessions";
+import { nextUnnamedName } from "@/lib/unsaved-sessions";
 import {
   SchemaBuilderDialog,
   type SchemaPresetDraft,
@@ -206,8 +208,7 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
   const [starredIds, setStarredIds] = useState<Set<string>>(new Set());
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [schemaModeDialogOpen, setSchemaModeDialogOpen] = useState(false);
-  const [manualSchemaBuilderOpen, setManualSchemaBuilderOpen] =
-    useState(false);
+  const [manualSchemaBuilderOpen, setManualSchemaBuilderOpen] = useState(false);
   const [autoSchemaBuilderOpen, setAutoSchemaBuilderOpen] = useState(false);
   const [schemaBuilderSubmitting, setSchemaBuilderSubmitting] = useState(false);
 
@@ -270,7 +271,30 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
       const result = await window.api.openFileDialog();
       if (result.canceled || result.filePaths.length === 0) return;
       setCreating(docType);
-      const selectedFiles = result.filePaths;
+
+      const validation = await validatePdfExtractFiles(result.filePaths);
+      const selectedFiles = validation.allowedFilePaths;
+
+      if (validation.blockedFiles.length > 0) {
+        const blockedSample = validation.blockedFiles
+          .slice(0, 2)
+          .map((item) => getFileName(item.filePath))
+          .join(", ");
+        toast({
+          title:
+            selectedFiles.length > 0
+              ? `Skipped ${validation.blockedFiles.length} incompatible file(s)`
+              : "No compatible PDF files",
+          description:
+            blockedSample.length > 0
+              ? `${blockedSample}${validation.blockedFiles.length > 2 ? ", ..." : ""}`
+              : "PDF_EXTRACT accepts text, image-only, and mixed PDFs. Unknown/failed analysis files are skipped.",
+          variant: selectedFiles.length > 0 ? "default" : "destructive",
+        });
+      }
+
+      if (selectedFiles.length === 0) return;
+
       const allSessions = await sessionsApi.list();
       const inferredName =
         selectedFiles.length === 1
@@ -297,7 +321,6 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
         await queueApi.add(docIds);
         await queueApi.resume();
       }
-      markUnsaved(session.id);
       navigate(`/pdf-sessions/${session.id}`);
     } catch (err) {
       console.error("Failed to create PDF session:", err);
@@ -349,7 +372,10 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
     });
   };
 
-  const handleSchemaBuilderSubmit = async (preset: SchemaPresetDraft, modeType: "manual" | "auto") => {
+  const handleSchemaBuilderSubmit = async (
+    preset: SchemaPresetDraft,
+    modeType: "manual" | "auto",
+  ) => {
     setSchemaBuilderSubmitting(true);
     try {
       const created = await saveSchemaPreset(preset);
@@ -408,9 +434,14 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
     if (docIds.length > 0) {
       try {
         await queueApi.add(docIds);
+        await queueApi.resume();
       } catch (err) {
         console.error("Failed to queue documents:", err);
       }
+    }
+    if (mode === "PDF_EXTRACT") {
+      navigate(`/pdf-sessions/${sessionId}`);
+      return;
     }
     navigate(`/sessions/${sessionId}`);
   };
@@ -755,7 +786,8 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
               <DialogTitle>Choose Schema Builder</DialogTitle>
             </DialogHeader>
             <p className="text-sm text-muted-foreground">
-              For Other document types, choose how you want to create the schema.
+              For Other document types, choose how you want to create the
+              schema.
             </p>
             <div className="grid grid-cols-1 gap-2 pt-1">
               <Button

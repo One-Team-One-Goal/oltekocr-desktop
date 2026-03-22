@@ -14,6 +14,8 @@ import argparse
 import time
 import re
 import ast
+import importlib.util
+import os
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -151,7 +153,148 @@ class _PlumberDocumentAdapter:
         self._doc.close()
 
 
-def open_pdf_document(path: str) -> _PlumberDocumentAdapter:
+class _DoclingTableAdapter:
+    def __init__(self, table: Dict[str, Any]):
+        self._table = table
+        bbox = table.get("bbox") or [0.0, 0.0, 0.0, 0.0]
+        self.bbox = tuple(bbox) if isinstance(bbox, (list, tuple)) and len(bbox) >= 4 else (0.0, 0.0, 0.0, 0.0)
+
+    def extract(self) -> List[List[Any]]:
+        rows = int(self._table.get("rows") or 0)
+        cols = int(self._table.get("cols") or 0)
+        cells = self._table.get("cells") or []
+        if rows <= 0 or cols <= 0:
+            return []
+
+        grid: List[List[str]] = [["" for _ in range(cols)] for _ in range(rows)]
+        for cell in cells:
+            try:
+                r = int(cell.get("row", 0))
+                c = int(cell.get("col", 0))
+            except Exception:
+                continue
+            if 0 <= r < rows and 0 <= c < cols:
+                grid[r][c] = str(cell.get("text", "") or "").strip()
+        return grid
+
+
+class _DoclingPageAdapter:
+    def __init__(self, page_num: int, text_blocks: List[Dict[str, Any]], tables: List[Dict[str, Any]]):
+        self._page_num = page_num
+        self._text_blocks = text_blocks
+        self._tables = tables
+
+    def _line_items(self) -> List[Dict[str, Any]]:
+        lines: List[Dict[str, Any]] = []
+        for block in self._text_blocks:
+            text = str(block.get("text", "") or "").strip()
+            if not text:
+                continue
+            bbox = block.get("bbox") or [0.0, 0.0, 0.0, 0.0]
+            if not (isinstance(bbox, (list, tuple)) and len(bbox) >= 4):
+                bbox = [0.0, 0.0, 0.0, 0.0]
+            lines.append({"text": text, "bbox": (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))})
+        lines.sort(key=lambda item: (item["bbox"][1], item["bbox"][0]))
+        return lines
+
+    def get_text(self, mode: str = "text") -> Any:
+        lines = self._line_items()
+        if mode == "text":
+            return "\n".join(line["text"] for line in lines).strip()
+
+        if mode == "blocks":
+            return [
+                (line["bbox"][0], line["bbox"][1], line["bbox"][2], line["bbox"][3], line["text"], idx, 0)
+                for idx, line in enumerate(lines)
+            ]
+
+        if mode == "dict":
+            return {
+                "blocks": [
+                    {
+                        "type": 0,
+                        "bbox": line["bbox"],
+                        "lines": [
+                            {
+                                "bbox": line["bbox"],
+                                "spans": [
+                                    {
+                                        "text": line["text"],
+                                        "bbox": line["bbox"],
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                    for line in lines
+                ]
+            }
+
+        raise ValueError(f"Unsupported text mode: {mode}")
+
+    def find_tables(self, strategy: str = "lines") -> _PlumberTableFinderAdapter:
+        _ = strategy
+        return _PlumberTableFinderAdapter([_DoclingTableAdapter(t) for t in self._tables])
+
+
+class _DoclingDocumentAdapter:
+    def __init__(self, payload: Dict[str, Any]):
+        text_blocks = payload.get("textBlocks") or []
+        tables = payload.get("tables") or []
+        page_count = int(payload.get("pageCount") or 0)
+
+        by_page_blocks: Dict[int, List[Dict[str, Any]]] = {}
+        for block in text_blocks:
+            page = int(block.get("page") or 1)
+            by_page_blocks.setdefault(page, []).append(block)
+
+        by_page_tables: Dict[int, List[Dict[str, Any]]] = {}
+        for table in tables:
+            page = int(table.get("page") or 1)
+            by_page_tables.setdefault(page, []).append(table)
+
+        inferred_max_page = max([0, *by_page_blocks.keys(), *by_page_tables.keys()])
+        total_pages = max(page_count, inferred_max_page)
+        self._pages: List[_DoclingPageAdapter] = []
+        for page in range(1, total_pages + 1):
+            self._pages.append(
+                _DoclingPageAdapter(
+                    page,
+                    by_page_blocks.get(page, []),
+                    by_page_tables.get(page, []),
+                )
+            )
+
+    def __len__(self) -> int:
+        return len(self._pages)
+
+    def __getitem__(self, index: int) -> _DoclingPageAdapter:
+        return self._pages[index]
+
+    def close(self) -> None:
+        return None
+
+
+def _load_docling_payload(path: str) -> Dict[str, Any]:
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    extractor_path = os.path.join(script_dir, "pdf_extract.py")
+    spec = importlib.util.spec_from_file_location("pdf_extract", extractor_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Unable to load pdf_extract.py for Docling extraction")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    result = mod.extract_docling(path, chunk_size=25, mode="ocr")
+    if not isinstance(result, dict):
+        raise RuntimeError("Docling extractor returned non-dict payload")
+    if result.get("error"):
+        raise RuntimeError(str(result.get("error")))
+    return result
+
+
+def open_pdf_document(path: str, extractor: str = "pdfplumber") -> Any:
+    if extractor == "docling":
+        payload = _load_docling_payload(path)
+        return _DoclingDocumentAdapter(payload)
     return _PlumberDocumentAdapter(pdfplumber.open(path))
 
 
@@ -2415,6 +2558,12 @@ def _legacy_extract_tables(
 def main():
     parser = argparse.ArgumentParser(description="Extract freight contract tables from a PDF")
     parser.add_argument("--pdf", required=True, help="Absolute path to the PDF file")
+    parser.add_argument(
+        "--extractor",
+        choices=["pdfplumber", "docling"],
+        default="pdfplumber",
+        help="Source extractor backend used to build page/table adapters",
+    )
     args = parser.parse_args()
 
     start = time.time()
@@ -2422,7 +2571,7 @@ def main():
     log_progress(5, "Opening PDF")
 
     try:
-        doc = open_pdf_document(args.pdf)
+        doc = open_pdf_document(args.pdf, extractor=args.extractor)
     except Exception as e:
         print(json.dumps({"error": f"Failed to open PDF: {e}"}))
         sys.stdout.flush()

@@ -118,6 +118,11 @@ const EXTRACTION_TYPE_OPTIONS: {
     label: "PDF (Scanned)",
     color: "text-amber-500",
   },
+  {
+    value: ExtractionType.UNKNOWN,
+    label: "Unknown",
+    color: "text-red-500",
+  },
   { value: ExtractionType.EXCEL, label: "Excel", color: "text-green-500" },
 ];
 

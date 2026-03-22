@@ -1,11 +1,6 @@
 ﻿import { useState, useCallback, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import {
-  sessionsApi,
-  exportApi,
-  documentsApi,
-  queueApi,
-} from "@/api/client";
+import { sessionsApi, exportApi, documentsApi, queueApi } from "@/api/client";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { WindowControls } from "@/components/layout/SidebarContext";
 import { ExtractionView } from "./ExtractionPanel";
@@ -49,7 +44,8 @@ export function PdfSessionDetail() {
   const [isRenaming, setIsRenaming] = useState(false);
   const [rawOpen, setRawOpen] = useState(false);
   const [tablesOpen, setTablesOpen] = useState(false);
-  const [selectedSchemaPreset, setSelectedSchemaPreset] = useState<SelectedSchemaPreset | null>(null);
+  const [selectedSchemaPreset, setSelectedSchemaPreset] =
+    useState<SelectedSchemaPreset | null>(null);
   const [queueState, setQueueState] = useState<{
     size: number;
     processing: string | null;
@@ -246,7 +242,8 @@ export function PdfSessionDetail() {
       const exportPath = result?.exportPath;
       if (!exportPath) throw new Error("No export path returned by server");
 
-      const defaultName = exportPath.split(/[\\/]/).pop() || "contract_export.xlsx";
+      const defaultName =
+        exportPath.split(/[\\/]/).pop() || "contract_export.xlsx";
       const picked = await window.api.saveFileDialog({
         title: "Save Exported Excel",
         defaultPath: defaultName,
@@ -291,6 +288,7 @@ export function PdfSessionDetail() {
     try {
       await documentsApi.reprocess(selectedDocId);
       await queueApi.add([selectedDocId]);
+      await queueApi.resume();
       refresh();
     } finally {
       setIsReprocessing(false);
@@ -447,13 +445,6 @@ export function PdfSessionDetail() {
           </div>
         )}
       </div>
-
-      <QueueMonitor
-        documents={documents}
-        queueSize={queueState.size}
-        processingId={queueState.processing}
-        progressByDocId={progressByDocId}
-      />
     </div>
   );
 }
