@@ -227,7 +227,7 @@ def _extract_tables(doc) -> tuple[list[dict], list[str]]:
         tables.append({
             "tableId": str(uuid.uuid4())[:8],
             "rows": n_rows, "cols": n_cols, "cells": cells,
-            "caption": "", "bbox": bbox,
+            "caption": "", "bbox": bbox, "page": page,
         })
     return tables, text_parts
 

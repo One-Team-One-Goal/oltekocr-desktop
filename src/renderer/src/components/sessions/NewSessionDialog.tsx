@@ -9,6 +9,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { sessionPresetsApi, sessionsApi } from "@/api/client";
+import { toast } from "@/hooks/use-toast";
+import { validatePdfExtractFiles } from "@/lib/pdfExtractValidation";
 import {
   FileText,
   Table2,
@@ -310,6 +312,38 @@ export function NewSessionDialog({
     setError("");
 
     try {
+      let filesToIngest = filePaths;
+
+      if (mode === "PDF_EXTRACT" && sourceType === "FILES") {
+        const validation = await validatePdfExtractFiles(filePaths);
+        filesToIngest = validation.allowedFilePaths;
+
+        if (validation.blockedFiles.length > 0) {
+          const blockedSample = validation.blockedFiles
+            .slice(0, 2)
+            .map((item) => item.filePath.split(/[\\/]/).pop() || item.filePath)
+            .join(", ");
+          toast({
+            title:
+              filesToIngest.length > 0
+                ? `Skipped ${validation.blockedFiles.length} incompatible file(s)`
+                : "No compatible PDF files",
+            description:
+              blockedSample.length > 0
+                ? `${blockedSample}${validation.blockedFiles.length > 2 ? ", ..." : ""}`
+                : "PDF_EXTRACT accepts text, image-only, and mixed PDFs. Unknown/failed analysis files are skipped.",
+            variant: filesToIngest.length > 0 ? "default" : "destructive",
+          });
+        }
+
+        if (filesToIngest.length === 0) {
+          setError(
+            "No compatible PDFs after analysis. PDF_EXTRACT accepts text, image-only, and mixed PDFs; unknown files are skipped.",
+          );
+          return;
+        }
+      }
+
       // 1. Create session
       const session = await sessionsApi.create({
         name: name.trim(),
@@ -322,7 +356,7 @@ export function NewSessionDialog({
       // 2. Ingest files / folder
       let docs: any[] = [];
       if (sourceType === "FILES") {
-        docs = await sessionsApi.ingestFiles(session.id, filePaths);
+        docs = await sessionsApi.ingestFiles(session.id, filesToIngest);
       } else {
         docs = await sessionsApi.ingestFolder(session.id, folderPath);
       }

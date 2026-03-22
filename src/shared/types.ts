@@ -69,6 +69,7 @@ export const ExtractionType = {
   IMAGE: "IMAGE", // standalone image file (jpg, png, tiff…)
   PDF_TEXT: "PDF_TEXT", // digital PDF with selectable text
   PDF_IMAGE: "PDF_IMAGE", // scanned PDF — pages are rasterised images
+  UNKNOWN: "UNKNOWN", // detection failed; requires manual routing
   EXCEL: "EXCEL", // spreadsheet
 } as const;
 export type ExtractionType =

@@ -22,6 +22,8 @@ import { DocumentsService } from "./documents.service";
 import {
   ListDocumentsQueryDto,
   LoadFilesDto,
+  AnalyzePdfContentDto,
+  ExtractPdfTextDto,
   LoadFolderDto,
   UpdateDocumentDto,
   RejectDocumentDto,
@@ -99,6 +101,28 @@ export class DocumentsController {
   @ApiResponse({ status: 201, description: "Created document list items." })
   async loadFiles(@Body() dto: LoadFilesDto) {
     return this.documentsService.loadFiles(dto.filePaths);
+  }
+
+  @Post("analyze-pdf-content")
+  @ApiOperation({
+    summary: "Analyze PDF content type",
+    description:
+      "Classify PDFs as TEXT_ONLY, IMAGE_ONLY, MIXED, or UNKNOWN without ingesting them.",
+  })
+  @ApiResponse({ status: 200, description: "Per-file PDF content analysis." })
+  async analyzePdfContent(@Body() dto: AnalyzePdfContentDto): Promise<any[]> {
+    return this.documentsService.analyzePdfContent(dto.filePaths);
+  }
+
+  @Post("extract-pdf-text")
+  @ApiOperation({
+    summary: "Extract plain text from PDFs with auto model routing",
+    description:
+      "Routes TEXT_ONLY PDFs to pdfplumber and IMAGE_ONLY/MIXED PDFs to a Docling text-only pipeline, returning fullText/rawPages without bbox/table metadata.",
+  })
+  @ApiResponse({ status: 200, description: "Per-file text extraction output." })
+  async extractPdfText(@Body() dto: ExtractPdfTextDto): Promise<any[]> {
+    return this.documentsService.extractPdfText(dto.filePaths);
   }
 
   @Post("load-folder")

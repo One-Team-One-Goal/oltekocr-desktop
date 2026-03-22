@@ -1,5 +1,16 @@
 const BASE_URL = "http://localhost:3847/api";
 
+export interface PdfContentAnalysisResult {
+  filePath: string;
+  classification: "TEXT_ONLY" | "IMAGE_ONLY" | "MIXED" | "UNKNOWN";
+  textPages: number;
+  imagePages: number;
+  totalPages: number;
+  confidence: number;
+  detector: "pdfplumber" | "pymupdf" | "combined";
+  error: string | null;
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const url = `${BASE_URL}${path}`;
   const headers: Record<string, string> = {
@@ -39,6 +50,11 @@ export const documentsApi = {
   stats: () => request<any>("/documents/stats"),
   loadFiles: (filePaths: string[]) =>
     request<any[]>("/documents/load", {
+      method: "POST",
+      body: JSON.stringify({ filePaths }),
+    }),
+  analyzePdfContent: (filePaths: string[]) =>
+    request<PdfContentAnalysisResult[]>("/documents/analyze-pdf-content", {
       method: "POST",
       body: JSON.stringify({ filePaths }),
     }),

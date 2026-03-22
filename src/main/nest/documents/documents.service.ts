@@ -33,6 +33,39 @@ const SUPPORTED_EXTENSIONS = new Set([
   ".pdf",
 ]);
 
+interface PdfContentAnalysis {
+  filePath: string;
+  classification: "TEXT_ONLY" | "IMAGE_ONLY" | "MIXED" | "UNKNOWN";
+  textPages: number;
+  imagePages: number;
+  totalPages: number;
+  confidence: number;
+  detector: "pdfplumber" | "pymupdf" | "combined";
+  error: string | null;
+}
+
+interface PdfDetectorOutput {
+  classification?: "TEXT_ONLY" | "IMAGE_ONLY" | "MIXED" | "UNKNOWN";
+  textPages?: number;
+  imagePages?: number;
+  totalPages?: number;
+  confidence?: number;
+  detector?: "pdfplumber" | "pymupdf" | "combined";
+  error?: string | null;
+}
+
+export interface PdfTextExtractionResult {
+  filePath: string;
+  classification: "TEXT_ONLY" | "IMAGE_ONLY" | "MIXED" | "UNKNOWN";
+  modelUsed: "pdfplumber" | "docling" | "none";
+  fullText: string;
+  rawPages: Array<{ page: number; text: string }>;
+  pageCount: number;
+  processingTime: number;
+  warnings: string[];
+  error: string | null;
+}
+
 @Injectable()
 export class DocumentsService {
   private readonly logger = new Logger(DocumentsService.name);
@@ -340,14 +373,270 @@ export class DocumentsService {
   // ─── Helpers ───────────────────────────────────────────
   detectExtractionType(
     filePath: string,
-  ): "IMAGE" | "PDF_TEXT" | "PDF_IMAGE" | "EXCEL" {
+  ): "IMAGE" | "PDF_TEXT" | "PDF_IMAGE" | "EXCEL" | "UNKNOWN" {
     const ext = extname(filePath).toLowerCase();
     if (ext === ".xlsx" || ext === ".xls") return "EXCEL";
     if (ext !== ".pdf") return "IMAGE";
-    // For PDFs: use PyMuPDF to safely detect if the PDF has extractable text
-    // by sampling the first page. Falls back to PDF_IMAGE on error.
+
+    const analysis = this.analyzeSinglePdf(filePath);
+    if (analysis.classification === "TEXT_ONLY") return "PDF_TEXT";
+    if (analysis.classification === "IMAGE_ONLY") return "PDF_IMAGE";
+    if (analysis.classification === "MIXED") return "PDF_IMAGE";
+
+    this.logger.warn(
+      `PDF classification UNKNOWN for ${filePath}: ${analysis.error ?? "unknown detection error"}`,
+    );
+    return "UNKNOWN";
+  }
+
+  analyzePdfContent(filePaths: string[]): PdfContentAnalysis[] {
+    return filePaths
+      .filter((filePath) => extname(filePath).toLowerCase() === ".pdf")
+      .map((filePath) => this.analyzeSinglePdf(filePath));
+  }
+
+  extractPdfText(filePaths: string[]): PdfTextExtractionResult[] {
+    const pythonExe = this.resolvePythonExe(
+      this.settings.getAll().ocr.pythonPath || "python",
+    );
+    const doclingTextScript = join(
+      process.cwd(),
+      "src",
+      "main",
+      "python",
+      "pdf_docling_text_extract.py",
+    );
+    const pdfExtractScript = join(
+      process.cwd(),
+      "src",
+      "main",
+      "python",
+      "pdf_extract.py",
+    );
+
+    return filePaths
+      .filter((filePath) => extname(filePath).toLowerCase() === ".pdf")
+      .map((filePath) => {
+        const analysis = this.analyzeSinglePdf(filePath);
+
+        if (!existsSync(filePath)) {
+          return {
+            filePath,
+            classification: "UNKNOWN",
+            modelUsed: "none",
+            fullText: "",
+            rawPages: [],
+            pageCount: 0,
+            processingTime: 0,
+            warnings: [],
+            error: "File not found",
+          };
+        }
+
+        if (analysis.classification === "UNKNOWN") {
+          return {
+            filePath,
+            classification: "UNKNOWN",
+            modelUsed: "none",
+            fullText: "",
+            rawPages: [],
+            pageCount: 0,
+            processingTime: 0,
+            warnings: [],
+            error:
+              analysis.error ||
+              "Unable to classify PDF content for text extraction",
+          };
+        }
+
+        const usePdfPlumber = analysis.classification === "TEXT_ONLY";
+        const modelUsed: "pdfplumber" | "docling" = usePdfPlumber
+          ? "pdfplumber"
+          : "docling";
+        const script = usePdfPlumber ? pdfExtractScript : doclingTextScript;
+
+        if (!existsSync(script)) {
+          return {
+            filePath,
+            classification: analysis.classification,
+            modelUsed: "none",
+            fullText: "",
+            rawPages: [],
+            pageCount: 0,
+            processingTime: 0,
+            warnings: [],
+            error: `${modelUsed} extractor script not found`,
+          };
+        }
+
+        try {
+          const args = usePdfPlumber
+            ? [
+                script,
+                "--input",
+                filePath,
+                "--model",
+                "pdfplumber",
+                "--mode",
+                "text",
+              ]
+            : [script, "--input", filePath, "--mode", "ocr"];
+
+          const result = require("child_process").spawnSync(pythonExe, args, {
+            encoding: "utf8",
+            timeout: 600000,
+            stdio: ["pipe", "pipe", "pipe"],
+          });
+
+          const raw = String(result.stdout || "").trim();
+          if (!raw) {
+            return {
+              filePath,
+              classification: analysis.classification,
+              modelUsed,
+              fullText: "",
+              rawPages: [],
+              pageCount: 0,
+              processingTime: 0,
+              warnings: [],
+              error: `Extractor returned empty output${result.status !== 0 ? ` (status ${String(result.status)})` : ""}`,
+            };
+          }
+
+          let parsed: any;
+          try {
+            parsed = JSON.parse(raw);
+          } catch {
+            return {
+              filePath,
+              classification: analysis.classification,
+              modelUsed,
+              fullText: "",
+              rawPages: [],
+              pageCount: 0,
+              processingTime: 0,
+              warnings: [],
+              error: `Extractor returned invalid JSON: ${raw.slice(0, 180)}`,
+            };
+          }
+
+          if (parsed?.error) {
+            return {
+              filePath,
+              classification: analysis.classification,
+              modelUsed,
+              fullText: "",
+              rawPages: [],
+              pageCount: 0,
+              processingTime: 0,
+              warnings: [],
+              error: String(parsed.error),
+            };
+          }
+
+          const rawPages = Array.isArray(parsed?.rawPages)
+            ? parsed.rawPages.map((row: any) => ({
+                page: Number(row?.page ?? 0),
+                text: String(row?.text ?? ""),
+              }))
+            : this.buildRawPagesFromTextBlocks(
+                parsed?.textBlocks,
+                parsed?.pageCount,
+              );
+
+          const fullText = String(parsed?.fullText ?? "");
+          const warnings = Array.isArray(parsed?.warnings)
+            ? parsed.warnings.map((w: any) => String(w))
+            : [];
+
+          return {
+            filePath,
+            classification: analysis.classification,
+            modelUsed,
+            fullText,
+            rawPages,
+            pageCount: Number(parsed?.pageCount ?? 0),
+            processingTime: Number(parsed?.processingTime ?? 0),
+            warnings,
+            error: null,
+          };
+        } catch (err: any) {
+          return {
+            filePath,
+            classification: analysis.classification,
+            modelUsed,
+            fullText: "",
+            rawPages: [],
+            pageCount: 0,
+            processingTime: 0,
+            warnings: [],
+            error: String(err?.message ?? err),
+          };
+        }
+      });
+  }
+
+  private buildRawPagesFromTextBlocks(
+    textBlocksLike: any,
+    pageCountLike: any,
+  ): Array<{ page: number; text: string }> {
+    const blocks = Array.isArray(textBlocksLike) ? textBlocksLike : [];
+    const pageCount = Number(pageCountLike ?? 0);
+    const byPage = new Map<number, string[]>();
+
+    for (const block of blocks) {
+      const text = String(block?.text ?? "").trim();
+      if (!text) continue;
+      const page = Math.max(1, Number(block?.page ?? 1));
+      const list = byPage.get(page) ?? [];
+      list.push(text);
+      byPage.set(page, list);
+    }
+
+    if (byPage.size === 0 && pageCount > 0) {
+      return Array.from({ length: pageCount }, (_, idx) => ({
+        page: idx + 1,
+        text: "",
+      }));
+    }
+
+    return Array.from(byPage.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([page, lines]) => ({
+        page,
+        text: lines.join("\n").trim(),
+      }));
+  }
+
+  private analyzeSinglePdf(filePath: string): PdfContentAnalysis {
+    if (!existsSync(filePath)) {
+      return {
+        filePath,
+        classification: "UNKNOWN",
+        textPages: 0,
+        imagePages: 0,
+        totalPages: 0,
+        confidence: 0,
+        detector: "combined",
+        error: "File not found",
+      };
+    }
+
+    const ext = extname(filePath).toLowerCase();
+    if (ext !== ".pdf") {
+      return {
+        filePath,
+        classification: "UNKNOWN",
+        textPages: 0,
+        imagePages: 0,
+        totalPages: 0,
+        confidence: 0,
+        detector: "combined",
+        error: "Not a PDF file",
+      };
+    }
+
     try {
-      const { spawn } = require("child_process");
       const pythonExe = this.resolvePythonExe(
         this.settings.getAll().ocr.pythonPath || "python",
       );
@@ -364,19 +653,93 @@ export class DocumentsService {
         {
           encoding: "utf8",
           timeout: 10000, // 10 second timeout
-          stdio: ["pipe", "pipe", "ignore"],
+          stdio: ["pipe", "pipe", "pipe"],
         },
       );
 
-      if (result.status === 0 && result.stdout) {
-        const detected = result.stdout.trim();
-        if (detected === "PDF_TEXT" || detected === "PDF_IMAGE") {
-          return detected;
-        }
+      if (result.status !== 0) {
+        return {
+          filePath,
+          classification: "UNKNOWN",
+          textPages: 0,
+          imagePages: 0,
+          totalPages: 0,
+          confidence: 0,
+          detector: "combined",
+          error: `Detector exited with status ${String(result.status)}: ${(result.stderr || "").trim() || "Unknown error"}`,
+        };
       }
-      return "PDF_IMAGE"; // fallback on error
-    } catch {
-      return "PDF_IMAGE"; // fallback if script execution fails
+
+      const raw = String(result.stdout || "").trim();
+      if (!raw) {
+        return {
+          filePath,
+          classification: "UNKNOWN",
+          textPages: 0,
+          imagePages: 0,
+          totalPages: 0,
+          confidence: 0,
+          detector: "combined",
+          error: "Detector returned empty output",
+        };
+      }
+
+      let parsed: PdfDetectorOutput;
+      try {
+        parsed = JSON.parse(raw) as PdfDetectorOutput;
+      } catch {
+        return {
+          filePath,
+          classification: "UNKNOWN",
+          textPages: 0,
+          imagePages: 0,
+          totalPages: 0,
+          confidence: 0,
+          detector: "combined",
+          error: `Detector returned invalid JSON: ${raw.slice(0, 180)}`,
+        };
+      }
+
+      const classification = parsed.classification;
+      if (
+        classification !== "TEXT_ONLY" &&
+        classification !== "IMAGE_ONLY" &&
+        classification !== "MIXED" &&
+        classification !== "UNKNOWN"
+      ) {
+        return {
+          filePath,
+          classification: "UNKNOWN",
+          textPages: 0,
+          imagePages: 0,
+          totalPages: 0,
+          confidence: 0,
+          detector: "combined",
+          error: "Detector returned unknown classification",
+        };
+      }
+
+      return {
+        filePath,
+        classification,
+        textPages: Number(parsed.textPages ?? 0),
+        imagePages: Number(parsed.imagePages ?? 0),
+        totalPages: Number(parsed.totalPages ?? 0),
+        confidence: Number(parsed.confidence ?? 0),
+        detector: parsed.detector ?? "combined",
+        error: parsed.error ?? null,
+      };
+    } catch (err: any) {
+      return {
+        filePath,
+        classification: "UNKNOWN",
+        textPages: 0,
+        imagePages: 0,
+        totalPages: 0,
+        confidence: 0,
+        detector: "combined",
+        error: String(err?.message ?? err),
+      };
     }
   }
 
