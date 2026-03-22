@@ -253,9 +253,12 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
       const result = await window.api.openFileDialog();
       if (result.canceled || result.filePaths.length === 0) return;
       setCreating(docType);
-      const selectedFile = result.filePaths[0];
+      const selectedFiles = result.filePaths;
       const allSessions = await sessionsApi.list();
-      const inferredName = getFileName(selectedFile);
+      const inferredName =
+        selectedFiles.length === 1
+          ? getFileName(selectedFiles[0])
+          : `${getFileName(selectedFiles[0])} (+${selectedFiles.length - 1})`;
       const name = uniqueSessionName(
         inferredName,
         allSessions.map((s: SessionListItem) => s.name),
@@ -267,8 +270,7 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
         documentType: docType,
         columns: [],
       });
-      // PDF mode is single-document per session.
-      const docs = await sessionsApi.ingestFiles(session.id, [selectedFile]);
+      const docs = await sessionsApi.ingestFiles(session.id, selectedFiles);
       const docIds = docs.map((d: { id: string }) => d.id);
       if (docIds.length > 0) {
         await queueApi.add(docIds);
@@ -356,7 +358,7 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
             className="flex items-stretch h-14 pl-6 border-b shrink-0 pt-0.5"
             style={drag}
           >
-            <div className="flex items-center gap-2 flex-1" style={noDrag}>
+            <div className="flex items-center gap-2 flex-1">
               <h1 className="text-lg font-semibold">{MODE_TITLES[mode]}</h1>
             </div>
             <WindowControls />
@@ -674,7 +676,7 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
         className="flex items-stretch h-14 pl-6 border-b shrink-0 pt-0.5"
         style={drag}
       >
-        <div className="flex items-center gap-2 flex-1" style={noDrag}>
+        <div className="flex items-center gap-2 flex-1">
           <h1 className="text-lg font-semibold">{MODE_TITLES[mode]}</h1>
         </div>
         <WindowControls />

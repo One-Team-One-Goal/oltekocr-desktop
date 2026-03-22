@@ -1,9 +1,16 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { sessionsApi, exportApi, documentsApi, ocrApi } from "@/api/client";
+import {
+  sessionsApi,
+  exportApi,
+  documentsApi,
+  ocrApi,
+  queueApi,
+} from "@/api/client";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { WindowControls } from "@/components/layout/SidebarContext";
 import { ExtractionView } from "./ExtractionPanel";
+import { QueueMonitor } from "./QueueMonitor";
 import {
   SchemaBuilderDialog,
   type SchemaPresetDraft,
@@ -55,6 +62,16 @@ export function PdfSessionDetail() {
   const [schemaPresets, setSchemaPresets] = useState<Array<{ id: string; name: string }>>([]);
   const [selectedSchemaPresetId, setSelectedSchemaPresetId] = useState<string>("");
   const [selectedSchemaPreset, setSelectedSchemaPreset] = useState<SchemaPresetDraft | null>(null);
+  const [queueState, setQueueState] = useState<{
+    size: number;
+    processing: string | null;
+  }>({ size: 0, processing: null });
+  const [progressByDocId, setProgressByDocId] = useState<
+    Record<string, { progress: number; message: string }>
+  >({});
+  const prevQueueActiveRef = useRef(false);
+  const statusMapRef = useRef<Record<string, string>>({});
+  const statusInitializedRef = useRef(false);
   const isRunning = documents.some(
     (d) => d.status === "SCANNING" || d.status === "PROCESSING",
   );
@@ -97,15 +114,82 @@ export function PdfSessionDetail() {
     refresh();
   }, [refresh]);
 
+  useEffect(() => {
+    let active = true;
+    queueApi
+      .status()
+      .then((data) => {
+        if (!active) return;
+        setQueueState({
+          size: Number(data?.size ?? 0),
+          processing: data?.processing ?? null,
+        });
+      })
+      .catch((err) => {
+        console.warn("Failed to load queue status:", err);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const handleWsEvent = useCallback(
     (event: WsEvent) => {
-      if (event.event === "document:status" || event.event === "queue:update") {
+      if (event.event === "queue:update") {
+        setQueueState({
+          size: Number(event.data.size ?? 0),
+          processing: event.data.processing ?? null,
+        });
+        refresh();
+        return;
+      }
+      if (event.event === "processing:progress") {
+        const { id: docId, progress, message } = event.data;
+        setProgressByDocId((prev) => ({
+          ...prev,
+          [docId]: { progress, message },
+        }));
+        return;
+      }
+      if (event.event === "document:status") {
         refresh();
       }
     },
     [refresh],
   );
   useWebSocket(handleWsEvent);
+
+  useEffect(() => {
+    const isQueueActive = queueState.size > 0 || !!queueState.processing;
+    if (prevQueueActiveRef.current && !isQueueActive) {
+      toast({
+        title: "Queue complete",
+        description: "All queued files finished processing.",
+      });
+    }
+    prevQueueActiveRef.current = isQueueActive;
+  }, [queueState]);
+
+  useEffect(() => {
+    if (!statusInitializedRef.current) {
+      for (const doc of documents) {
+        statusMapRef.current[doc.id] = doc.status;
+      }
+      statusInitializedRef.current = true;
+      return;
+    }
+
+    for (const doc of documents) {
+      const prevStatus = statusMapRef.current[doc.id];
+      if (prevStatus && prevStatus !== doc.status && doc.status === "REVIEW") {
+        toast({
+          title: "File processed",
+          description: doc.filename,
+        });
+      }
+      statusMapRef.current[doc.id] = doc.status;
+    }
+  }, [documents]);
 
   useEffect(() => {
     if (!isRunning) return;
@@ -244,6 +328,28 @@ export function PdfSessionDetail() {
     }
   };
 
+  const nextDoc = (() => {
+    if (!selectedDocId) return null;
+    const index = documents.findIndex((d) => d.id === selectedDocId);
+    if (index < 0 || index + 1 >= documents.length) return null;
+    return documents[index + 1];
+  })();
+
+  const prevDoc = (() => {
+    if (!selectedDocId) return null;
+    const index = documents.findIndex((d) => d.id === selectedDocId);
+    if (index <= 0) return null;
+    return documents[index - 1];
+  })();
+
+  const handlePrevFile = () => {
+    if (prevDoc) setSelectedDocId(prevDoc.id);
+  };
+
+  const handleNextFile = () => {
+    if (nextDoc) setSelectedDocId(nextDoc.id);
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full text-muted-foreground">
@@ -258,18 +364,19 @@ export function PdfSessionDetail() {
         className="flex items-stretch h-14 pl-4 border-b shrink-0"
         style={drag}
       >
-        <div className="flex items-center gap-2 min-w-0 flex-1" style={noDrag}>
+        <div className="flex items-center gap-2 min-w-0 flex-1">
           <Button
             variant="ghost"
             size="icon"
             className="shrink-0"
             onClick={handleBack}
+            style={noDrag}
           >
             <ArrowLeft className="h-4 w-4" />
           </Button>
 
           {isUnsaved || isRenaming ? (
-            <div className="flex items-center gap-2 min-w-0">
+            <div className="flex items-center gap-2 min-w-0" style={noDrag}>
               {isUnsaved && (
                 <SaveOff className="h-4 w-4 text-amber-500 shrink-0" />
               )}
@@ -304,7 +411,7 @@ export function PdfSessionDetail() {
               )}
             </div>
           ) : (
-            <div className="flex items-center gap-2 min-w-0">
+            <div className="flex items-center gap-2 min-w-0" style={noDrag}>
               <h1 className="text-base font-semibold truncate">
                 {session?.name ?? "PDF Session"}
               </h1>
@@ -384,6 +491,12 @@ export function PdfSessionDetail() {
               onRefresh={refresh}
               hideTopBar
               onReprocess={handleReprocess}
+              onPrevFile={handlePrevFile}
+              hasPrevFile={!!prevDoc}
+              prevFileLabel={prevDoc?.filename}
+              onNextFile={handleNextFile}
+              hasNextFile={!!nextDoc}
+              nextFileLabel={nextDoc?.filename}
               rawOpen={rawOpen}
               onRawOpenChange={setRawOpen}
               tablesOpen={tablesOpen}
@@ -425,6 +538,13 @@ export function PdfSessionDetail() {
             setSchemaSubmitting(false);
           }
         }}
+      />
+
+      <QueueMonitor
+        documents={documents}
+        queueSize={queueState.size}
+        processingId={queueState.processing}
+        progressByDocId={progressByDocId}
       />
     </div>
   );

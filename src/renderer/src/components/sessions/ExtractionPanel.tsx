@@ -676,6 +676,12 @@ interface ExtractionViewProps {
   onClose: () => void;
   onRefresh?: () => void;
   onReprocess?: (doc: DocumentRecord) => Promise<void>;
+  onPrevFile?: () => void;
+  hasPrevFile?: boolean;
+  prevFileLabel?: string;
+  onNextFile?: () => void;
+  hasNextFile?: boolean;
+  nextFileLabel?: string;
   hideTopBar?: boolean;
   rawOpen?: boolean;
   onRawOpenChange?: (open: boolean) => void;
@@ -691,6 +697,12 @@ export function ExtractionView({
   onClose,
   onRefresh,
   onReprocess,
+  onPrevFile,
+  hasPrevFile = false,
+  prevFileLabel,
+  onNextFile,
+  hasNextFile = false,
+  nextFileLabel,
   hideTopBar,
   rawOpen: rawOpenProp,
   onRawOpenChange,
@@ -1349,6 +1361,40 @@ export function ExtractionView({
                     <RotateCcw className="h-3 w-3" />
                     Reprocess
                   </Button>
+                  {onPrevFile && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 text-xs gap-1"
+                      onClick={onPrevFile}
+                      disabled={!hasPrevFile}
+                      title={
+                        hasPrevFile
+                          ? `Show previous file: ${prevFileLabel ?? "previous"}`
+                          : "No previous file"
+                      }
+                    >
+                      <ChevronLeft className="h-3.5 w-3.5" />
+                      Back
+                    </Button>
+                  )}
+                  {onNextFile && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 text-xs gap-1"
+                      onClick={onNextFile}
+                      disabled={!hasNextFile}
+                      title={
+                        hasNextFile
+                          ? `Show next file: ${nextFileLabel ?? "next"}`
+                          : "No more files"
+                      }
+                    >
+                      Next
+                      <ChevronRight className="h-3.5 w-3.5" />
+                    </Button>
+                  )}
                 </div>
               )}
 
@@ -1400,6 +1446,45 @@ export function ExtractionView({
                   </div>
                 )}
               </div>
+
+              {hideTopBar && (onPrevFile || onNextFile) && (
+                <div className="mt-2 flex items-center justify-end gap-2 border-t pt-2">
+                  {onPrevFile && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 text-xs gap-1"
+                      onClick={onPrevFile}
+                      disabled={!hasPrevFile}
+                      title={
+                        hasPrevFile
+                          ? `Show previous file: ${prevFileLabel ?? "previous"}`
+                          : "No previous file"
+                      }
+                    >
+                      <ChevronLeft className="h-3.5 w-3.5" />
+                      Back
+                    </Button>
+                  )}
+                  {onNextFile && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 text-xs gap-1"
+                      onClick={onNextFile}
+                      disabled={!hasNextFile}
+                      title={
+                        hasNextFile
+                          ? `Show next file: ${nextFileLabel ?? "next"}`
+                          : "No more files"
+                      }
+                    >
+                      Next
+                      <ChevronRight className="h-3.5 w-3.5" />
+                    </Button>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         )}
