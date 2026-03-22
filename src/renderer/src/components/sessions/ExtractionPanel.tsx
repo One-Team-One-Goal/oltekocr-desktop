@@ -35,6 +35,9 @@ import {
   FileText,
   Filter as Funnel,
   ListFilter,
+  Table,
+  FileTypeIcon,
+  FileType,
 } from "lucide-react";
 import type { DocumentRecord } from "@shared/types";
 import type { SchemaPresetTab } from "@/components/sessions/SchemaBuilderDialog";
@@ -776,7 +779,9 @@ export function ExtractionView({
     return () => window.clearInterval(timer);
   }, [doc, refreshCurrentDoc]);
 
-  const extractedData = doc?.extractedJson as Record<string, unknown> | undefined;
+  const extractedData = doc?.extractedJson as
+    | Record<string, unknown>
+    | undefined;
   const docType = extractedData?.type as string | undefined;
   const renderer = useMemo(() => {
     if (!extractedData) return null;
@@ -793,7 +798,9 @@ export function ExtractionView({
           key: `tab_${idx}`,
           label: String(tab.name ?? `Tab ${idx + 1}`),
           getRows: () =>
-            (Array.isArray(tab.rows) ? (tab.rows as Record<string, string>[]) : []),
+            Array.isArray(tab.rows)
+              ? (tab.rows as Record<string, string>[])
+              : [],
           getColumns: colsFromRows,
         })),
       } as DocTypeRenderer;
@@ -817,7 +824,8 @@ export function ExtractionView({
     for (const section of renderer.sections) {
       const rows = section.getRows(data as Record<string, unknown>);
       const matchingTab = schemaTabs.find(
-        (t) => t.name.trim().toLowerCase() === section.label.trim().toLowerCase(),
+        (t) =>
+          t.name.trim().toLowerCase() === section.label.trim().toLowerCase(),
       );
       const useSchemaCols = !!matchingTab && matchingTab.fields.length > 0;
       const cols = useSchemaCols
@@ -1313,7 +1321,7 @@ export function ExtractionView({
                       }}
                       disabled={!doc}
                     >
-                      <FileText className="h-3 w-3 mr-1.5" />
+                      <FileType className="h-3 w-3 mr-1.5" />
                       Raw
                     </Button>
                     <Button
@@ -1327,7 +1335,7 @@ export function ExtractionView({
                       }}
                       disabled={!renderer}
                     >
-                      <FileText className="h-3 w-3 mr-1.5" />
+                      <Table className="h-3 w-3 mr-1.5" />
                       Tables
                     </Button>
                   </div>
@@ -1363,26 +1371,33 @@ export function ExtractionView({
               </Button>
             </div>
             <div className="flex flex-col flex-1 min-h-0 mt-2 px-4 pb-4">
-              <div className="flex-1 min-h-0 rounded-md border overflow-hidden">
+              <div className="flex-1 min-h-0 overflow-hidden">
                 {renderer ? (
-                  <SectionTable
-                    rows={filteredRows}
-                    cols={visibleCols}
-                    headerFilters={headerFilters}
-                    onHeaderFilterChange={(key, next) => {
-                      setHeaderFilters((prev) => {
-                        const copy = { ...prev };
-                        if (!next || !(next.value ?? "").trim()) {
-                          delete copy[key];
+                  <div
+                    key={activeSection?.key ?? "section"}
+                    className="h-full rounded-md border bg-background overflow-hidden"
+                  >
+                    <SectionTable
+                      rows={filteredRows}
+                      cols={visibleCols}
+                      headerFilters={headerFilters}
+                      onHeaderFilterChange={(key, next) => {
+                        setHeaderFilters((prev) => {
+                          const copy = { ...prev };
+                          if (!next || !(next.value ?? "").trim()) {
+                            delete copy[key];
+                            return copy;
+                          }
+                          copy[key] = next;
                           return copy;
-                        }
-                        copy[key] = next;
-                        return copy;
-                      });
-                    }}
-                  />
+                        });
+                      }}
+                    />
+                  </div>
                 ) : (
-                  <TableLoadingLottie />
+                  <div className="h-full rounded-md border bg-background overflow-hidden">
+                    <TableLoadingLottie />
+                  </div>
                 )}
               </div>
             </div>

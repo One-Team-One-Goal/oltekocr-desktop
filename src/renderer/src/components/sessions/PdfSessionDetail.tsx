@@ -27,6 +27,8 @@ import {
   SaveOff,
   Pencil,
   X,
+  Database,
+  FileCog,
 } from "lucide-react";
 import type { SessionRecord, DocumentListItem, WsEvent } from "@shared/types";
 
@@ -351,7 +353,7 @@ export function PdfSessionDetail() {
             className="gap-1.5 text-xs"
             onClick={() => setSchemaBuilderOpen(true)}
           >
-            <FileText className="h-3.5 w-3.5" />
+            <FileCog className="h-3.5 w-3.5" />
             {selectedSchemaPreset ? "Edit Schema" : "New Schema"}
           </Button>
 

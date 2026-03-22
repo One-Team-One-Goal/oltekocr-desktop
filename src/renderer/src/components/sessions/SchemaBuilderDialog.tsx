@@ -11,20 +11,28 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Check, Pencil, Plus, Trash2, X } from "lucide-react";
 
 export interface SchemaPresetField {
   label: string;
   fieldKey: string;
   regexRule: string;
 
-  extractionStrategy?: "regex" | "table_column" | "header_field" | "page_region";
+  extractionStrategy?:
+    | "regex"
+    | "table_column"
+    | "header_field"
+    | "page_region";
   dataType?: "string" | "currency" | "number" | "date" | "percentage";
   pageRange?: string;
   postProcessing?: string[];
   altRegexRules?: string[];
   sectionHint?: string;
   sectionIndicatorKey?: string;
-  contextHint?: "same_line_after_label" | "next_line_after_label" | "table_cell";
+  contextHint?:
+    | "same_line_after_label"
+    | "next_line_after_label"
+    | "table_cell";
   contextLabel?: string;
   mandatory?: boolean;
   expectedFormat?: string;
@@ -192,7 +200,11 @@ function buildRegexFromHints(
     ) {
       return "([\\$€¥£]?\\s?[0-9,]+(?:\\.[0-9]+)?)";
     }
-    if (key.includes("city") || key.includes("origin") || key.includes("destination")) {
+    if (
+      key.includes("city") ||
+      key.includes("origin") ||
+      key.includes("destination")
+    ) {
       return "([A-Za-z][A-Za-z\\s.'\\-(),&]{1,120})";
     }
     return buildRegexFromSample(sampleValue || "");
@@ -280,7 +292,6 @@ function parseTransformDraft(
       out.numberFormula = formulaMatch[1].trim();
       continue;
     }
-
   }
 
   return out;
@@ -342,13 +353,20 @@ export function SchemaBuilderDialog({
   const [tabs, setTabs] = useState<SchemaPresetTab[]>([]);
   const [activeTabIndex, setActiveTabIndex] = useState(0);
   const [tabDraft, setTabDraft] = useState("");
+  const [isTabEditorOpen, setIsTabEditorOpen] = useState(false);
   const [editingTabIndex, setEditingTabIndex] = useState<number | null>(null);
-  const [fieldDraft, setFieldDraft] = useState<FieldDraftState>(createEmptyFieldDraft());
+  const [fieldDraft, setFieldDraft] = useState<FieldDraftState>(
+    createEmptyFieldDraft(),
+  );
   const [useCustomSectionHint, setUseCustomSectionHint] = useState(false);
-  const [editingFieldIndex, setEditingFieldIndex] = useState<number | null>(null);
+  const [isAddingField, setIsAddingField] = useState(false);
+  const [editingFieldIndex, setEditingFieldIndex] = useState<number | null>(
+    null,
+  );
   const [errors, setErrors] = useState<string[]>([]);
   const [payloadEditor, setPayloadEditor] = useState("");
   const [payloadDirty, setPayloadDirty] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -358,11 +376,14 @@ export function SchemaBuilderDialog({
     setTabs(initialPreset?.tabs ?? []);
     setActiveTabIndex(0);
     setTabDraft("");
+    setIsTabEditorOpen(false);
     setEditingTabIndex(null);
     setFieldDraft(createEmptyFieldDraft());
     setUseCustomSectionHint(false);
+    setIsAddingField(false);
     setEditingFieldIndex(null);
     setErrors([]);
+    setShowAdvanced(false);
   }, [open, initialPreset]);
 
   const isGenericMode = schemaExtractionMode === "GENERIC";
@@ -371,16 +392,6 @@ export function SchemaBuilderDialog({
     : CONTRACT_SECTION_HINT_SUGGESTIONS;
 
   const activeTab = tabs[activeTabIndex];
-  const numberFieldOptions = useMemo(() => {
-    if (!activeTab) return [] as string[];
-    const currentFieldKey = (fieldDraft.fieldKey || "").trim().toLowerCase();
-    const options = activeTab.fields
-      .filter((f) => f.dataType === "number")
-      .map((f) => f.fieldKey)
-      .filter((key) => key.trim().toLowerCase() !== currentFieldKey);
-    return Array.from(new Set(options));
-  }, [activeTab, fieldDraft.fieldKey]);
-
   const payloadPreview = useMemo(
     () =>
       JSON.stringify(
@@ -394,7 +405,13 @@ export function SchemaBuilderDialog({
         null,
         2,
       ),
-    [initialPreset?.id, schemaExtractionMode, schemaName, schemaRecordStartRegex, tabs],
+    [
+      initialPreset?.id,
+      schemaExtractionMode,
+      schemaName,
+      schemaRecordStartRegex,
+      tabs,
+    ],
   );
 
   useEffect(() => {
@@ -411,9 +428,14 @@ export function SchemaBuilderDialog({
         throw new Error("Payload must be a JSON object.");
       }
 
-      const nextName = typeof parsed.name === "string" ? parsed.name.trim() : "";
+      const nextName =
+        typeof parsed.name === "string" ? parsed.name.trim() : "";
       if (!nextName) {
         throw new Error("Payload must include a non-empty 'name'.");
+      }
+
+      if (!Array.isArray(parsed.tabs)) {
+        throw new Error("Payload must include 'tabs' as an array.");
       }
 
       const nextExtractionMode =
@@ -428,10 +450,6 @@ export function SchemaBuilderDialog({
           ? parsed.recordStartRegex.trim()
           : "";
 
-      if (!Array.isArray(parsed.tabs)) {
-        throw new Error("Payload must include 'tabs' as an array.");
-      }
-
       const nextTabs: SchemaPresetTab[] = parsed.tabs.map((tab, tabIndex) => {
         const tabName = String((tab as any)?.name ?? "").trim();
         if (!tabName) {
@@ -440,52 +458,79 @@ export function SchemaBuilderDialog({
 
         const fieldsRaw = (tab as any)?.fields;
         if (!Array.isArray(fieldsRaw)) {
-          throw new Error(`Tab '${tabName}' must include 'fields' as an array.`);
+          throw new Error(
+            `Tab '${tabName}' must include 'fields' as an array.`,
+          );
         }
 
-        const fields: SchemaPresetField[] = fieldsRaw.map((field: any, fieldIndex: number) => {
-          const label = String(field?.label ?? "").trim();
-          const fieldKey = String(field?.fieldKey ?? "").trim();
-          const regexRule = String(field?.regexRule ?? "");
+        const fields: SchemaPresetField[] = fieldsRaw.map(
+          (field: any, fieldIndex: number) => {
+            const label = String(field?.label ?? "").trim();
+            const fieldKey = String(field?.fieldKey ?? "").trim();
+            const regexRule = String(field?.regexRule ?? "");
 
-          if (!label || !fieldKey) {
-            throw new Error(
-              `Tab '${tabName}', field #${fieldIndex + 1} must include non-empty 'label' and 'fieldKey'.`,
-            );
-          }
+            if (!label || !fieldKey) {
+              throw new Error(
+                `Tab '${tabName}', field #${fieldIndex + 1} must include non-empty 'label' and 'fieldKey'.`,
+              );
+            }
 
-          return {
-            label,
-            fieldKey,
-            regexRule,
-            extractionStrategy: field?.extractionStrategy,
-            dataType: field?.dataType,
-            pageRange: typeof field?.pageRange === "string" ? field.pageRange : undefined,
-            postProcessing: Array.isArray(field?.postProcessing)
-              ? field.postProcessing.map((v: unknown) => String(v).trim()).filter(Boolean)
-              : undefined,
-            altRegexRules: Array.isArray(field?.altRegexRules)
-              ? field.altRegexRules.map((v: unknown) => String(v).trim()).filter(Boolean)
-              : undefined,
-            sectionHint: field?.sectionHint,
-            sectionIndicatorKey:
-              typeof field?.sectionIndicatorKey === "string"
-                ? field.sectionIndicatorKey
-                : typeof field?.contextLabel === "string"
+            return {
+              label,
+              fieldKey,
+              regexRule,
+              extractionStrategy: field?.extractionStrategy,
+              dataType: field?.dataType,
+              pageRange:
+                typeof field?.pageRange === "string"
+                  ? field.pageRange
+                  : undefined,
+              postProcessing: Array.isArray(field?.postProcessing)
+                ? field.postProcessing
+                    .map((v: unknown) => String(v).trim())
+                    .filter(Boolean)
+                : undefined,
+              altRegexRules: Array.isArray(field?.altRegexRules)
+                ? field.altRegexRules
+                    .map((v: unknown) => String(v).trim())
+                    .filter(Boolean)
+                : undefined,
+              sectionHint: field?.sectionHint,
+              sectionIndicatorKey:
+                typeof field?.sectionIndicatorKey === "string"
+                  ? field.sectionIndicatorKey
+                  : typeof field?.contextLabel === "string"
+                    ? field.contextLabel
+                    : undefined,
+              contextHint: field?.contextHint,
+              contextLabel:
+                typeof field?.contextLabel === "string"
                   ? field.contextLabel
                   : undefined,
-            contextHint: field?.contextHint,
-            contextLabel: typeof field?.contextLabel === "string" ? field.contextLabel : undefined,
-            mandatory: typeof field?.mandatory === "boolean" ? field.mandatory : undefined,
-            expectedFormat:
-              typeof field?.expectedFormat === "string" ? field.expectedFormat : undefined,
-            minLength: typeof field?.minLength === "number" ? field.minLength : undefined,
-            maxLength: typeof field?.maxLength === "number" ? field.maxLength : undefined,
-            allowedValues: Array.isArray(field?.allowedValues)
-              ? field.allowedValues.map((v: unknown) => String(v).trim()).filter(Boolean)
-              : undefined,
-          };
-        });
+              mandatory:
+                typeof field?.mandatory === "boolean"
+                  ? field.mandatory
+                  : undefined,
+              expectedFormat:
+                typeof field?.expectedFormat === "string"
+                  ? field.expectedFormat
+                  : undefined,
+              minLength:
+                typeof field?.minLength === "number"
+                  ? field.minLength
+                  : undefined,
+              maxLength:
+                typeof field?.maxLength === "number"
+                  ? field.maxLength
+                  : undefined,
+              allowedValues: Array.isArray(field?.allowedValues)
+                ? field.allowedValues
+                    .map((v: unknown) => String(v).trim())
+                    .filter(Boolean)
+                : undefined,
+            };
+          },
+        );
 
         return { name: tabName, fields };
       });
@@ -495,13 +540,15 @@ export function SchemaBuilderDialog({
       setSchemaRecordStartRegex(nextRecordStartRegex);
       setTabs(nextTabs);
       setActiveTabIndex(0);
+      setIsTabEditorOpen(false);
       setEditingTabIndex(null);
       setTabDraft("");
       clearFieldDraft();
       setErrors([]);
       setPayloadDirty(false);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Invalid payload JSON.";
+      const message =
+        err instanceof Error ? err.message : "Invalid payload JSON.";
       setErrors([`Payload JSON error: ${message}`]);
     }
   };
@@ -512,6 +559,20 @@ export function SchemaBuilderDialog({
     setEditingFieldIndex(null);
   };
 
+  const startAddField = () => {
+    clearFieldDraft();
+    setIsAddingField(true);
+    setShowAdvanced(false);
+    setErrors([]);
+  };
+
+  const cancelFieldEditor = () => {
+    clearFieldDraft();
+    setIsAddingField(false);
+    setShowAdvanced(false);
+    setErrors([]);
+  };
+
   const upsertTab = () => {
     const name = tabDraft.trim();
     if (!name) {
@@ -520,7 +581,8 @@ export function SchemaBuilderDialog({
     }
 
     const duplicate = tabs.findIndex(
-      (t, i) => i !== editingTabIndex && t.name.toLowerCase() === name.toLowerCase(),
+      (t, i) =>
+        i !== editingTabIndex && t.name.toLowerCase() === name.toLowerCase(),
     );
     if (duplicate >= 0) {
       setErrors(["Tab name must be unique."]);
@@ -532,27 +594,57 @@ export function SchemaBuilderDialog({
       setTabs(next);
       setActiveTabIndex(next.length - 1);
     } else {
-      setTabs((prev) => prev.map((t, i) => (i === editingTabIndex ? { ...t, name } : t)));
+      setTabs((prev) =>
+        prev.map((t, i) => (i === editingTabIndex ? { ...t, name } : t)),
+      );
       setActiveTabIndex(editingTabIndex);
     }
 
     setTabDraft("");
+    setIsTabEditorOpen(false);
+    setEditingTabIndex(null);
+    setErrors([]);
+  };
+
+  const startAddTab = () => {
+    setTabDraft("");
+    setIsTabEditorOpen(true);
+    setEditingTabIndex(null);
+    setErrors([]);
+  };
+
+  const cancelTabEditor = () => {
+    setTabDraft("");
+    setIsTabEditorOpen(false);
     setEditingTabIndex(null);
     setErrors([]);
   };
 
   const editTab = (index: number) => {
     setTabDraft(tabs[index].name);
+    setIsTabEditorOpen(true);
     setEditingTabIndex(index);
     setErrors([]);
   };
 
   const removeTab = (index: number) => {
-    setTabs((prev) => prev.filter((_, i) => i !== index));
-    setActiveTabIndex((prev) => (prev > 0 ? prev - 1 : 0));
+    setTabs((prev) => {
+      const nextTabs = prev.filter((_, i) => i !== index);
+
+      setActiveTabIndex((current) => {
+        if (nextTabs.length === 0) return 0;
+        if (current === index) return Math.min(index, nextTabs.length - 1);
+        if (current > index) return current - 1;
+        return current;
+      });
+
+      return nextTabs;
+    });
+
     if (editingTabIndex === index) {
-      setTabDraft("");
-      setEditingTabIndex(null);
+      cancelTabEditor();
+    } else if (editingTabIndex !== null && editingTabIndex > index) {
+      setEditingTabIndex(editingTabIndex - 1);
     }
     setEditingFieldIndex(null);
   };
@@ -565,7 +657,11 @@ export function SchemaBuilderDialog({
 
     const label = fieldDraft.label?.trim();
     const fieldKey = fieldDraft.fieldKey?.trim();
-    const resolvedContextLabel = (label || "").trim();
+    const resolvedContextLabel = (
+      fieldDraft.contextLabel ||
+      label ||
+      ""
+    ).trim();
     const regexRule =
       fieldDraft.regexRule ||
       buildRegexFromHints(
@@ -581,7 +677,9 @@ export function SchemaBuilderDialog({
     }
 
     const duplicate = activeTab.fields.findIndex(
-      (f, i) => i !== editingFieldIndex && f.fieldKey.toLowerCase() === fieldKey.toLowerCase(),
+      (f, i) =>
+        i !== editingFieldIndex &&
+        f.fieldKey.toLowerCase() === fieldKey.toLowerCase(),
     );
     if (duplicate >= 0) {
       setErrors(["Field key must be unique in a tab."]);
@@ -598,11 +696,24 @@ export function SchemaBuilderDialog({
           regexRule,
           extractionStrategy: fieldDraft.extractionStrategy as any,
           dataType: fieldDraft.dataType as any,
+          pageRange: fieldDraft.pageRange || undefined,
           postProcessing: buildPostProcessingRules(fieldDraft),
+          altRegexRules:
+            (fieldDraft.altRegexRules?.length || 0) > 0
+              ? fieldDraft.altRegexRules
+              : undefined,
           sectionHint: fieldDraft.sectionHint,
           sectionIndicatorKey: fieldDraft.sectionIndicatorKey,
           contextHint: fieldDraft.contextHint,
-          contextLabel: fieldDraft.sectionIndicatorKey?.trim() || undefined,
+          contextLabel: resolvedContextLabel || undefined,
+          mandatory: fieldDraft.mandatory,
+          expectedFormat: fieldDraft.expectedFormat || undefined,
+          minLength: fieldDraft.minLength,
+          maxLength: fieldDraft.maxLength,
+          allowedValues:
+            (fieldDraft.allowedValues?.length || 0) > 0
+              ? fieldDraft.allowedValues
+              : undefined,
         };
 
         if (editingFieldIndex === null) {
@@ -611,12 +722,15 @@ export function SchemaBuilderDialog({
 
         return {
           ...tab,
-          fields: tab.fields.map((f, i) => (i === editingFieldIndex ? nextField : f)),
+          fields: tab.fields.map((f, i) =>
+            i === editingFieldIndex ? nextField : f,
+          ),
         };
       }),
     );
 
     clearFieldDraft();
+    setIsAddingField(false);
     setErrors([]);
   };
 
@@ -631,16 +745,25 @@ export function SchemaBuilderDialog({
       sampleValue: "",
       extractionStrategy: field.extractionStrategy || "table_column",
       dataType: field.dataType || "string",
+      pageRange: field.pageRange || "",
       postProcessing: field.postProcessing || [],
+      altRegexRules: field.altRegexRules || [],
       sectionHint: field.sectionHint,
       sectionIndicatorKey: field.sectionIndicatorKey || field.contextLabel || "",
       contextHint: field.contextHint || "table_cell",
+      contextLabel: field.contextLabel || "",
+      mandatory: field.mandatory || false,
+      expectedFormat: field.expectedFormat || "",
+      minLength: field.minLength,
+      maxLength: field.maxLength,
+      allowedValues: field.allowedValues || [],
       ...transforms,
     });
     setUseCustomSectionHint(
       !!field.sectionHint &&
         !sectionHintSuggestions.includes(field.sectionHint.toUpperCase()),
     );
+    setIsAddingField(false);
     setEditingFieldIndex(index);
     setErrors([]);
   };
@@ -664,7 +787,9 @@ export function SchemaBuilderDialog({
     setTabs(CONTRACT_TEMPLATE_TABS);
     setActiveTabIndex(0);
     setTabDraft("");
+    setIsTabEditorOpen(false);
     setEditingTabIndex(null);
+    setIsAddingField(false);
     clearFieldDraft();
     setErrors([]);
   };
@@ -695,13 +820,413 @@ export function SchemaBuilderDialog({
     });
   };
 
+  const renderFieldEditor = () => (
+    <>
+      <div className="space-y-3 bg-muted/30 p-3 rounded-md">
+        <Label className="font-semibold text-sm">Field Setup</Label>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <Label className="text-xs">Document Label *</Label>
+            <Input
+              value={fieldDraft.label || ""}
+              onChange={(e) =>
+                setFieldDraft((p) => ({ ...p, label: e.target.value }))
+              }
+              placeholder="e.g., Destination, Effective Date, Scope"
+            />
+          </div>
+          <div>
+            <Label className="text-xs">Field Key (Review Column) *</Label>
+            <Input
+              value={fieldDraft.fieldKey || ""}
+              onChange={(e) =>
+                setFieldDraft((p) => ({ ...p, fieldKey: e.target.value }))
+              }
+              placeholder="e.g., destination_city or Destination"
+            />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <Label className="text-xs">
+              Document Label Override (Optional)
+            </Label>
+            <Input
+              value={fieldDraft.contextLabel || ""}
+              onChange={(e) =>
+                setFieldDraft((p) => ({ ...p, contextLabel: e.target.value }))
+              }
+              placeholder="Leave empty to use Document Label"
+            />
+          </div>
+          <div>
+            <Label className="text-xs">Usual Value</Label>
+            <Input
+              value={fieldDraft.sampleValue || ""}
+              onChange={(e) =>
+                setFieldDraft((p) => ({ ...p, sampleValue: e.target.value }))
+              }
+              placeholder="e.g., New York / Charleston / 12/9/2025 / 350"
+            />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <Label className="text-xs">Section Hint</Label>
+            <select
+              value={fieldDraft.sectionHint || "RATES"}
+              onChange={(e) =>
+                setFieldDraft((p) => ({
+                  ...p,
+                  sectionHint: e.target.value as any,
+                }))
+              }
+              className={SELECT_CLASS}
+            >
+              <option value="RATES">RATES</option>
+              <option value="ORIGIN_ARB">ORIGIN_ARB</option>
+              <option value="DEST_ARB">DEST_ARB</option>
+              <option value="HEADER">HEADER</option>
+            </select>
+            <div className="text-xs text-muted-foreground mt-1">
+              {
+                CONTRACT_SECTION_HINT_HELP[
+                  (fieldDraft.sectionHint || "RATES") as
+                    | "RATES"
+                    | "ORIGIN_ARB"
+                    | "DEST_ARB"
+                    | "HEADER"
+                ]
+              }
+            </div>
+          </div>
+          <div>
+            <Label className="text-xs">Context Hint</Label>
+            <select
+              value={fieldDraft.contextHint || "table_cell"}
+              onChange={(e) =>
+                setFieldDraft((p) => ({
+                  ...p,
+                  contextHint: e.target.value as any,
+                }))
+              }
+              className={SELECT_CLASS}
+            >
+              <option value="table_cell">Table Cell</option>
+              <option value="same_line_after_label">
+                Same Line After Label
+              </option>
+              <option value="next_line_after_label">
+                Next Line After Label
+              </option>
+            </select>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={fieldDraft.mandatory || false}
+            onChange={(e) =>
+              setFieldDraft((p) => ({ ...p, mandatory: e.target.checked }))
+            }
+            id="mandatory-check"
+          />
+          <Label htmlFor="mandatory-check" className="text-sm cursor-pointer">
+            Mandatory
+          </Label>
+        </div>
+
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-muted-foreground">
+            Use Document Label for the PDF text label and Field Key for the
+            review table column.
+          </span>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() =>
+                setFieldDraft((p) => ({
+                  ...p,
+                  regexRule: buildRegexFromHints(
+                    p.fieldKey || "",
+                    p.dataType,
+                    (p.contextLabel || p.label || "").trim(),
+                    p.sampleValue || "",
+                  ),
+                }))
+              }
+            >
+              Auto Regex
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => setShowAdvanced((v) => !v)}
+            >
+              {showAdvanced ? "Hide Advanced" : "Show Advanced"}
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      {showAdvanced && (
+        <>
+          <div className="space-y-2 bg-muted/30 p-3 rounded-md">
+            <Label className="font-semibold text-sm">Extraction Strategy</Label>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">Strategy</Label>
+                <select
+                  value={fieldDraft.extractionStrategy || "regex"}
+                  onChange={(e) =>
+                    setFieldDraft((p) => ({
+                      ...p,
+                      extractionStrategy: e.target.value as any,
+                    }))
+                  }
+                  className={SELECT_CLASS}
+                >
+                  <option value="regex">Regex</option>
+                  <option value="table_column">Table Column</option>
+                  <option value="header_field">Header Field</option>
+                  <option value="page_region">Page Region</option>
+                </select>
+              </div>
+              <div>
+                <Label className="text-xs">Data Type</Label>
+                <select
+                  value={fieldDraft.dataType || "string"}
+                  onChange={(e) =>
+                    setFieldDraft((p) => ({
+                      ...p,
+                      dataType: e.target.value as any,
+                    }))
+                  }
+                  className={SELECT_CLASS}
+                >
+                  <option value="string">String</option>
+                  <option value="currency">Currency</option>
+                  <option value="number">Number</option>
+                  <option value="date">Date</option>
+                  <option value="percentage">Percentage</option>
+                </select>
+              </div>
+            </div>
+            <div>
+              <Label className="text-xs">
+                Page Range (e.g., \"1\", \"1-3\", \"1,5,7\")
+              </Label>
+              <Input
+                value={fieldDraft.pageRange || ""}
+                onChange={(e) =>
+                  setFieldDraft((p) => ({ ...p, pageRange: e.target.value }))
+                }
+                placeholder="Leave empty to search all pages"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-2 bg-muted/30 p-3 rounded-md">
+            <Label className="font-semibold text-sm">
+              Post-Processing & Fallbacks
+            </Label>
+            <div>
+              <Label className="text-xs">
+                Post-Processing Rules (comma-separated)
+              </Label>
+              <Input
+                value={fieldDraft.postProcessing?.join(", ") || ""}
+                onChange={(e) =>
+                  setFieldDraft((p) => ({
+                    ...p,
+                    postProcessing: e.target.value
+                      .split(",")
+                      .map((s) => s.trim())
+                      .filter(Boolean),
+                  }))
+                }
+                placeholder="trim, uppercase, remove_commas, remove_currency"
+              />
+              <div className="text-xs text-muted-foreground mt-1">
+                Examples: trim, uppercase, lowercase, remove_commas,
+                remove_currency, extract_digits, fix_date
+              </div>
+            </div>
+            <div>
+              <Label className="text-xs">
+                Alternative Regex Rules (one per line)
+              </Label>
+              <textarea
+                value={fieldDraft.altRegexRules?.join("\n") || ""}
+                onChange={(e) =>
+                  setFieldDraft((p) => ({
+                    ...p,
+                    altRegexRules: e.target.value
+                      .split("\n")
+                      .map((s) => s.trim())
+                      .filter(Boolean),
+                  }))
+                }
+                placeholder="Primary regex will be tried first, then these in order..."
+                className="w-full px-2 py-1 rounded border text-sm h-16"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-2 bg-muted/30 p-3 rounded-md">
+            <Label className="font-semibold text-sm">
+              Context & Section Hints
+            </Label>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">Section Hint</Label>
+                <select
+                  value={fieldDraft.sectionHint || ""}
+                  onChange={(e) =>
+                    setFieldDraft((p) => ({
+                      ...p,
+                      sectionHint: e.target.value as any,
+                    }))
+                  }
+                  className={SELECT_CLASS}
+                >
+                  <option value="">None</option>
+                  <option value="RATES">RATES</option>
+                  <option value="ORIGIN_ARB">ORIGIN_ARB</option>
+                  <option value="DEST_ARB">DEST_ARB</option>
+                  <option value="HEADER">HEADER</option>
+                </select>
+              </div>
+              <div>
+                <Label className="text-xs">Context Hint</Label>
+                <select
+                  value={fieldDraft.contextHint || ""}
+                  onChange={(e) =>
+                    setFieldDraft((p) => ({
+                      ...p,
+                      contextHint: e.target.value as any,
+                    }))
+                  }
+                  className={SELECT_CLASS}
+                >
+                  <option value="">None</option>
+                  <option value="same_line_after_label">
+                    Same Line After Label
+                  </option>
+                  <option value="next_line_after_label">
+                    Next Line After Label
+                  </option>
+                  <option value="table_cell">Table Cell</option>
+                </select>
+              </div>
+            </div>
+            <div>
+              <Label className="text-xs">
+                Context Label (e.g., \"Effective Date:\")
+              </Label>
+              <Input
+                value={fieldDraft.contextLabel || ""}
+                onChange={(e) =>
+                  setFieldDraft((p) => ({ ...p, contextLabel: e.target.value }))
+                }
+                placeholder="Look for this label before extracting value"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-2 bg-muted/30 p-3 rounded-md">
+            <Label className="font-semibold text-sm">
+              Validation & Constraints
+            </Label>
+            <div className="text-xs text-muted-foreground">
+              Use only when you need stricter checks.
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">Expected Format</Label>
+                <Input
+                  value={fieldDraft.expectedFormat || ""}
+                  onChange={(e) =>
+                    setFieldDraft((p) => ({
+                      ...p,
+                      expectedFormat: e.target.value,
+                    }))
+                  }
+                  placeholder="DD/MM/YYYY"
+                />
+              </div>
+              <div>
+                <Label className="text-xs">Min/Max Length</Label>
+                <div className="flex gap-2">
+                  <Input
+                    type="number"
+                    value={fieldDraft.minLength || ""}
+                    onChange={(e) =>
+                      setFieldDraft((p) => ({
+                        ...p,
+                        minLength: e.target.value
+                          ? parseInt(e.target.value)
+                          : undefined,
+                      }))
+                    }
+                    placeholder="Min"
+                    className="flex-1"
+                  />
+                  <Input
+                    type="number"
+                    value={fieldDraft.maxLength || ""}
+                    onChange={(e) =>
+                      setFieldDraft((p) => ({
+                        ...p,
+                        maxLength: e.target.value
+                          ? parseInt(e.target.value)
+                          : undefined,
+                      }))
+                    }
+                    placeholder="Max"
+                    className="flex-1"
+                  />
+                </div>
+              </div>
+            </div>
+            <div>
+              <Label className="text-xs">
+                Allowed Values (comma-separated, for enum validation)
+              </Label>
+              <Input
+                value={fieldDraft.allowedValues?.join(", ") || ""}
+                onChange={(e) =>
+                  setFieldDraft((p) => ({
+                    ...p,
+                    allowedValues: e.target.value
+                      .split(",")
+                      .map((s) => s.trim())
+                      .filter(Boolean),
+                  }))
+                }
+                placeholder="value1, value2, value3"
+              />
+            </div>
+          </div>
+        </>
+      )}
+    </>
+  );
+
   return (
     <Dialog open={open} onOpenChange={(isOpen) => !isOpen && onClose()}>
       <DialogContent className="sm:max-w-[1100px] max-h-[90vh] overflow-hidden">
         <DialogHeader>
           <DialogTitle>Schema Builder</DialogTitle>
           <DialogDescription>
-            Label is the source document text label. Field Key is the output column name shown in review.
+            Label is the document label from the PDF. Field Key is the column
+            name shown in Contract Review.
           </DialogDescription>
         </DialogHeader>
 
@@ -716,467 +1241,285 @@ export function SchemaBuilderDialog({
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-3 rounded-md border p-3">
-              <div>
-                <Label>Extraction Engine</Label>
-                <select
-                  value={schemaExtractionMode}
-                  onChange={(e) =>
-                    setSchemaExtractionMode(e.target.value as SchemaExtractionMode)
-                  }
-                  className={SELECT_CLASS}
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={loadContractTemplate}
                 >
-                  <option value="AUTO">AUTO</option>
-                  <option value="GENERIC">GENERIC</option>
-                  <option value="CONTRACT_BIASED">CONTRACT_BIASED</option>
-                </select>
-                <div className="text-xs text-muted-foreground mt-1">
-                  AUTO picks contract mode for contract-like schemas; otherwise generic.
-                </div>
+                  Load Contract Fields Template
+                </Button>
+                <span className="text-xs text-muted-foreground">
+                  Uses PDF-contract field names, section hints, and table/header
+                  strategies.
+                </span>
               </div>
+
               <div>
-                <Label>Record Start Regex (Optional)</Label>
-                <Input
-                  value={schemaRecordStartRegex}
-                  onChange={(e) => setSchemaRecordStartRegex(e.target.value)}
-                  placeholder="e.g., INVOICE|B/L\s+NO"
-                />
-                <div className="text-xs text-muted-foreground mt-1">
-                  Used by generic mode to split multi-record PDFs into rows.
-                </div>
-              </div>
-            </div>
+                <div className="flex flex-wrap items-end gap-1 border-b pb-0">
+                  {tabs.map((tab, idx) => {
+                    const isActive = idx === activeTabIndex;
+                    const isEditingThisTab =
+                      isTabEditorOpen && editingTabIndex === idx;
 
-            <div className="rounded-md border p-3 space-y-3">
-              <Label>Tabs</Label>
-              {!isGenericMode ? (
-                <div className="flex items-center gap-2">
-                  <Button type="button" variant="outline" size="sm" onClick={loadContractTemplate}>
-                    Load Contract Fields Template
-                  </Button>
-                  <span className="text-xs text-muted-foreground">
-                    Uses contract-specific field names, section hints, and table/header strategies.
-                  </span>
-                </div>
-              ) : (
-                <div className="text-xs text-muted-foreground rounded-md border border-dashed p-2">
-                  Generic mode is schema-first. Define your own tabs/fields and optional section markers.
-                </div>
-              )}
-              <div className="flex items-center gap-2">
-                <Input
-                  value={tabDraft}
-                  onChange={(e) => setTabDraft(e.target.value)}
-                  placeholder={isGenericMode ? "Records" : "Rates"}
-                />
-                <Button type="button" onClick={upsertTab}>
-                  {editingTabIndex === null ? "Add Tab" : "Update Tab"}
-                </Button>
-                {editingTabIndex !== null && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => {
-                      setTabDraft("");
-                      setEditingTabIndex(null);
-                    }}
-                  >
-                    Cancel
-                  </Button>
-                )}
-              </div>
-
-              <div className="space-y-2">
-                {tabs.length === 0 ? (
-                  <div className="rounded-md border p-3 text-sm text-muted-foreground">
-                    No tabs added.
-                  </div>
-                ) : (
-                  tabs.map((tab, idx) => (
-                    <div
-                      key={`${tab.name}-${idx}`}
-                      className={`rounded-md border p-2 flex items-center justify-between gap-2 ${
-                        idx === activeTabIndex ? "border-primary" : ""
-                      }`}
-                    >
-                      <button
-                        type="button"
-                        className="text-sm text-left flex-1"
-                        onClick={() => setActiveTabIndex(idx)}
-                      >
-                        {tab.name} ({tab.fields.length} fields)
-                      </button>
-                      <div className="flex items-center gap-1">
-                        <Button type="button" size="sm" variant="outline" onClick={() => editTab(idx)}>
-                          Edit
-                        </Button>
-                        <Button type="button" size="sm" variant="destructive" onClick={() => removeTab(idx)}>
-                          Delete
-                        </Button>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-
-            <div className="rounded-md border p-3 space-y-3">
-              <Label>
-                Fields {activeTab ? `for \"${activeTab.name}\"` : ""}
-              </Label>
-
-              <div className="space-y-3 bg-muted/30 p-3 rounded-md">
-                <Label className="font-semibold text-sm">Field Setup</Label>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <Label className="text-xs">Document Label *</Label>
-                    <Input
-                      value={fieldDraft.label || ""}
-                      onChange={(e) => setFieldDraft((p) => ({ ...p, label: e.target.value }))}
-                      placeholder={
-                        isGenericMode
-                          ? "e.g., Invoice Number, PO Number, Due Date"
-                          : "e.g., Destination, Effective Date, Scope"
-                      }
-                    />
-                  </div>
-                  <div>
-                    <Label className="text-xs">Field Key (Review Column) *</Label>
-                    <Input
-                      value={fieldDraft.fieldKey || ""}
-                      onChange={(e) => setFieldDraft((p) => ({ ...p, fieldKey: e.target.value }))}
-                      placeholder={
-                        isGenericMode
-                          ? "e.g., invoice_no or Invoice Number"
-                          : "e.g., destination_city or Destination"
-                      }
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="col-span-2">
-                    <Label className="text-xs">Usual Value</Label>
-                    <Input
-                      value={fieldDraft.sampleValue || ""}
-                      onChange={(e) => setFieldDraft((p) => ({ ...p, sampleValue: e.target.value }))}
-                      placeholder="e.g., New York / Charleston / 12/9/2025 / 350"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <Label className="text-xs">Section Hint</Label>
-                    <select
-                      value={
-                        useCustomSectionHint ||
-                        (!!fieldDraft.sectionHint &&
-                          !sectionHintSuggestions.includes(fieldDraft.sectionHint.toUpperCase()))
-                          ? CUSTOM_SECTION_VALUE
-                          : fieldDraft.sectionHint || ""
-                      }
-                      onChange={(e) => {
-                        const next = e.target.value;
-                        if (next === CUSTOM_SECTION_VALUE) {
-                          setUseCustomSectionHint(true);
-                          setFieldDraft((p) => ({ ...p, sectionHint: undefined }));
-                          return;
-                        }
-                        setUseCustomSectionHint(false);
-                        setFieldDraft((p) => ({ ...p, sectionHint: next || undefined }));
-                      }}
-                      className={SELECT_CLASS}
-                    >
-                      <option value="">Select Section</option>
-                      {sectionHintSuggestions.map((hint) => (
-                        <option key={hint} value={hint}>
-                          {hint}
-                        </option>
-                      ))}
-                      <option value={CUSTOM_SECTION_VALUE}>Custom / New Section</option>
-                    </select>
-                    <div className="text-xs text-muted-foreground mt-1">
-                      {!isGenericMode &&
-                      CONTRACT_SECTION_HINT_HELP[(fieldDraft.sectionHint || "") as "RATES" | "ORIGIN_ARB" | "DEST_ARB" | "HEADER"]
-                        ? CONTRACT_SECTION_HINT_HELP[(fieldDraft.sectionHint || "") as "RATES" | "ORIGIN_ARB" | "DEST_ARB" | "HEADER"]
-                        : "Choose Custom/New Section, then use Section Indicator Key to tell the extractor what text marks that section in the PDF."}
-                    </div>
-                  </div>
-                  <div>
-                    <Label className="text-xs">Section Indicator Key (Optional)</Label>
-                    <Input
-                      value={fieldDraft.sectionIndicatorKey || ""}
-                      onChange={(e) =>
-                        setFieldDraft((p) => ({
-                          ...p,
-                          sectionIndicatorKey: e.target.value,
-                        }))
-                      }
-                      placeholder="e.g., 7-2. Inland Charges"
-                    />
-                    <div className="text-xs text-muted-foreground mt-1">
-                      Defines what text to search for in the PDF to find that section. Example: 7-2. Inland Charges.
-                    </div>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <Label className="text-xs">Data Type</Label>
-                    <select
-                      value={fieldDraft.dataType || "string"}
-                      onChange={(e) =>
-                        setFieldDraft((p) => {
-                          const nextType = e.target.value as SchemaPresetField["dataType"];
-                          return {
-                            ...p,
-                            dataType: nextType,
-                            dateOffsetDays: nextType === "date" ? p.dateOffsetDays : "",
-                            numberCalcMode: nextType === "number" ? p.numberCalcMode : "",
-                            numberTransformOp: nextType === "number" ? p.numberTransformOp : "",
-                            numberTransformValue: nextType === "number" ? p.numberTransformValue : "",
-                            numberTransformField: nextType === "number" ? p.numberTransformField : "",
-                            numberFormula: nextType === "number" ? p.numberFormula : "",
-                          };
-                        })
-                      }
-                      className={SELECT_CLASS}
-                    >
-                      <option value="string">String</option>
-                      <option value="currency">Currency</option>
-                      <option value="number">Number</option>
-                      <option value="date">Date</option>
-                      <option value="percentage">Percentage</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <Label className="text-xs">Extraction Strategy</Label>
-                    <select
-                      value={fieldDraft.extractionStrategy || "table_column"}
-                      onChange={(e) => setFieldDraft((p) => ({ ...p, extractionStrategy: e.target.value as any }))}
-                      className={SELECT_CLASS}
-                    >
-                      <option value="table_column">Table Column</option>
-                      <option value="header_field">Header Field</option>
-                      <option value="regex">Regex</option>
-                    </select>
-                  </div>
-                  <div>
-                    <Label className="text-xs">Context Hint</Label>
-                    <select
-                      value={fieldDraft.contextHint || "table_cell"}
-                      onChange={(e) => setFieldDraft((p) => ({ ...p, contextHint: e.target.value as any }))}
-                      className={SELECT_CLASS}
-                    >
-                      <option value="table_cell">Table Cell</option>
-                      <option value="same_line_after_label">Same Line After Label</option>
-                      <option value="next_line_after_label">Next Line After Label</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div>
-                  <Label className="text-xs">Regex Rule (optional)</Label>
-                  <Input
-                    value={fieldDraft.regexRule || ""}
-                    onChange={(e) => setFieldDraft((p) => ({ ...p, regexRule: e.target.value }))}
-                    placeholder="Leave blank for table/header mapping or use Auto Regex"
-                  />
-                </div>
-
-                {fieldDraft.dataType === "date" && (
-                  <div>
-                    <Label className="text-xs">Date Offset Days</Label>
-                    <Input
-                      type="number"
-                      value={fieldDraft.dateOffsetDays || ""}
-                      onChange={(e) => setFieldDraft((p) => ({ ...p, dateOffsetDays: e.target.value }))}
-                      placeholder="e.g., 60 or -30"
-                    />
-                  </div>
-                )}
-
-                {fieldDraft.dataType === "number" && (
-                  <div className="space-y-3">
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <Label className="text-xs">Calculation Mode</Label>
-                        <select
-                          value={fieldDraft.numberCalcMode || ""}
-                          onChange={(e) =>
-                            setFieldDraft((p) => ({
-                              ...p,
-                              numberCalcMode: e.target.value as NumberCalcMode,
-                              numberTransformValue: "",
-                              numberTransformField: "",
-                              numberFormula: "",
-                            }))
-                          }
-                          className={SELECT_CLASS}
+                    if (isEditingThisTab) {
+                      return (
+                        <div
+                          key={`${tab.name}-${idx}`}
+                          className="-mb-px flex h-9 items-center gap-1 rounded-t-md border border-border border-b-background bg-background px-2"
                         >
-                          <option value="">None</option>
-                          <option value="value">Use Value</option>
-                          <option value="field">Use Another Field</option>
-                          <option value="formula">Use Formula</option>
-                        </select>
-                      </div>
-                      <div>
-                        <Label className="text-xs">Operation</Label>
-                        <select
-                          value={fieldDraft.numberTransformOp || ""}
-                          onChange={(e) => setFieldDraft((p) => ({ ...p, numberTransformOp: e.target.value as NumberTransformOp }))}
-                          className={SELECT_CLASS}
-                          disabled={fieldDraft.numberCalcMode !== "value" && fieldDraft.numberCalcMode !== "field"}
-                        >
-                          <option value="">None</option>
-                          <option value="add">Add</option>
-                          <option value="sub">Subtract</option>
-                          <option value="mul">Multiply</option>
-                          <option value="div">Divide</option>
-                        </select>
-                      </div>
-                    </div>
-
-                    {fieldDraft.numberCalcMode === "value" && (
-                      <div>
-                        <Label className="text-xs">Calculation Value</Label>
-                        <Input
-                          value={fieldDraft.numberTransformValue || ""}
-                          onChange={(e) => setFieldDraft((p) => ({ ...p, numberTransformValue: e.target.value }))}
-                          placeholder="e.g., 1.1"
-                        />
-                      </div>
-                    )}
-
-                    {fieldDraft.numberCalcMode === "field" && (
-                      <div>
-                        <Label className="text-xs">Other Field Key</Label>
-                        <select
-                          value={fieldDraft.numberTransformField || ""}
-                          onChange={(e) =>
-                            setFieldDraft((p) => ({
-                              ...p,
-                              numberTransformField: e.target.value,
-                            }))
-                          }
-                          className={SELECT_CLASS}
-                        >
-                          <option value="">Select a number field</option>
-                          {numberFieldOptions.map((fieldKey) => (
-                            <option key={fieldKey} value={fieldKey}>
-                              {fieldKey}
-                            </option>
-                          ))}
-                          {!!fieldDraft.numberTransformField && !numberFieldOptions.includes(fieldDraft.numberTransformField) && (
-                            <option value={fieldDraft.numberTransformField}>{fieldDraft.numberTransformField}</option>
-                          )}
-                        </select>
-                        {numberFieldOptions.length === 0 && (
-                          <div className="text-xs text-muted-foreground mt-1">
-                            Add at least one field with Data Type set to Number in this tab.
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {fieldDraft.numberCalcMode === "formula" && (
-                      <div>
-                        <Label className="text-xs">Formula</Label>
-                        <Input
-                          value={fieldDraft.numberFormula || ""}
-                          onChange={(e) => setFieldDraft((p) => ({ ...p, numberFormula: e.target.value }))}
-                          placeholder="e.g., {{BaseRate 20}} * 1.1 + 25"
-                        />
-                        <div className="text-xs text-muted-foreground mt-1">
-                          Use {"{{field key}}"} placeholders for other numeric fields.
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-muted-foreground">
-                    Minimal mode: label/key + section + type + strategy. Date/number transforms become post-processing rules.
-                  </span>
-                  <div className="flex items-center gap-2">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={() =>
-                        setFieldDraft((p) => ({
-                          ...p,
-                          regexRule: buildRegexFromHints(
-                            p.fieldKey || "",
-                            p.dataType,
-                            (p.label || "").trim(),
-                            p.sampleValue || "",
-                          ),
-                        }))
-                      }
-                    >
-                      Auto Regex
-                    </Button>
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <Button type="button" onClick={upsertField}>
-                  {editingFieldIndex === null ? "Add Field" : "Update Field"}
-                </Button>
-                {editingFieldIndex !== null && (
-                  <Button type="button" variant="outline" onClick={clearFieldDraft}>
-                    Cancel Edit
-                  </Button>
-                )}
-              </div>
-
-              {activeTab ? (
-                <div className="space-y-2">
-                  {activeTab.fields.length === 0 ? (
-                    <div className="rounded-md border p-3 text-sm text-muted-foreground">
-                      No fields in this tab.
-                    </div>
-                  ) : (
-                    activeTab.fields.map((field, idx) => (
-                      <div
-                        key={`${field.fieldKey}-${idx}`}
-                        className="rounded-md border p-2 flex items-center justify-between gap-2"
-                      >
-                        <div className="min-w-0 text-sm">
-                          <div className="font-medium truncate">{field.fieldKey}</div>
-                          <div className="text-muted-foreground truncate text-xs">
-                            Document Label: {field.label} | {field.dataType || "string"} | {field.regexRule || "(no regex)"}
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-1 shrink-0">
-                          <Button type="button" size="sm" variant="outline" onClick={() => editField(idx)}>
-                            Edit
+                          <Input
+                            value={tabDraft}
+                            onChange={(e) => setTabDraft(e.target.value)}
+                            placeholder="Tab Name"
+                            className="h-6 w-36"
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                upsertTab();
+                              }
+                              if (e.key === "Escape") {
+                                e.preventDefault();
+                                cancelTabEditor();
+                              }
+                            }}
+                            autoFocus
+                          />
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="ghost"
+                            className="h-7 w-7"
+                            onClick={upsertTab}
+                            aria-label={`Confirm ${tab.name} tab edit`}
+                          >
+                            <Check className="h-4 w-4" />
                           </Button>
                           <Button
                             type="button"
-                            size="sm"
-                            variant="destructive"
-                            onClick={() => removeField(idx)}
+                            size="icon"
+                            variant="ghost"
+                            className="h-7 w-7"
+                            onClick={cancelTabEditor}
+                            aria-label={`Cancel ${tab.name} tab edit`}
                           >
-                            Delete
+                            <X className="h-4 w-4" />
                           </Button>
                         </div>
-                      </div>
-                    ))
+                      );
+                    }
+
+                    return (
+                      <button
+                        key={`${tab.name}-${idx}`}
+                        type="button"
+                        onClick={() => setActiveTabIndex(idx)}
+                        className={`group relative -mb-px rounded-t-md border px-3 py-1.5 pr-16 text-sm transition-colors ${
+                          isActive
+                            ? "border-border border-b-background bg-background font-medium text-foreground"
+                            : "border-transparent bg-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                        }`}
+                      >
+                        {tab.name}
+                        <span className="ml-1 text-xs text-muted-foreground">
+                          ({tab.fields.length})
+                        </span>
+                        <span className="absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="ghost"
+                            className="h-6 w-6"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              editTab(idx);
+                            }}
+                            aria-label={`Edit ${tab.name} tab`}
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="ghost"
+                            className="h-6 w-6 text-destructive hover:text-destructive"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              removeTab(idx);
+                            }}
+                            aria-label={`Delete ${tab.name} tab`}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </span>
+                      </button>
+                    );
+                  })}
+
+                  {isTabEditorOpen && editingTabIndex === null && (
+                    <div className="-mb-px flex h-9 items-center gap-1 rounded-t-md border border-border border-b-background bg-background px-2">
+                      <Input
+                        value={tabDraft}
+                        onChange={(e) => setTabDraft(e.target.value)}
+                        placeholder="Tab Name"
+                        className="h-6 w-36"
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            upsertTab();
+                          }
+                          if (e.key === "Escape") {
+                            e.preventDefault();
+                            cancelTabEditor();
+                          }
+                        }}
+                        autoFocus
+                      />
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        className="h-7 w-7"
+                        onClick={upsertTab}
+                        aria-label="Confirm new tab"
+                      >
+                        <Check className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        className="h-7 w-7"
+                        onClick={cancelTabEditor}
+                        aria-label="Cancel new tab"
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
                   )}
+
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="-mb-px h-9 w-9 rounded-t-md border border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                    onClick={startAddTab}
+                    disabled={isTabEditorOpen}
+                    aria-label="Add tab"
+                  >
+                    <Plus className="h-4 w-4" />
+                  </Button>
                 </div>
-              ) : (
-                <div className="rounded-md border p-3 text-sm text-muted-foreground">
-                  Add and select a tab first.
-                </div>
-              )}
+
+                {activeTab ? (
+                  <div className="space-y-3 border p-3 border-border rounded-md border-t-0 rounded-t-none">
+                    <div className="rounded-md border bg-background p-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0 text-sm">
+                          <div className="font-medium">New field</div>
+                          <div className="text-muted-foreground truncate text-xs">
+                            Add a field to this tab.
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <Button
+                            type="button"
+                            size="sm"
+                            onClick={
+                              isAddingField ? upsertField : startAddField
+                            }
+                          >
+                            {isAddingField ? "Save" : "Add Field"}
+                          </Button>
+                          {isAddingField && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={cancelFieldEditor}
+                            >
+                              Cancel
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                      {isAddingField && (
+                        <div className="mt-3">{renderFieldEditor()}</div>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      {activeTab.fields.length === 0 ? (
+                        <div className="rounded-md border bg-background p-3 text-sm text-muted-foreground">
+                          No fields in this tab.
+                        </div>
+                      ) : (
+                        activeTab.fields.map((field, idx) => (
+                          <div
+                            key={`${field.fieldKey}-${idx}`}
+                            className="rounded-md border bg-background p-2"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="min-w-0 text-sm">
+                                <div className="font-medium truncate">
+                                  {field.fieldKey}
+                                </div>
+                                <div className="text-muted-foreground truncate text-xs">
+                                  Document Label: {field.label} |{" "}
+                                  {field.dataType || "string"} |{" "}
+                                  {field.regexRule || "(no regex)"}
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-1 shrink-0">
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() =>
+                                    editingFieldIndex === idx
+                                      ? upsertField()
+                                      : editField(idx)
+                                  }
+                                >
+                                  {editingFieldIndex === idx ? "Save" : "Edit"}
+                                </Button>
+                                {editingFieldIndex === idx && (
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={cancelFieldEditor}
+                                  >
+                                    Cancel
+                                  </Button>
+                                )}
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="destructive"
+                                  onClick={() => removeField(idx)}
+                                >
+                                  Delete
+                                </Button>
+                              </div>
+                            </div>
+
+                            {editingFieldIndex === idx && (
+                              <div className="mt-3">{renderFieldEditor()}</div>
+                            )}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-md border bg-background p-3 text-sm text-muted-foreground">
+                    No tabs added yet. Click the plus icon to create one.
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="space-y-2">
@@ -1206,7 +1549,7 @@ export function SchemaBuilderDialog({
                   setPayloadEditor(e.target.value);
                   setPayloadDirty(true);
                 }}
-                className="max-h-[240px] min-h-[180px] w-full overflow-auto rounded-md border bg-muted/40 p-3 text-xs font-mono"
+                className="max-h-[720px] min-h-[500px] w-full overflow-auto rounded-md border bg-muted/40 p-3 text-xs font-mono"
               />
             </div>
           </div>
