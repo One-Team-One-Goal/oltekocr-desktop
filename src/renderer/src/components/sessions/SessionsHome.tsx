@@ -183,6 +183,7 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
   const [autoSchemaBuilderOpen, setAutoSchemaBuilderOpen] = useState(false);
   const [schemaBuilderSubmitting, setSchemaBuilderSubmitting] = useState(false);
   const [schemaPresets, setSchemaPresets] = useState<Array<{ id: string; name: string; description?: string; extractionMode?: string }>>([]);
+  const [editingPreset, setEditingPreset] = useState<{ id: string; draft: SchemaPresetDraft } | null>(null);
 
   const STANDARD_CONTRACT_SCHEMA_NAME = "STANDARD_CONTRACT_SCHEMA";
 
@@ -314,6 +315,7 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
       recordStartRegex: preset.recordStartRegex,
       tabs: preset.tabs.map((tab) => ({
         name: tab.name,
+        sectionStartHint: tab.sectionStartHint,
         fields: tab.fields.map((field) => ({
           label: field.label,
           fieldKey: field.fieldKey,
@@ -356,6 +358,79 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
       console.error("Failed to create schema for OTHER document type:", err);
     } finally {
       setSchemaBuilderSubmitting(false);
+    }
+  };
+
+  const openEditPreset = async (presetId: string) => {
+    try {
+      const full = await sessionsApi.getSchemaPreset(presetId);
+      setEditingPreset({
+        id: presetId,
+        draft: {
+          name: full.name,
+          description: full.description,
+          extractionMode: full.extractionMode as SchemaPresetDraft["extractionMode"],
+          recordStartRegex: full.recordStartRegex,
+          tabs: full.tabs.map((t) => ({ name: t.name, sectionStartHint: t.sectionStartHint, fields: t.fields })),
+          conditions: full.conditions,
+        },
+      });
+    } catch (err) {
+      console.error("Failed to load schema preset for editing:", err);
+    }
+  };
+
+  const handleEditPresetSubmit = async (preset: SchemaPresetDraft) => {
+    if (!editingPreset) return;
+    setSchemaBuilderSubmitting(true);
+    try {
+      await sessionsApi.updateSchemaPreset(editingPreset.id, {
+        name: preset.name.trim(),
+        description: preset.description?.trim() || undefined,
+        extractionMode: preset.extractionMode,
+        recordStartRegex: preset.recordStartRegex,
+        tabs: preset.tabs.map((tab) => ({
+          name: tab.name,
+          sectionStartHint: tab.sectionStartHint,
+          fields: tab.fields.map((field) => ({
+            label: field.label,
+            fieldKey: field.fieldKey,
+            regexRule: field.regexRule,
+            extractionStrategy: field.extractionStrategy,
+            dataType: field.dataType,
+            pageRange: field.pageRange,
+            postProcessing: field.postProcessing,
+            altRegexRules: field.altRegexRules,
+            sectionHint: field.sectionHint,
+            sectionIndicatorKey: field.sectionIndicatorKey,
+            contextHint: field.contextHint,
+            contextLabel: field.contextLabel,
+            mandatory: field.mandatory,
+            expectedFormat: field.expectedFormat,
+            minLength: field.minLength,
+            maxLength: field.maxLength,
+            allowedValues: field.allowedValues,
+          })),
+        })),
+        conditions: preset.conditions,
+      });
+      setEditingPreset(null);
+      await fetchSchemaPresets();
+    } catch (err) {
+      console.error("Failed to update schema preset:", err);
+    } finally {
+      setSchemaBuilderSubmitting(false);
+    }
+  };
+
+  const handleDeletePreset = async () => {
+    if (!editingPreset) return;
+    try {
+      await sessionsApi.deleteSchemaPreset(editingPreset.id);
+      setEditingPreset(null);
+      await fetchSchemaPresets();
+    } catch (err) {
+      console.error("Failed to delete schema preset:", err);
     }
   };
 
@@ -493,36 +568,45 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
                 {schemaPresets.map((preset) => {
                   const isCreating = creating === preset.id;
                   return (
-                    <button
-                      key={preset.id}
-                      onClick={() =>
-                        !creating && createPdfSession("OTHER", preset.id)
-                      }
-                      disabled={creating !== null}
-                      className="relative flex flex-col w-28 h-32 border border-primary/30 bg-card hover:border-primary transition-colors text-left disabled:opacity-50 focus-visible:outline-none disabled:cursor-not-allowed rounded-xl"
-                      style={{
-                        clipPath:
-                          "polygon(0 0, calc(100% - 24px) 0, 100% 24px, 100% 100%, 0 100%)",
-                      }}
-                    >
-                      <span className="absolute top-0 right-0 w-6 h-6 bg-primary/20" />
-                      {isCreating && (
-                        <span className="absolute inset-0 flex items-center justify-center bg-card/70">
-                          <Loader2 className="h-5 w-5 text-primary animate-spin" />
-                        </span>
-                      )}
-                      <span className="absolute top-1.5 left-2.5 text-[9px] font-semibold uppercase tracking-wide text-primary/70">
-                        Schema
-                      </span>
-                      <div className="flex flex-col justify-end flex-1 px-3 pb-3 pt-6">
-                        <p className="text-xs font-semibold leading-tight truncate">
-                          {preset.name}
-                        </p>
-                        <p className="text-[10px] text-muted-foreground leading-snug mt-1 line-clamp-2">
-                          {preset.description || "Custom schema"}
-                        </p>
-                      </div>
-                    </button>
+                    <div key={preset.id} className="relative">
+                      <button
+                        onClick={() =>
+                          !creating && createPdfSession("OTHER", preset.id)
+                        }
+                        disabled={creating !== null}
+                        className="relative flex flex-col w-28 h-32 border border-primary/30 bg-card hover:border-primary transition-colors text-left disabled:opacity-50 focus-visible:outline-none disabled:cursor-not-allowed rounded-xl"
+                        style={{
+                          clipPath:
+                            "polygon(0 0, calc(100% - 24px) 0, 100% 24px, 100% 100%, 0 100%)",
+                        }}
+                      >
+                        <span className="absolute top-0 right-0 w-6 h-6 bg-primary/20" />
+                        {isCreating && (
+                          <span className="absolute inset-0 flex items-center justify-center bg-card/70">
+                            <Loader2 className="h-5 w-5 text-primary animate-spin" />
+                          </span>
+                        )}
+                        <div className="flex flex-col justify-end flex-1 px-3 pb-3 pt-6">
+                          <p className="text-xs font-semibold leading-tight truncate">
+                            {preset.name}
+                          </p>
+                          <p className="text-[10px] text-muted-foreground leading-snug mt-1 line-clamp-2">
+                            {preset.description || "Custom schema"}
+                          </p>
+                        </div>
+                      </button>
+                      <button
+                        className="absolute top-1.5 left-1.5 p-1 rounded-md text-primary/70 hover:text-primary hover:bg-primary/10 transition-colors z-10"
+                        style={noDrag}
+                        title="Edit schema"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openEditPreset(preset.id);
+                        }}
+                      >
+                        <Pencil className="h-3 w-3" />
+                      </button>
+                    </div>
                   );
                 })}
 
@@ -872,6 +956,15 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
           }}
           submitting={schemaBuilderSubmitting}
           onSubmit={(preset) => handleSchemaBuilderSubmit(preset, "manual")}
+        />
+
+        <SchemaBuilderDialog
+          open={editingPreset !== null}
+          onClose={() => setEditingPreset(null)}
+          initialPreset={editingPreset?.draft ?? null}
+          submitting={schemaBuilderSubmitting}
+          onSubmit={handleEditPresetSubmit}
+          onDelete={handleDeletePreset}
         />
 
         <Dialog

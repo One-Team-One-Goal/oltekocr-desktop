@@ -43,6 +43,7 @@ export interface SchemaPresetField {
 
 export interface SchemaPresetTab {
   name: string;
+  sectionStartHint?: string;
   fields: SchemaPresetField[];
 }
 
@@ -62,6 +63,7 @@ interface SchemaBuilderDialogProps {
   initialPreset?: SchemaPresetDraft | null;
   submitting?: boolean;
   onSubmit: (preset: SchemaPresetDraft) => Promise<void> | void;
+  onDelete?: () => void;
 }
 
 type NumberTransformOp = "" | "add" | "sub" | "mul" | "div";
@@ -388,6 +390,7 @@ export function SchemaBuilderDialog({
   initialPreset,
   submitting = false,
   onSubmit,
+  onDelete,
 }: SchemaBuilderDialogProps) {
   const [schemaName, setSchemaName] = useState("");
   const [schemaDescription, setSchemaDescription] = useState("");
@@ -399,6 +402,7 @@ export function SchemaBuilderDialog({
   const [tabs, setTabs] = useState<SchemaPresetTab[]>([]);
   const [activeTabIndex, setActiveTabIndex] = useState(0);
   const [tabDraft, setTabDraft] = useState("");
+  const [tabHintDraft, setTabHintDraft] = useState("");
   const [isTabEditorOpen, setIsTabEditorOpen] = useState(false);
   const [editingTabIndex, setEditingTabIndex] = useState<number | null>(null);
   const [fieldDraft, setFieldDraft] = useState<FieldDraftState>(
@@ -422,6 +426,7 @@ export function SchemaBuilderDialog({
     setTabs(initialPreset?.tabs ?? []);
     setActiveTabIndex(0);
     setTabDraft("");
+    setTabHintDraft("");
     setIsTabEditorOpen(false);
     setEditingTabIndex(null);
     setFieldDraft(createEmptyFieldDraft());
@@ -594,7 +599,7 @@ export function SchemaBuilderDialog({
           },
         );
 
-        return { name: tabName, fields };
+        return { name: tabName, sectionStartHint: typeof (tab as any)?.sectionStartHint === "string" ? (tab as any).sectionStartHint.trim() || undefined : undefined, fields };
       });
 
       setSchemaName(nextName);
@@ -605,6 +610,7 @@ export function SchemaBuilderDialog({
       setIsTabEditorOpen(false);
       setEditingTabIndex(null);
       setTabDraft("");
+      setTabHintDraft("");
       clearFieldDraft();
       setErrors([]);
       setPayloadDirty(false);
@@ -650,18 +656,21 @@ export function SchemaBuilderDialog({
       return;
     }
 
+    const hint = tabHintDraft.trim() || undefined;
+
     if (editingTabIndex === null) {
-      const next = [...tabs, { name, fields: [] }];
+      const next = [...tabs, { name, sectionStartHint: hint, fields: [] }];
       setTabs(next);
       setActiveTabIndex(next.length - 1);
     } else {
       setTabs((prev) =>
-        prev.map((t, i) => (i === editingTabIndex ? { ...t, name } : t)),
+        prev.map((t, i) => (i === editingTabIndex ? { ...t, name, sectionStartHint: hint } : t)),
       );
       setActiveTabIndex(editingTabIndex);
     }
 
     setTabDraft("");
+    setTabHintDraft("");
     setIsTabEditorOpen(false);
     setEditingTabIndex(null);
     setErrors([]);
@@ -669,6 +678,7 @@ export function SchemaBuilderDialog({
 
   const startAddTab = () => {
     setTabDraft("");
+    setTabHintDraft("");
     setIsTabEditorOpen(true);
     setEditingTabIndex(null);
     setErrors([]);
@@ -676,6 +686,7 @@ export function SchemaBuilderDialog({
 
   const cancelTabEditor = () => {
     setTabDraft("");
+    setTabHintDraft("");
     setIsTabEditorOpen(false);
     setEditingTabIndex(null);
     setErrors([]);
@@ -683,6 +694,7 @@ export function SchemaBuilderDialog({
 
   const editTab = (index: number) => {
     setTabDraft(tabs[index].name);
+    setTabHintDraft(tabs[index].sectionStartHint ?? "");
     setIsTabEditorOpen(true);
     setEditingTabIndex(index);
     setErrors([]);
@@ -844,6 +856,7 @@ export function SchemaBuilderDialog({
     setTabs(CONTRACT_TEMPLATE_TABS);
     setActiveTabIndex(0);
     setTabDraft("");
+    setTabHintDraft("");
     setIsTabEditorOpen(false);
     setEditingTabIndex(null);
     setIsAddingField(false);
@@ -1181,7 +1194,7 @@ export function SchemaBuilderDialog({
       {/* Sidebar */}
       <div className="w-52 shrink-0 border-r flex flex-col overflow-hidden">
         <div className="px-3 pt-3 pb-1 flex items-center justify-between">
-          <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Sections</span>
+          <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Tabs</span>
           <Badge variant="secondary" className="text-xs">{tabs.length}</Badge>
         </div>
         <div className="flex-1 overflow-y-auto px-2 pb-2 space-y-0.5">
@@ -1190,11 +1203,11 @@ export function SchemaBuilderDialog({
             const isEditingThis = isTabEditorOpen && editingTabIndex === idx;
             if (isEditingThis) {
               return (
-                <div key={idx} className="flex items-center gap-1 rounded-md border bg-background px-2 py-1">
+                <div key={idx} className="flex flex-col gap-1 rounded-md border bg-background px-2 py-1.5">
                   <Input
                     value={tabDraft}
                     onChange={(e) => setTabDraft(e.target.value)}
-                    placeholder="Section name"
+                    placeholder="Tab name"
                     className="h-6 flex-1 text-sm"
                     autoFocus
                     onKeyDown={(e) => {
@@ -1202,8 +1215,20 @@ export function SchemaBuilderDialog({
                       if (e.key === "Escape") { e.preventDefault(); cancelTabEditor(); }
                     }}
                   />
-                  <Button type="button" size="icon" variant="ghost" className="h-6 w-6 shrink-0" onClick={upsertTab}><Check className="h-3 w-3" /></Button>
-                  <Button type="button" size="icon" variant="ghost" className="h-6 w-6 shrink-0" onClick={cancelTabEditor}><X className="h-3 w-3" /></Button>
+                  <div className="flex items-center gap-1">
+                    <Input
+                      value={tabHintDraft}
+                      onChange={(e) => setTabHintDraft(e.target.value)}
+                      placeholder="Section hint (e.g. 6-1. General Rate)"
+                      className="h-6 flex-1 text-xs text-muted-foreground"
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") { e.preventDefault(); upsertTab(); }
+                        if (e.key === "Escape") { e.preventDefault(); cancelTabEditor(); }
+                      }}
+                    />
+                    <Button type="button" size="icon" variant="ghost" className="h-6 w-6 shrink-0" onClick={upsertTab}><Check className="h-3 w-3" /></Button>
+                    <Button type="button" size="icon" variant="ghost" className="h-6 w-6 shrink-0" onClick={cancelTabEditor}><X className="h-3 w-3" /></Button>
+                  </div>
                 </div>
               );
             }
@@ -1211,27 +1236,34 @@ export function SchemaBuilderDialog({
               <div
                 key={idx}
                 onClick={() => { setActiveTabIndex(idx); cancelFieldEditor(); }}
-                className={`group flex items-center gap-1.5 rounded-md px-2 py-1.5 cursor-pointer text-sm transition-colors ${isActive ? "bg-primary/10 text-primary font-medium" : "hover:bg-muted text-foreground"}`}
+                className={`group flex flex-col rounded-md px-2 py-1.5 cursor-pointer transition-colors ${isActive ? "bg-primary/10 text-primary" : "hover:bg-muted text-foreground"}`}
               >
-                <span className="flex-1 truncate">{tab.name}</span>
-                <span className="text-[11px] text-muted-foreground shrink-0">({tab.fields.length})</span>
-                <span className="hidden group-hover:flex items-center gap-0.5 shrink-0">
-                  <Button type="button" size="icon" variant="ghost" className="h-5 w-5" onClick={(e) => { e.stopPropagation(); editTab(idx); }}>
-                    <Pencil className="h-3 w-3" />
-                  </Button>
-                  <Button type="button" size="icon" variant="ghost" className="h-5 w-5 text-destructive hover:text-destructive" onClick={(e) => { e.stopPropagation(); removeTab(idx); }}>
-                    <Trash2 className="h-3 w-3" />
-                  </Button>
-                </span>
+                <div className="flex items-center gap-1.5">
+                  <span className={`flex-1 truncate text-sm ${isActive ? "font-medium" : ""}`}>{tab.name}</span>
+                  <span className="text-[11px] text-muted-foreground shrink-0">({tab.fields.length})</span>
+                  <span className="hidden group-hover:flex items-center gap-0.5 shrink-0">
+                    <Button type="button" size="icon" variant="ghost" className="h-5 w-5" onClick={(e) => { e.stopPropagation(); editTab(idx); }}>
+                      <Pencil className="h-3 w-3" />
+                    </Button>
+                    <Button type="button" size="icon" variant="ghost" className="h-5 w-5 text-destructive hover:text-destructive" onClick={(e) => { e.stopPropagation(); removeTab(idx); }}>
+                      <Trash2 className="h-3 w-3" />
+                    </Button>
+                  </span>
+                </div>
+                {tab.sectionStartHint && (
+                  <span className="text-[10px] text-muted-foreground truncate mt-0.5 pl-0.5" title={`Section hint: ${tab.sectionStartHint}`}>
+                    {tab.sectionStartHint}
+                  </span>
+                )}
               </div>
             );
           })}
           {isTabEditorOpen && editingTabIndex === null && (
-            <div className="flex items-center gap-1 rounded-md border bg-background px-2 py-1">
+            <div className="flex flex-col gap-1 rounded-md border bg-background px-2 py-1.5">
               <Input
                 value={tabDraft}
                 onChange={(e) => setTabDraft(e.target.value)}
-                placeholder="Section name"
+                placeholder="Tab name"
                 className="h-6 flex-1 text-sm"
                 autoFocus
                 onKeyDown={(e) => {
@@ -1239,14 +1271,26 @@ export function SchemaBuilderDialog({
                   if (e.key === "Escape") { e.preventDefault(); cancelTabEditor(); }
                 }}
               />
-              <Button type="button" size="icon" variant="ghost" className="h-6 w-6 shrink-0" onClick={upsertTab}><Check className="h-3 w-3" /></Button>
-              <Button type="button" size="icon" variant="ghost" className="h-6 w-6 shrink-0" onClick={cancelTabEditor}><X className="h-3 w-3" /></Button>
+              <div className="flex items-center gap-1">
+                <Input
+                  value={tabHintDraft}
+                  onChange={(e) => setTabHintDraft(e.target.value)}
+                  placeholder="Section hint (e.g. 6-1. General Rate)"
+                  className="h-6 flex-1 text-xs text-muted-foreground"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") { e.preventDefault(); upsertTab(); }
+                    if (e.key === "Escape") { e.preventDefault(); cancelTabEditor(); }
+                  }}
+                />
+                <Button type="button" size="icon" variant="ghost" className="h-6 w-6 shrink-0" onClick={upsertTab}><Check className="h-3 w-3" /></Button>
+                <Button type="button" size="icon" variant="ghost" className="h-6 w-6 shrink-0" onClick={cancelTabEditor}><X className="h-3 w-3" /></Button>
+              </div>
             </div>
           )}
         </div>
         <div className="border-t p-2 shrink-0">
           <Button type="button" variant="outline" size="sm" className="w-full" onClick={startAddTab} disabled={isTabEditorOpen}>
-            <Plus className="h-3.5 w-3.5 mr-1" />Add Section
+            <Plus className="h-3.5 w-3.5 mr-1" />Add Tab
           </Button>
         </div>
       </div>
@@ -1513,12 +1557,23 @@ export function SchemaBuilderDialog({
         )}
 
         <DialogFooter className="px-6 py-4 shrink-0 border-t">
-          <Button variant="outline" onClick={onClose} disabled={submitting}>
-            Cancel
-          </Button>
-          <Button onClick={submitAll} disabled={submitting}>
-            {submitting ? "Saving..." : "Save Schema"}
-          </Button>
+          <div className="flex w-full items-center justify-between">
+            <div>
+              {onDelete && (
+                <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10" onClick={onDelete} disabled={submitting} title="Delete schema">
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={onClose} disabled={submitting}>
+                Cancel
+              </Button>
+              <Button onClick={submitAll} disabled={submitting}>
+                {submitting ? "Saving..." : "Save Schema"}
+              </Button>
+            </div>
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -62,14 +62,15 @@ model AutoSchema {
 }
 
 model SchemaPresetTab {
-  id        String              @id @default(uuid())
-  presetId  String              @map("preset_id")
-  name      String
-  sortOrder Int                 @default(0) @map("sort_order")
-  createdAt DateTime            @default(now()) @map("created_at")
-  updatedAt DateTime            @updatedAt @map("updated_at")
-  preset    SchemaPreset        @relation(fields: [presetId], references: [id], onDelete: Cascade)
-  fields    SchemaPresetField[]
+  id               String              @id @default(uuid())
+  presetId         String              @map("preset_id")
+  name             String
+  sectionStartHint String?             @map("section_start_hint")
+  sortOrder        Int                 @default(0) @map("sort_order")
+  createdAt        DateTime            @default(now()) @map("created_at")
+  updatedAt        DateTime            @updatedAt @map("updated_at")
+  preset           SchemaPreset        @relation(fields: [presetId], references: [id], onDelete: Cascade)
+  fields           SchemaPresetField[]
 
   @@index([presetId, sortOrder])
   @@map("schema_preset_tabs")

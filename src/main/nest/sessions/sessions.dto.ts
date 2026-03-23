@@ -240,6 +240,11 @@ export class SchemaPresetTabDto {
   @IsNotEmpty()
   name!: string;
 
+  @ApiPropertyOptional({ example: "6-1. General Rate" })
+  @IsOptional()
+  @IsString()
+  sectionStartHint?: string;
+
   @ApiProperty({ type: [SchemaPresetFieldDto] })
   @IsArray()
   @ValidateNested({ each: true })

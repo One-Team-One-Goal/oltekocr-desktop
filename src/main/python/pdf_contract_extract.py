@@ -716,7 +716,8 @@ def _parse_schema_preset(schema_json: Optional[str], warnings: List[str]) -> Opt
 
             fields.append(field_obj)
 
-        tabs.append({"name": tab_name, "fields": fields})
+        section_start_hint = str(tab.get("sectionStartHint", "")).strip()
+        tabs.append({"name": tab_name, "sectionStartHint": section_start_hint, "fields": fields})
 
     if not tabs:
         return None
@@ -1405,17 +1406,29 @@ def _extract_generic_from_schema(
     warnings: List[str] = []
     full_text = "\n".join(doc[i].get_text("text") for i in range(len(doc)))
     pdf_pages = [doc[i].get_text("text") for i in range(len(doc))]
+    tabs_config = schema_preset.get("tabs", [])
+
+    # Build hint-based boundaries so each tab is scoped to its own PDF region.
+    has_hints = any(str(t.get("sectionStartHint") or "").strip() for t in tabs_config)
+    hint_boundaries: Dict[str, str] = {}
+    if has_hints:
+        boundaries = _build_hint_boundaries(full_text, tabs_config, warnings)
+        for bname, bstart, bend in boundaries:
+            hint_boundaries[bname] = full_text[bstart:bend]
 
     all_fields: List[Dict[str, Any]] = []
-    for tab in schema_preset.get("tabs", []):
+    for tab in tabs_config:
         all_fields.extend(tab.get("fields", []))
 
     record_chunks = _build_record_chunks(full_text, schema_preset, all_fields, warnings)
     tabs_out: List[Dict[str, Any]] = []
 
-    for tab in schema_preset.get("tabs", []):
+    for tab in tabs_config:
         tab_name = str(tab.get("name", "Tab")).strip() or "Tab"
         fields = tab.get("fields", [])
+
+        # Determine the base text region for this tab (hint-scoped or full).
+        tab_base_text = hint_boundaries.get(tab_name, full_text) if has_hints else full_text
 
         # Header-oriented tabs work per chunk; table-oriented tabs can still use full text.
         uses_header_style = any(
@@ -1424,7 +1437,13 @@ def _extract_generic_from_schema(
             or str(field.get("sectionHint", "")).strip().upper() == "HEADER"
             for field in fields
         )
-        chunks = record_chunks if uses_header_style else [full_text]
+        # Re-chunk within the tab's scoped region when hint-scoped, otherwise use global chunks.
+        if has_hints and uses_header_style:
+            chunks = _build_record_chunks(tab_base_text, schema_preset, fields, warnings) or [tab_base_text]
+        elif uses_header_style:
+            chunks = record_chunks
+        else:
+            chunks = [tab_base_text]
 
         tab_rows: List[Dict[str, Any]] = []
         all_labels = [
@@ -1463,7 +1482,7 @@ def _extract_generic_from_schema(
                 if not value:
                     if extraction_strategy in ("regex", "header_field", "table_column", "page_region"):
                         value = _extract_field_value(
-                            full_text,
+                            tab_base_text,
                             pdf_pages,
                             field,
                             warnings,
@@ -1500,6 +1519,183 @@ def _extract_generic_from_schema(
     return rates, origin_arbs, dest_arbs, tabs_out, warnings
 
 
+def _build_hint_boundaries(
+    full_text: str,
+    tabs: List[Dict[str, Any]],
+    warnings: List[str],
+) -> List[Tuple[str, int, int]]:
+    """
+    Build ordered, non-overlapping (tab_name, start_offset, end_offset) tuples
+    based on each tab's sectionStartHint (or tab name as fallback).
+
+    Uses case-insensitive exact match, then whitespace-normalized fallback.
+    Tabs whose hint can't be located are skipped (full_text used as fallback
+    in the caller).
+    """
+    markers: List[Tuple[str, int]] = []
+
+    for tab in tabs:
+        hint = (str(tab.get("sectionStartHint") or "").strip()
+                or str(tab.get("name") or "").strip())
+        if not hint:
+            continue
+
+        # 1. Exact case-insensitive match
+        match = re.search(re.escape(hint), full_text, re.IGNORECASE)
+
+        # 2. Whitespace-normalised fallback
+        if not match:
+            norm_hint = re.sub(r"\s+", r"\\s+", re.escape(hint))
+            try:
+                match = re.search(norm_hint, full_text, re.IGNORECASE)
+            except re.error:
+                pass
+
+        if match:
+            markers.append((str(tab.get("name", "")).strip(), match.start()))
+        else:
+            warnings.append(
+                f"sectionStartHint '{hint}' for tab '{tab.get('name', '')}' not found in document; "
+                "using full text for that tab."
+            )
+
+    markers.sort(key=lambda m: m[1])
+
+    boundaries: List[Tuple[str, int, int]] = []
+    for i, (name, start) in enumerate(markers):
+        end = markers[i + 1][1] if i + 1 < len(markers) else len(full_text)
+        boundaries.append((name, start, end))
+
+    return boundaries
+
+
+def _extract_scoped_from_schema(
+    doc: Any,
+    header: Dict[str, str],
+    schema_preset: Dict[str, Any],
+    full_text: str,
+) -> Tuple[
+    List[Dict[str, Any]],
+    List[Dict[str, Any]],
+    List[Dict[str, Any]],
+    List[Dict[str, Any]],
+    List[str],
+]:
+    """
+    Section-scoped extraction for CONTRACT_BIASED schemas that have sectionStartHint
+    on at least one tab. Each tab only sees the PDF text region between its hint and
+    the next tab's hint, preventing rows from different sections from mixing.
+    """
+    tabs_config = schema_preset.get("tabs", [])
+    warnings: List[str] = []
+
+    legacy_header = _legacy_extract_header(doc)
+    pdf_pages = [doc[i].get_text("text") for i in range(len(doc))]
+
+    boundaries = _build_hint_boundaries(full_text, tabs_config, warnings)
+
+    # Build a name → scoped_text mapping
+    scoped_texts: Dict[str, str] = {}
+    for bname, bstart, bend in boundaries:
+        scoped_texts[bname] = full_text[bstart:bend]
+
+    tabs_out: List[Dict[str, Any]] = []
+
+    for tab in tabs_config:
+        tab_name = (str(tab.get("name") or "Tab")).strip() or "Tab"
+        fields = tab.get("fields", [])
+
+        scoped_text = scoped_texts.get(tab_name, full_text)
+
+        # Run legacy extraction on the scoped text to get table rows.
+        # For contract-biased mode we re-use the per-field extraction pipeline
+        # directly on scoped_text rather than routing through legacy bucket logic.
+        tab_rows: List[Dict[str, Any]] = []
+        all_labels = [
+            str(f.get("contextLabel") or f.get("label") or f.get("fieldKey") or "").strip()
+            for f in fields
+        ]
+
+        row: Dict[str, Any] = {}
+        for field in fields:
+            field_key = str(field.get("fieldKey", "")).strip()
+            if not field_key:
+                continue
+
+            section_hint = str(field.get("sectionHint", "")).strip()
+            context_hint = str(field.get("contextHint", "")).strip()
+            extraction_strategy = str(field.get("extractionStrategy", "")).strip()
+            is_header_like = section_hint == "HEADER" or context_hint in (
+                "same_line_after_label",
+                "next_line_after_label",
+            )
+
+            value = ""
+
+            # Header-like fields: try legacy header dict first
+            if is_header_like:
+                value = _lookup_header_value(legacy_header, field)
+
+            # Context-hint extraction against scoped text
+            if not value and context_hint in ("same_line_after_label", "next_line_after_label"):
+                label_for_context = str(
+                    field.get("contextLabel")
+                    or field.get("label")
+                    or field.get("fieldKey")
+                    or ""
+                ).strip()
+                if label_for_context:
+                    value = _extract_by_context_hint(
+                        scoped_text,
+                        label_for_context,
+                        context_hint,
+                        all_labels=all_labels,
+                    )
+
+            # Regex / generic extraction scoped to the hint region
+            if not value and (extraction_strategy == "regex" or is_header_like):
+                value = _extract_field_value(
+                    scoped_text,
+                    pdf_pages,
+                    field,
+                    warnings,
+                    search_text_override=scoped_text,
+                )
+
+            if value:
+                post_processing = field.get("postProcessing", [])
+                if post_processing:
+                    value = _apply_post_processing(
+                        value,
+                        post_processing,
+                        context=row,
+                        warnings=warnings,
+                        field_key=field_key,
+                    )
+                is_valid, value = _validate_extraction(value, field, warnings)
+                if not is_valid:
+                    value = ""
+
+            row[field_key] = value
+
+        if any(str(v).strip() for v in row.values()):
+            tab_rows.append(row)
+
+        if not tab_rows:
+            tab_rows.append({
+                str(f.get("fieldKey", "")).strip(): ""
+                for f in fields
+                if str(f.get("fieldKey", "")).strip()
+            })
+
+        tabs_out.append({"name": tab_name, "rows": tab_rows})
+
+    rates = tabs_out[0]["rows"] if len(tabs_out) > 0 else []
+    origin_arbs = tabs_out[1]["rows"] if len(tabs_out) > 1 else []
+    dest_arbs = tabs_out[2]["rows"] if len(tabs_out) > 2 else []
+    return rates, origin_arbs, dest_arbs, tabs_out, warnings
+
+
 def extract_tables_from_schema(
     doc: Any, header: Dict[str, str], schema_preset: Dict[str, Any]
 ) -> Tuple[
@@ -1519,6 +1715,15 @@ def extract_tables_from_schema(
     """
     if not _is_contract_biased_schema(schema_preset):
         return _extract_generic_from_schema(doc, schema_preset)
+
+    full_text = "\n".join(doc[i].get_text("text") for i in range(len(doc)))
+    tabs_config = schema_preset.get("tabs", [])
+
+    # If any tab has a sectionStartHint, use section-scoped extraction so each
+    # tab only sees the PDF region between its heading and the next tab's heading.
+    has_hints = any(str(t.get("sectionStartHint") or "").strip() for t in tabs_config)
+    if has_hints:
+        return _extract_scoped_from_schema(doc, header, schema_preset, full_text)
 
     # Contract-biased mode: use legacy parser as dynamic source so schema mode matches hardcoded output behavior.
     legacy_header = _legacy_extract_header(doc)

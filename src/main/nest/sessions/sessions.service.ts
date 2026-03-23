@@ -849,10 +849,10 @@ export class SessionsService {
     presetId: string,
   ): Promise<Array<{ name: string; fields: SchemaPresetFieldDto[] }>> {
     const tabs = await this.prisma.$queryRawUnsafe<
-      Array<{ id: string; name: string }>
+      Array<{ id: string; name: string; section_start_hint: string | null }>
     >(
       `
-      SELECT id, name
+      SELECT id, name, section_start_hint
       FROM schema_preset_tabs
       WHERE preset_id = ?
       ORDER BY sort_order ASC
@@ -923,6 +923,7 @@ export class SessionsService {
 
     return tabs.map((tab) => ({
       name: tab.name,
+      sectionStartHint: (tab.section_start_hint ?? "").trim() || undefined,
       fields: fields
         .filter((f) => f.tab_id === tab.id)
         .map((f) => ({
@@ -984,13 +985,14 @@ export class SessionsService {
       await tx.$executeRawUnsafe(
         `
         INSERT INTO schema_preset_tabs
-          (id, preset_id, name, sort_order, created_at, updated_at)
+          (id, preset_id, name, section_start_hint, sort_order, created_at, updated_at)
         VALUES
-          (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+          (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         `,
         tabId,
         presetId,
         tab.name.trim(),
+        tab.sectionStartHint?.trim() || null,
         tabIndex,
       );
 

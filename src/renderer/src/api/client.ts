@@ -409,6 +409,7 @@ export interface SchemaPresetFieldPayload {
 
 export interface SchemaPresetTabPayload {
   name: string;
+  sectionStartHint?: string;
   fields: SchemaPresetFieldPayload[];
 }
 
