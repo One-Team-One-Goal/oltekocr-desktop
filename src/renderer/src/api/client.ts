@@ -415,6 +415,8 @@ export interface SchemaPresetTabPayload {
 export interface SchemaPresetPayload {
   id: string;
   name: string;
+  description?: string;
+  conditions?: Array<Record<string, unknown>>;
   extractionMode?: "AUTO" | "CONTRACT_BIASED" | "GENERIC";
   recordStartRegex?: string;
   tabs: SchemaPresetTabPayload[];
@@ -476,6 +478,7 @@ export const sessionsApi = {
       Array<{
         id: string;
         name: string;
+        description?: string;
         extractionMode?: "AUTO" | "CONTRACT_BIASED" | "GENERIC";
         recordStartRegex?: string;
       }>
@@ -484,9 +487,11 @@ export const sessionsApi = {
     request<SchemaPresetPayload>(`/sessions/schema-presets/${presetId}`),
   createSchemaPreset: (data: {
     name: string;
+    description?: string;
     extractionMode?: "AUTO" | "CONTRACT_BIASED" | "GENERIC";
     recordStartRegex?: string;
     tabs: SchemaPresetTabPayload[];
+    conditions?: Array<Record<string, unknown>>;
   }) =>
     request<SchemaPresetPayload>(`/sessions/schema-presets`, {
       method: "POST",
@@ -496,9 +501,11 @@ export const sessionsApi = {
     presetId: string,
     data: {
       name: string;
+      description?: string;
       extractionMode?: "AUTO" | "CONTRACT_BIASED" | "GENERIC";
       recordStartRegex?: string;
       tabs: SchemaPresetTabPayload[];
+      conditions?: Array<Record<string, unknown>>;
     },
   ) =>
     request<SchemaPresetPayload>(`/sessions/schema-presets/${presetId}`, {

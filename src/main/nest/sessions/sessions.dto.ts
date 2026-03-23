@@ -253,6 +253,11 @@ export class UpsertSchemaPresetDto {
   @IsNotEmpty()
   name!: string;
 
+  @ApiPropertyOptional({ example: "Extracts freight rate data from carrier contracts." })
+  @IsOptional()
+  @IsString()
+  description?: string;
+
   @ApiPropertyOptional({
     enum: ["AUTO", "CONTRACT_BIASED", "GENERIC"],
     example: "AUTO",
@@ -275,6 +280,11 @@ export class UpsertSchemaPresetDto {
   @ValidateNested({ each: true })
   @Type(() => SchemaPresetTabDto)
   tabs!: SchemaPresetTabDto[];
+
+  @ApiPropertyOptional({ type: [Object], description: "Conditional transformation rules applied after extraction." })
+  @IsOptional()
+  @IsArray()
+  conditions?: Record<string, unknown>[];
 }
 
 export class AssignSessionSchemaPresetDto {

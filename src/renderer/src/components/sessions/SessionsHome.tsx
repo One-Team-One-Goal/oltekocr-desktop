@@ -147,34 +147,6 @@ const PDF_NEW_CARDS = [
     placeholder: false,
   },
   {
-    value: "INVOICE",
-    Icon: Receipt,
-    label: "Invoice / Bill",
-    desc: "Billing documents & purchase orders",
-    placeholder: true,
-  },
-  {
-    value: "REPORT",
-    Icon: BarChart3,
-    label: "Report / Letter",
-    desc: "Business or technical reports",
-    placeholder: true,
-  },
-  {
-    value: "FORM",
-    Icon: ClipboardList,
-    label: "Form / Application",
-    desc: "Filled-in forms & registrations",
-    placeholder: true,
-  },
-  {
-    value: "ID",
-    Icon: BadgeCheck,
-    label: "ID / Certificate",
-    desc: "Identity documents & licences",
-    placeholder: true,
-  },
-  {
     value: "OTHER",
     Icon: HelpCircle,
     label: "Other",
@@ -210,6 +182,18 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
     useState(false);
   const [autoSchemaBuilderOpen, setAutoSchemaBuilderOpen] = useState(false);
   const [schemaBuilderSubmitting, setSchemaBuilderSubmitting] = useState(false);
+  const [schemaPresets, setSchemaPresets] = useState<Array<{ id: string; name: string; description?: string; extractionMode?: string }>>([]);
+
+  const STANDARD_CONTRACT_SCHEMA_NAME = "STANDARD_CONTRACT_SCHEMA";
+
+  const fetchSchemaPresets = async () => {
+    try {
+      const presets = await sessionsApi.listSchemaPresets();
+      setSchemaPresets(presets.filter((p) => p.name !== STANDARD_CONTRACT_SCHEMA_NAME));
+    } catch (err) {
+      console.error("Failed to fetch schema presets:", err);
+    }
+  };
 
   const toggleActionMode = (nextMode: "delete" | "duplicate") => {
     setActionMode((prev) => (prev === nextMode ? "none" : nextMode));
@@ -252,6 +236,9 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
 
   useEffect(() => {
     fetchSessions();
+    if (mode === "PDF_EXTRACT") {
+      fetchSchemaPresets();
+    }
   }, [mode]);
 
   const handleRename = async (id: string, name: string) => {
@@ -269,7 +256,7 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
     try {
       const result = await window.api.openFileDialog();
       if (result.canceled || result.filePaths.length === 0) return;
-      setCreating(docType);
+      setCreating(schemaPresetId ?? docType);
       const selectedFiles = result.filePaths;
       const allSessions = await sessionsApi.list();
       const inferredName =
@@ -322,6 +309,7 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
 
     return sessionsApi.createSchemaPreset({
       name: trimmedName,
+      description: preset.description?.trim() || undefined,
       extractionMode: preset.extractionMode,
       recordStartRegex: preset.recordStartRegex,
       tabs: preset.tabs.map((tab) => ({
@@ -346,19 +334,21 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
           allowedValues: field.allowedValues,
         })),
       })),
+      conditions: preset.conditions,
     });
   };
 
   const handleSchemaBuilderSubmit = async (preset: SchemaPresetDraft, modeType: "manual" | "auto") => {
     setSchemaBuilderSubmitting(true);
     try {
-      const created = await saveSchemaPreset(preset);
+      await saveSchemaPreset(preset);
       if (modeType === "manual") {
         setManualSchemaBuilderOpen(false);
       } else {
         setAutoSchemaBuilderOpen(false);
       }
-      await createPdfSession("OTHER", created.id);
+      setSchemaModeDialogOpen(false);
+      await fetchSchemaPresets();
     } catch (err) {
       console.error("Failed to create schema for OTHER document type:", err);
     } finally {
@@ -452,7 +442,7 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
                 New
               </h2>
               <div className="flex flex-wrap gap-3">
-                {PDF_NEW_CARDS.map(
+                {PDF_NEW_CARDS.filter((c) => c.value !== "OTHER").map(
                   ({ value, Icon, label, desc, placeholder }) => {
                     const isCreating = creating === value;
                     return (
@@ -473,6 +463,86 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
                         {/* Folded corner — auto-clipped to a triangle by parent clip-path */}
                         <span className="absolute top-0 right-0 w-6 h-6 bg-muted" />
                         {/* Loading spinner overlay */}
+                        {isCreating && (
+                          <span className="absolute inset-0 flex items-center justify-center bg-card/70">
+                            <Loader2 className="h-5 w-5 text-primary animate-spin" />
+                          </span>
+                        )}
+                        {placeholder && (
+                          <span className="absolute top-1.5 left-2.5 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
+                            Soon
+                          </span>
+                        )}
+                        <div className="flex flex-col justify-end flex-1 px-3 pb-3 pt-6">
+                          <p className="text-xs font-semibold leading-tight">
+                            {label}
+                          </p>
+                          <p className="text-[10px] text-muted-foreground leading-snug mt-1">
+                            {desc}
+                          </p>
+                        </div>
+                      </button>
+                    );
+                  },
+                )}
+
+                {/* Schema preset cards — appear before Other */}
+                {schemaPresets.map((preset) => {
+                  const isCreating = creating === preset.id;
+                  return (
+                    <button
+                      key={preset.id}
+                      onClick={() =>
+                        !creating && createPdfSession("OTHER", preset.id)
+                      }
+                      disabled={creating !== null}
+                      className="relative flex flex-col w-28 h-32 border border-primary/30 bg-card hover:border-primary transition-colors text-left disabled:opacity-50 focus-visible:outline-none disabled:cursor-not-allowed rounded-xl"
+                      style={{
+                        clipPath:
+                          "polygon(0 0, calc(100% - 24px) 0, 100% 24px, 100% 100%, 0 100%)",
+                      }}
+                    >
+                      <span className="absolute top-0 right-0 w-6 h-6 bg-primary/20" />
+                      {isCreating && (
+                        <span className="absolute inset-0 flex items-center justify-center bg-card/70">
+                          <Loader2 className="h-5 w-5 text-primary animate-spin" />
+                        </span>
+                      )}
+                      <span className="absolute top-1.5 left-2.5 text-[9px] font-semibold uppercase tracking-wide text-primary/70">
+                        Schema
+                      </span>
+                      <div className="flex flex-col justify-end flex-1 px-3 pb-3 pt-6">
+                        <p className="text-xs font-semibold leading-tight truncate">
+                          {preset.name}
+                        </p>
+                        <p className="text-[10px] text-muted-foreground leading-snug mt-1 line-clamp-2">
+                          {preset.description || "Custom schema"}
+                        </p>
+                      </div>
+                    </button>
+                  );
+                })}
+
+                {/* Other card — always last */}
+                {PDF_NEW_CARDS.filter((c) => c.value === "OTHER").map(
+                  ({ value, Icon, label, desc, placeholder }) => {
+                    const isCreating = creating === value;
+                    return (
+                      <button
+                        key={value}
+                        onClick={() =>
+                          !creating &&
+                          !placeholder &&
+                          handleNewPdfSession(value)
+                        }
+                        disabled={creating !== null || placeholder}
+                        className="relative flex flex-col w-28 h-32 border bg-card hover:border-primary transition-colors text-left disabled:opacity-50 focus-visible:outline-none disabled:cursor-not-allowed rounded-xl"
+                        style={{
+                          clipPath:
+                            "polygon(0 0, calc(100% - 24px) 0, 100% 24px, 100% 100%, 0 100%)",
+                        }}
+                      >
+                        <span className="absolute top-0 right-0 w-6 h-6 bg-muted" />
                         {isCreating && (
                           <span className="absolute inset-0 flex items-center justify-center bg-card/70">
                             <Loader2 className="h-5 w-5 text-primary animate-spin" />
@@ -812,6 +882,7 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
                     // Auto-built schemas should always create a new preset entry.
                     id: undefined,
                     name: preset.name,
+                    description: preset.description,
                     extractionMode: preset.extractionMode,
                     recordStartRegex: preset.recordStartRegex,
                     tabs: preset.tabs as SchemaPresetTab[],

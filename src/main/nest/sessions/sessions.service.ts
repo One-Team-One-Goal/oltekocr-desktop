@@ -403,6 +403,7 @@ export class SessionsService {
     Array<{
       id: string;
       name: string;
+      description?: string;
       extractionMode: "AUTO" | "CONTRACT_BIASED" | "GENERIC";
       recordStartRegex?: string;
     }>
@@ -412,6 +413,7 @@ export class SessionsService {
       Array<{
         id: string;
         name: string;
+        description: string | null;
         extractionMode: "AUTO" | "CONTRACT_BIASED" | "GENERIC";
         recordStartRegex: string | null;
       }>
@@ -420,6 +422,7 @@ export class SessionsService {
       SELECT
         id,
         name,
+        description,
         COALESCE(extraction_mode, 'AUTO') AS extractionMode,
         record_start_regex AS recordStartRegex
       FROM schema_presets
@@ -430,6 +433,7 @@ export class SessionsService {
     return rows.map((row) => ({
       id: row.id,
       name: row.name,
+      description: row.description ?? undefined,
       extractionMode: row.extractionMode,
       recordStartRegex: row.recordStartRegex ?? undefined,
     }));
@@ -483,6 +487,8 @@ export class SessionsService {
   async getSchemaPreset(presetId: string): Promise<{
     id: string;
     name: string;
+    description?: string;
+    conditions?: unknown[];
     extractionMode: "AUTO" | "CONTRACT_BIASED" | "GENERIC";
     recordStartRegex?: string;
     tabs: Array<{
@@ -494,6 +500,8 @@ export class SessionsService {
       Array<{
         id: string;
         name: string;
+        description: string | null;
+        conditions: string | null;
         extractionMode: "AUTO" | "CONTRACT_BIASED" | "GENERIC";
         recordStartRegex: string | null;
       }>
@@ -502,6 +510,8 @@ export class SessionsService {
       SELECT
         id,
         name,
+        description,
+        conditions,
         COALESCE(extraction_mode, 'AUTO') AS extractionMode,
         record_start_regex AS recordStartRegex
       FROM schema_presets
@@ -514,9 +524,17 @@ export class SessionsService {
     }
 
     const tabs = await this.getSchemaPresetTabs(presetId);
+    let conditions: unknown[] | undefined;
+    try {
+      conditions = preset[0].conditions ? JSON.parse(preset[0].conditions) : undefined;
+    } catch {
+      conditions = undefined;
+    }
     return {
       id: preset[0].id,
       name: preset[0].name,
+      description: preset[0].description ?? undefined,
+      conditions,
       extractionMode: preset[0].extractionMode,
       recordStartRegex: preset[0].recordStartRegex ?? undefined,
       tabs,
@@ -532,11 +550,13 @@ export class SessionsService {
     await this.prisma.$transaction(async (tx) => {
       await tx.$executeRawUnsafe(
         `
-        INSERT INTO schema_presets (id, name, extraction_mode, record_start_regex, created_at, updated_at)
-        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        INSERT INTO schema_presets (id, name, description, conditions, extraction_mode, record_start_regex, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         `,
         presetId,
         dto.name.trim(),
+        dto.description?.trim() || null,
+        dto.conditions?.length ? JSON.stringify(dto.conditions) : null,
         dto.extractionMode ?? "AUTO",
         dto.recordStartRegex?.trim() || null,
       );
@@ -560,12 +580,16 @@ export class SessionsService {
         UPDATE schema_presets
         SET
           name = ?,
+          description = ?,
+          conditions = ?,
           extraction_mode = ?,
           record_start_regex = ?,
           updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
         `,
         dto.name.trim(),
+        dto.description?.trim() || null,
+        dto.conditions?.length ? JSON.stringify(dto.conditions) : null,
         dto.extractionMode ?? "AUTO",
         dto.recordStartRegex?.trim() || null,
         presetId,

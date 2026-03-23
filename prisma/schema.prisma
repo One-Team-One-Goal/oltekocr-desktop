@@ -34,6 +34,7 @@ model Session {
 model SchemaPreset {
   id        String            @id @default(uuid())
   name      String
+  description String?         @map("description")
   extractionMode String       @default("AUTO") @map("extraction_mode") // "AUTO" | "CONTRACT_BIASED" | "GENERIC"
   recordStartRegex String?    @map("record_start_regex")
   createdAt DateTime          @default(now()) @map("created_at")

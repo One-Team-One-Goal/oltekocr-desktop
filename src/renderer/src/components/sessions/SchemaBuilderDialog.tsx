@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -11,7 +10,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Check, Pencil, Plus, Trash2, X } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { ChevronDown, ChevronRight, Check, Code2, Info, Layers, Pencil, Plus, Trash2, X, Zap } from "lucide-react";
 
 export interface SchemaPresetField {
   label: string;
@@ -49,9 +49,11 @@ export interface SchemaPresetTab {
 export interface SchemaPresetDraft {
   id?: string;
   name: string;
+  description?: string;
   extractionMode?: "AUTO" | "CONTRACT_BIASED" | "GENERIC";
   recordStartRegex?: string;
   tabs: SchemaPresetTab[];
+  conditions?: Array<Record<string, unknown>>;
 }
 
 interface SchemaBuilderDialogProps {
@@ -65,6 +67,18 @@ interface SchemaBuilderDialogProps {
 type NumberTransformOp = "" | "add" | "sub" | "mul" | "div";
 type NumberCalcMode = "" | "value" | "field" | "formula";
 type SchemaExtractionMode = "AUTO" | "CONTRACT_BIASED" | "GENERIC";
+type ConditionOperator = "equals" | "not_equals" | "contains" | "greater_than" | "less_than" | "matches_regex";
+type ConditionAction = "multiply_by" | "set_to" | "append" | "clear";
+type Section = "info" | "fields" | "conditions" | "json";
+interface ConditionRule {
+  id: string;
+  ifField: string;
+  ifOperator: ConditionOperator;
+  ifValue: string;
+  thenField: string;
+  thenAction: ConditionAction;
+  thenValue: string;
+}
 type FieldDraftState = Partial<SchemaPresetField> & {
   sampleValue?: string;
   dateOffsetDays?: string;
@@ -73,6 +87,35 @@ type FieldDraftState = Partial<SchemaPresetField> & {
   numberTransformValue?: string;
   numberTransformField?: string;
   numberFormula?: string;
+};
+
+const DATA_TYPE_LABELS: Record<string, string> = {
+  string: "Text",
+  currency: "Currency",
+  number: "Number",
+  date: "Date",
+  percentage: "%",
+};
+const DATA_TYPE_COLORS: Record<string, string> = {
+  string: "secondary",
+  currency: "default",
+  number: "outline",
+  date: "secondary",
+  percentage: "outline",
+};
+const OPERATOR_LABELS: Record<ConditionOperator, string> = {
+  equals: "equals",
+  not_equals: "does not equal",
+  contains: "contains",
+  greater_than: "is greater than",
+  less_than: "is less than",
+  matches_regex: "matches regex",
+};
+const ACTION_LABELS: Record<ConditionAction, string> = {
+  multiply_by: "multiply",
+  set_to: "set",
+  append: "append to",
+  clear: "clear",
 };
 
 const CONTRACT_TEMPLATE_TABS: SchemaPresetTab[] = [
@@ -347,9 +390,12 @@ export function SchemaBuilderDialog({
   onSubmit,
 }: SchemaBuilderDialogProps) {
   const [schemaName, setSchemaName] = useState("");
+  const [schemaDescription, setSchemaDescription] = useState("");
   const [schemaExtractionMode, setSchemaExtractionMode] =
     useState<SchemaExtractionMode>("AUTO");
   const [schemaRecordStartRegex, setSchemaRecordStartRegex] = useState("");
+  const [activeSection, setActiveSection] = useState<Section>("info");
+  const [conditions, setConditions] = useState<ConditionRule[]>([]);
   const [tabs, setTabs] = useState<SchemaPresetTab[]>([]);
   const [activeTabIndex, setActiveTabIndex] = useState(0);
   const [tabDraft, setTabDraft] = useState("");
@@ -358,7 +404,6 @@ export function SchemaBuilderDialog({
   const [fieldDraft, setFieldDraft] = useState<FieldDraftState>(
     createEmptyFieldDraft(),
   );
-  const [useCustomSectionHint, setUseCustomSectionHint] = useState(false);
   const [isAddingField, setIsAddingField] = useState(false);
   const [editingFieldIndex, setEditingFieldIndex] = useState<number | null>(
     null,
@@ -371,6 +416,7 @@ export function SchemaBuilderDialog({
   useEffect(() => {
     if (!open) return;
     setSchemaName(initialPreset?.name ?? "");
+    setSchemaDescription(initialPreset?.description ?? "");
     setSchemaExtractionMode(initialPreset?.extractionMode ?? "AUTO");
     setSchemaRecordStartRegex(initialPreset?.recordStartRegex ?? "");
     setTabs(initialPreset?.tabs ?? []);
@@ -379,11 +425,17 @@ export function SchemaBuilderDialog({
     setIsTabEditorOpen(false);
     setEditingTabIndex(null);
     setFieldDraft(createEmptyFieldDraft());
-    setUseCustomSectionHint(false);
     setIsAddingField(false);
     setEditingFieldIndex(null);
     setErrors([]);
     setShowAdvanced(false);
+    setActiveSection("info");
+    try {
+      const raw = initialPreset?.conditions;
+      setConditions(Array.isArray(raw) && raw.length > 0 ? ((raw as unknown) as ConditionRule[]) : []);
+    } catch {
+      setConditions([]);
+    }
   }, [open, initialPreset]);
 
   const isGenericMode = schemaExtractionMode === "GENERIC";
@@ -392,15 +444,23 @@ export function SchemaBuilderDialog({
     : CONTRACT_SECTION_HINT_SUGGESTIONS;
 
   const activeTab = tabs[activeTabIndex];
+
+  const allFieldKeys = useMemo(
+    () => Array.from(new Set(tabs.flatMap((t) => t.fields.map((f) => f.fieldKey)))),
+    [tabs],
+ );
+
   const payloadPreview = useMemo(
     () =>
       JSON.stringify(
         {
           id: initialPreset?.id,
           name: schemaName,
+          description: schemaDescription || undefined,
           extractionMode: schemaExtractionMode,
           recordStartRegex: schemaRecordStartRegex.trim() || undefined,
           tabs,
+          conditions: conditions.length > 0 ? conditions : undefined,
         },
         null,
         2,
@@ -409,8 +469,10 @@ export function SchemaBuilderDialog({
       initialPreset?.id,
       schemaExtractionMode,
       schemaName,
+      schemaDescription,
       schemaRecordStartRegex,
       tabs,
+      conditions,
     ],
   );
 
@@ -555,7 +617,6 @@ export function SchemaBuilderDialog({
 
   const clearFieldDraft = () => {
     setFieldDraft(createEmptyFieldDraft());
-    setUseCustomSectionHint(false);
     setEditingFieldIndex(null);
   };
 
@@ -759,10 +820,6 @@ export function SchemaBuilderDialog({
       allowedValues: field.allowedValues || [],
       ...transforms,
     });
-    setUseCustomSectionHint(
-      !!field.sectionHint &&
-        !sectionHintSuggestions.includes(field.sectionHint.toUpperCase()),
-    );
     setIsAddingField(false);
     setEditingFieldIndex(index);
     setErrors([]);
@@ -814,753 +871,648 @@ export function SchemaBuilderDialog({
     await onSubmit({
       id: initialPreset?.id,
       name: normalizedName,
+      description: schemaDescription.trim() || undefined,
       extractionMode: schemaExtractionMode,
       recordStartRegex: schemaRecordStartRegex.trim() || undefined,
       tabs,
+      conditions: conditions.length > 0 ? ((conditions as unknown) as Array<Record<string, unknown>>) : undefined,
     });
   };
 
+  const addCondition = () => {
+    setConditions((prev) => [
+      ...prev,
+      { id: Math.random().toString(36).slice(2), ifField: "", ifOperator: "equals", ifValue: "", thenField: "", thenAction: "set_to", thenValue: "" },
+    ]);
+    setActiveSection("conditions");
+  };
+
+  const updateCondition = (id: string, patch: Partial<ConditionRule>) => {
+    setConditions((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+  };
+
+  const removeCondition = (id: string) => {
+    setConditions((prev) => prev.filter((c) => c.id !== id));
+  };
+
   const renderFieldEditor = () => (
-    <>
-      <div className="space-y-3 bg-muted/30 p-3 rounded-md">
-        <Label className="font-semibold text-sm">Field Setup</Label>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <Label className="text-xs">Document Label *</Label>
-            <Input
-              value={fieldDraft.label || ""}
-              onChange={(e) =>
-                setFieldDraft((p) => ({ ...p, label: e.target.value }))
-              }
-              placeholder="e.g., Destination, Effective Date, Scope"
-            />
-          </div>
-          <div>
-            <Label className="text-xs">Field Key (Review Column) *</Label>
-            <Input
-              value={fieldDraft.fieldKey || ""}
-              onChange={(e) =>
-                setFieldDraft((p) => ({ ...p, fieldKey: e.target.value }))
-              }
-              placeholder="e.g., destination_city or Destination"
-            />
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <Label className="text-xs">
-              Document Label Override (Optional)
-            </Label>
-            <Input
-              value={fieldDraft.contextLabel || ""}
-              onChange={(e) =>
-                setFieldDraft((p) => ({ ...p, contextLabel: e.target.value }))
-              }
-              placeholder="Leave empty to use Document Label"
-            />
-          </div>
-          <div>
-            <Label className="text-xs">Usual Value</Label>
-            <Input
-              value={fieldDraft.sampleValue || ""}
-              onChange={(e) =>
-                setFieldDraft((p) => ({ ...p, sampleValue: e.target.value }))
-              }
-              placeholder="e.g., New York / Charleston / 12/9/2025 / 350"
-            />
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <Label className="text-xs">Section Hint</Label>
-            <select
-              value={fieldDraft.sectionHint || "RATES"}
-              onChange={(e) =>
-                setFieldDraft((p) => ({
-                  ...p,
-                  sectionHint: e.target.value as any,
-                }))
-              }
-              className={SELECT_CLASS}
-            >
-              <option value="RATES">RATES</option>
-              <option value="ORIGIN_ARB">ORIGIN_ARB</option>
-              <option value="DEST_ARB">DEST_ARB</option>
-              <option value="HEADER">HEADER</option>
-            </select>
-            <div className="text-xs text-muted-foreground mt-1">
-              {
-                CONTRACT_SECTION_HINT_HELP[
-                  (fieldDraft.sectionHint || "RATES") as
-                    | "RATES"
-                    | "ORIGIN_ARB"
-                    | "DEST_ARB"
-                    | "HEADER"
-                ]
-              }
-            </div>
-          </div>
-          <div>
-            <Label className="text-xs">Context Hint</Label>
-            <select
-              value={fieldDraft.contextHint || "table_cell"}
-              onChange={(e) =>
-                setFieldDraft((p) => ({
-                  ...p,
-                  contextHint: e.target.value as any,
-                }))
-              }
-              className={SELECT_CLASS}
-            >
-              <option value="table_cell">Table Cell</option>
-              <option value="same_line_after_label">
-                Same Line After Label
-              </option>
-              <option value="next_line_after_label">
-                Next Line After Label
-              </option>
-            </select>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <input
-            type="checkbox"
-            checked={fieldDraft.mandatory || false}
-            onChange={(e) =>
-              setFieldDraft((p) => ({ ...p, mandatory: e.target.checked }))
-            }
-            id="mandatory-check"
-          />
-          <Label htmlFor="mandatory-check" className="text-sm cursor-pointer">
-            Mandatory
+    <div className="space-y-3 border-t pt-3 mt-1">
+      {/* Required row */}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1">
+          <Label className="text-xs font-medium">
+            Document Label <span className="text-destructive">*</span>
           </Label>
+          <Input
+            value={fieldDraft.label || ""}
+            onChange={(e) => setFieldDraft((p) => ({ ...p, label: e.target.value }))}
+            placeholder="e.g. Effective Date, Origin City"
+          />
+          <p className="text-[11px] text-muted-foreground">Exact text label as it appears in the PDF</p>
         </div>
-
-        <div className="flex items-center justify-between">
-          <span className="text-xs text-muted-foreground">
-            Use Document Label for the PDF text label and Field Key for the
-            review table column.
-          </span>
-          <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={() =>
-                setFieldDraft((p) => ({
-                  ...p,
-                  regexRule: buildRegexFromHints(
-                    p.fieldKey || "",
-                    p.dataType,
-                    (p.contextLabel || p.label || "").trim(),
-                    p.sampleValue || "",
-                  ),
-                }))
-              }
-            >
-              Auto Regex
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={() => setShowAdvanced((v) => !v)}
-            >
-              {showAdvanced ? "Hide Advanced" : "Show Advanced"}
-            </Button>
-          </div>
+        <div className="space-y-1">
+          <Label className="text-xs font-medium">
+            Field Key <span className="text-destructive">*</span>
+          </Label>
+          <Input
+            value={fieldDraft.fieldKey || ""}
+            onChange={(e) => setFieldDraft((p) => ({ ...p, fieldKey: e.target.value }))}
+            placeholder="e.g. effective_date, origin_city"
+          />
+          <p className="text-[11px] text-muted-foreground">Column name shown in the review table</p>
         </div>
       </div>
 
+      {/* Type + section */}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1">
+          <Label className="text-xs font-medium">Data Type</Label>
+          <select
+            value={fieldDraft.dataType || "string"}
+            onChange={(e) => setFieldDraft((p) => ({ ...p, dataType: e.target.value as any }))}
+            className={SELECT_CLASS}
+          >
+            <option value="string">Text / String</option>
+            <option value="currency">Currency / Money</option>
+            <option value="number">Number</option>
+            <option value="date">Date</option>
+            <option value="percentage">Percentage</option>
+          </select>
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs font-medium">Section</Label>
+          <select
+            value={fieldDraft.sectionHint || ""}
+            onChange={(e) => setFieldDraft((p) => ({ ...p, sectionHint: e.target.value || undefined }))}
+            className={SELECT_CLASS}
+          >
+            <option value="">— Any section —</option>
+            {sectionHintSuggestions.map((s) => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+          {fieldDraft.sectionHint && (CONTRACT_SECTION_HINT_HELP as Record<string, string>)[fieldDraft.sectionHint] && (
+            <p className="text-[11px] text-muted-foreground">{(CONTRACT_SECTION_HINT_HELP as Record<string, string>)[fieldDraft.sectionHint]}</p>
+          )}
+        </div>
+      </div>
+
+      {/* Sample value + auto-regex */}
+      <div className="space-y-1">
+        <Label className="text-xs font-medium">
+          Sample Value <span className="font-normal text-muted-foreground">(helps auto-generate regex)</span>
+        </Label>
+        <div className="flex gap-2">
+          <Input
+            value={fieldDraft.sampleValue || ""}
+            onChange={(e) => setFieldDraft((p) => ({ ...p, sampleValue: e.target.value }))}
+            placeholder="e.g. 12/15/2025   or   New York   or   350.00"
+            className="flex-1"
+          />
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() =>
+              setFieldDraft((p) => ({
+                ...p,
+                regexRule: buildRegexFromHints(p.fieldKey || "", p.dataType, (p.contextLabel || p.label || "").trim(), p.sampleValue || ""),
+              }))
+            }
+          >
+            Auto Regex
+          </Button>
+        </div>
+      </div>
+
+      {/* Mandatory */}
+      <div className="flex items-center gap-2">
+        <input
+          type="checkbox"
+          id="field-mandatory"
+          checked={fieldDraft.mandatory || false}
+          onChange={(e) => setFieldDraft((p) => ({ ...p, mandatory: e.target.checked }))}
+          className="rounded border-input"
+        />
+        <Label htmlFor="field-mandatory" className="text-sm cursor-pointer">Mandatory field</Label>
+      </div>
+
+      {/* Advanced toggle */}
+      <button
+        type="button"
+        className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+        onClick={() => setShowAdvanced((v) => !v)}
+      >
+        {showAdvanced ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+        Advanced options
+      </button>
+
       {showAdvanced && (
-        <>
-          <div className="space-y-2 bg-muted/30 p-3 rounded-md">
-            <Label className="font-semibold text-sm">Extraction Strategy</Label>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <Label className="text-xs">Strategy</Label>
-                <select
-                  value={fieldDraft.extractionStrategy || "regex"}
-                  onChange={(e) =>
-                    setFieldDraft((p) => ({
-                      ...p,
-                      extractionStrategy: e.target.value as any,
-                    }))
-                  }
-                  className={SELECT_CLASS}
-                >
-                  <option value="regex">Regex</option>
-                  <option value="table_column">Table Column</option>
-                  <option value="header_field">Header Field</option>
-                  <option value="page_region">Page Region</option>
-                </select>
-              </div>
-              <div>
-                <Label className="text-xs">Data Type</Label>
-                <select
-                  value={fieldDraft.dataType || "string"}
-                  onChange={(e) =>
-                    setFieldDraft((p) => ({
-                      ...p,
-                      dataType: e.target.value as any,
-                    }))
-                  }
-                  className={SELECT_CLASS}
-                >
-                  <option value="string">String</option>
-                  <option value="currency">Currency</option>
-                  <option value="number">Number</option>
-                  <option value="date">Date</option>
-                  <option value="percentage">Percentage</option>
-                </select>
-              </div>
+        <div className="space-y-3 rounded-md border bg-muted/20 p-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label className="text-xs">Extraction Strategy</Label>
+              <select
+                value={fieldDraft.extractionStrategy || "table_column"}
+                onChange={(e) => setFieldDraft((p) => ({ ...p, extractionStrategy: e.target.value as any }))}
+                className={SELECT_CLASS}
+              >
+                <option value="table_column">Table Column</option>
+                <option value="regex">Regex</option>
+                <option value="header_field">Header Field</option>
+                <option value="page_region">Page Region</option>
+              </select>
             </div>
-            <div>
-              <Label className="text-xs">
-                Page Range (e.g., \"1\", \"1-3\", \"1,5,7\")
-              </Label>
-              <Input
-                value={fieldDraft.pageRange || ""}
-                onChange={(e) =>
-                  setFieldDraft((p) => ({ ...p, pageRange: e.target.value }))
-                }
-                placeholder="Leave empty to search all pages"
-              />
+            <div className="space-y-1">
+              <Label className="text-xs">Context Hint</Label>
+              <select
+                value={fieldDraft.contextHint || "table_cell"}
+                onChange={(e) => setFieldDraft((p) => ({ ...p, contextHint: e.target.value as any }))}
+                className={SELECT_CLASS}
+              >
+                <option value="table_cell">Table Cell</option>
+                <option value="same_line_after_label">Same Line After Label</option>
+                <option value="next_line_after_label">Next Line After Label</option>
+              </select>
             </div>
           </div>
-
-          <div className="space-y-2 bg-muted/30 p-3 rounded-md">
-            <Label className="font-semibold text-sm">
-              Post-Processing & Fallbacks
-            </Label>
-            <div>
-              <Label className="text-xs">
-                Post-Processing Rules (comma-separated)
-              </Label>
-              <Input
-                value={fieldDraft.postProcessing?.join(", ") || ""}
-                onChange={(e) =>
-                  setFieldDraft((p) => ({
-                    ...p,
-                    postProcessing: e.target.value
-                      .split(",")
-                      .map((s) => s.trim())
-                      .filter(Boolean),
-                  }))
-                }
-                placeholder="trim, uppercase, remove_commas, remove_currency"
-              />
-              <div className="text-xs text-muted-foreground mt-1">
-                Examples: trim, uppercase, lowercase, remove_commas,
-                remove_currency, extract_digits, fix_date
-              </div>
-            </div>
-            <div>
-              <Label className="text-xs">
-                Alternative Regex Rules (one per line)
-              </Label>
-              <textarea
-                value={fieldDraft.altRegexRules?.join("\n") || ""}
-                onChange={(e) =>
-                  setFieldDraft((p) => ({
-                    ...p,
-                    altRegexRules: e.target.value
-                      .split("\n")
-                      .map((s) => s.trim())
-                      .filter(Boolean),
-                  }))
-                }
-                placeholder="Primary regex will be tried first, then these in order..."
-                className="w-full px-2 py-1 rounded border text-sm h-16"
-              />
-            </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Context Label Override</Label>
+            <Input
+              value={fieldDraft.contextLabel || ""}
+              onChange={(e) => setFieldDraft((p) => ({ ...p, contextLabel: e.target.value }))}
+              placeholder="Leave empty to use Document Label"
+            />
           </div>
-
-          <div className="space-y-2 bg-muted/30 p-3 rounded-md">
-            <Label className="font-semibold text-sm">
-              Context & Section Hints
-            </Label>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <Label className="text-xs">Section Hint</Label>
-                <select
-                  value={fieldDraft.sectionHint || ""}
-                  onChange={(e) =>
-                    setFieldDraft((p) => ({
-                      ...p,
-                      sectionHint: e.target.value as any,
-                    }))
-                  }
-                  className={SELECT_CLASS}
-                >
-                  <option value="">None</option>
-                  <option value="RATES">RATES</option>
-                  <option value="ORIGIN_ARB">ORIGIN_ARB</option>
-                  <option value="DEST_ARB">DEST_ARB</option>
-                  <option value="HEADER">HEADER</option>
-                </select>
-              </div>
-              <div>
-                <Label className="text-xs">Context Hint</Label>
-                <select
-                  value={fieldDraft.contextHint || ""}
-                  onChange={(e) =>
-                    setFieldDraft((p) => ({
-                      ...p,
-                      contextHint: e.target.value as any,
-                    }))
-                  }
-                  className={SELECT_CLASS}
-                >
-                  <option value="">None</option>
-                  <option value="same_line_after_label">
-                    Same Line After Label
-                  </option>
-                  <option value="next_line_after_label">
-                    Next Line After Label
-                  </option>
-                  <option value="table_cell">Table Cell</option>
-                </select>
-              </div>
-            </div>
-            <div>
-              <Label className="text-xs">
-                Context Label (e.g., \"Effective Date:\")
-              </Label>
+          <div className="space-y-1">
+            <Label className="text-xs">Regex Rule</Label>
+            <Input
+              value={fieldDraft.regexRule || ""}
+              onChange={(e) => setFieldDraft((p) => ({ ...p, regexRule: e.target.value }))}
+              placeholder="Auto-generated or enter manually"
+              className="font-mono text-xs"
+            />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Page Range</Label>
+            <Input
+              value={fieldDraft.pageRange || ""}
+              onChange={(e) => setFieldDraft((p) => ({ ...p, pageRange: e.target.value }))}
+              placeholder='e.g. "1" or "1-3" — leave empty for all pages'
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label className="text-xs">Expected Format</Label>
               <Input
-                value={fieldDraft.contextLabel || ""}
-                onChange={(e) =>
-                  setFieldDraft((p) => ({ ...p, contextLabel: e.target.value }))
-                }
-                placeholder="Look for this label before extracting value"
+                value={fieldDraft.expectedFormat || ""}
+                onChange={(e) => setFieldDraft((p) => ({ ...p, expectedFormat: e.target.value }))}
+                placeholder="e.g. DD/MM/YYYY"
               />
             </div>
-          </div>
-
-          <div className="space-y-2 bg-muted/30 p-3 rounded-md">
-            <Label className="font-semibold text-sm">
-              Validation & Constraints
-            </Label>
-            <div className="text-xs text-muted-foreground">
-              Use only when you need stricter checks.
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <Label className="text-xs">Expected Format</Label>
+            <div className="space-y-1">
+              <Label className="text-xs">Min / Max Length</Label>
+              <div className="flex gap-2">
                 <Input
-                  value={fieldDraft.expectedFormat || ""}
-                  onChange={(e) =>
-                    setFieldDraft((p) => ({
-                      ...p,
-                      expectedFormat: e.target.value,
-                    }))
-                  }
-                  placeholder="DD/MM/YYYY"
+                  type="number"
+                  value={fieldDraft.minLength ?? ""}
+                  onChange={(e) => setFieldDraft((p) => ({ ...p, minLength: e.target.value ? parseInt(e.target.value) : undefined }))}
+                  placeholder="Min"
+                />
+                <Input
+                  type="number"
+                  value={fieldDraft.maxLength ?? ""}
+                  onChange={(e) => setFieldDraft((p) => ({ ...p, maxLength: e.target.value ? parseInt(e.target.value) : undefined }))}
+                  placeholder="Max"
                 />
               </div>
-              <div>
-                <Label className="text-xs">Min/Max Length</Label>
-                <div className="flex gap-2">
-                  <Input
-                    type="number"
-                    value={fieldDraft.minLength || ""}
-                    onChange={(e) =>
-                      setFieldDraft((p) => ({
-                        ...p,
-                        minLength: e.target.value
-                          ? parseInt(e.target.value)
-                          : undefined,
-                      }))
-                    }
-                    placeholder="Min"
-                    className="flex-1"
-                  />
-                  <Input
-                    type="number"
-                    value={fieldDraft.maxLength || ""}
-                    onChange={(e) =>
-                      setFieldDraft((p) => ({
-                        ...p,
-                        maxLength: e.target.value
-                          ? parseInt(e.target.value)
-                          : undefined,
-                      }))
-                    }
-                    placeholder="Max"
-                    className="flex-1"
-                  />
-                </div>
-              </div>
-            </div>
-            <div>
-              <Label className="text-xs">
-                Allowed Values (comma-separated, for enum validation)
-              </Label>
-              <Input
-                value={fieldDraft.allowedValues?.join(", ") || ""}
-                onChange={(e) =>
-                  setFieldDraft((p) => ({
-                    ...p,
-                    allowedValues: e.target.value
-                      .split(",")
-                      .map((s) => s.trim())
-                      .filter(Boolean),
-                  }))
-                }
-                placeholder="value1, value2, value3"
-              />
             </div>
           </div>
-        </>
+          <div className="space-y-1">
+            <Label className="text-xs">Post-Processing Rules (comma-separated)</Label>
+            <Input
+              value={fieldDraft.postProcessing?.join(", ") || ""}
+              onChange={(e) =>
+                setFieldDraft((p) => ({
+                  ...p,
+                  postProcessing: e.target.value.split(",").map((s) => s.trim()).filter(Boolean),
+                }))
+              }
+              placeholder="trim, uppercase, remove_commas, remove_currency"
+            />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Alternative Regex Rules (one per line)</Label>
+            <textarea
+              value={fieldDraft.altRegexRules?.join("\n") || ""}
+              onChange={(e) =>
+                setFieldDraft((p) => ({
+                  ...p,
+                  altRegexRules: e.target.value.split("\n").map((s) => s.trim()).filter(Boolean),
+                }))
+              }
+              placeholder="Primary regex tried first, then these in order..."
+              className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-xs font-mono h-16 resize-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            />
+          </div>
+        </div>
       )}
-    </>
+    </div>
   );
+
+  const renderInfoSection = () => (
+    <div className="space-y-5 py-2">
+      <div className="grid grid-cols-2 gap-4">
+        <div className="space-y-1.5">
+          <Label>Schema Name <span className="text-destructive">*</span></Label>
+          <Input
+            value={schemaName}
+            onChange={(e) => setSchemaName(e.target.value)}
+            placeholder="e.g. Container Rates, Freight Contracts..."
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label>Description <span className="text-muted-foreground font-normal">(optional)</span></Label>
+          <Input
+            value={schemaDescription}
+            onChange={(e) => setSchemaDescription(e.target.value)}
+            placeholder="What does this schema extract?"
+          />
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-4">
+        <div className="space-y-1.5">
+          <Label>Extraction Mode</Label>
+          <select
+            value={schemaExtractionMode}
+            onChange={(e) => setSchemaExtractionMode(e.target.value as SchemaExtractionMode)}
+            className={SELECT_CLASS}
+          >
+            <option value="AUTO">AUTO — let the system decide</option>
+            <option value="CONTRACT_BIASED">CONTRACT_BIASED — optimised for logistics contracts</option>
+            <option value="GENERIC">GENERIC — general documents</option>
+          </select>
+        </div>
+        <div className="space-y-1.5">
+          <Label>Record Start Regex <span className="text-muted-foreground font-normal">(optional)</span></Label>
+          <Input
+            value={schemaRecordStartRegex}
+            onChange={(e) => setSchemaRecordStartRegex(e.target.value)}
+            placeholder="e.g. 6\s*[-.]1|GENERAL\s+RATE"
+            className="font-mono text-xs"
+          />
+          <p className="text-xs text-muted-foreground">Pattern that marks the start of a new record.</p>
+        </div>
+      </div>
+      <div className="border rounded-md p-4 bg-muted/20 space-y-2">
+        <p className="text-sm font-medium">Quick-start template</p>
+        <p className="text-xs text-muted-foreground">
+          Populate with standard logistics contract fields (Rates, Origin &amp; Destination Arbitraries).
+        </p>
+        <Button type="button" variant="outline" size="sm" onClick={loadContractTemplate}>
+          Load Contract Fields Template
+        </Button>
+      </div>
+    </div>
+  );
+
+  const renderFieldsSection = () => (
+    <div className="flex h-full overflow-hidden">
+      {/* Sidebar */}
+      <div className="w-52 shrink-0 border-r flex flex-col overflow-hidden">
+        <div className="px-3 pt-3 pb-1 flex items-center justify-between">
+          <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Sections</span>
+          <Badge variant="secondary" className="text-xs">{tabs.length}</Badge>
+        </div>
+        <div className="flex-1 overflow-y-auto px-2 pb-2 space-y-0.5">
+          {tabs.map((tab, idx) => {
+            const isActive = idx === activeTabIndex;
+            const isEditingThis = isTabEditorOpen && editingTabIndex === idx;
+            if (isEditingThis) {
+              return (
+                <div key={idx} className="flex items-center gap-1 rounded-md border bg-background px-2 py-1">
+                  <Input
+                    value={tabDraft}
+                    onChange={(e) => setTabDraft(e.target.value)}
+                    placeholder="Section name"
+                    className="h-6 flex-1 text-sm"
+                    autoFocus
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") { e.preventDefault(); upsertTab(); }
+                      if (e.key === "Escape") { e.preventDefault(); cancelTabEditor(); }
+                    }}
+                  />
+                  <Button type="button" size="icon" variant="ghost" className="h-6 w-6 shrink-0" onClick={upsertTab}><Check className="h-3 w-3" /></Button>
+                  <Button type="button" size="icon" variant="ghost" className="h-6 w-6 shrink-0" onClick={cancelTabEditor}><X className="h-3 w-3" /></Button>
+                </div>
+              );
+            }
+            return (
+              <div
+                key={idx}
+                onClick={() => { setActiveTabIndex(idx); cancelFieldEditor(); }}
+                className={`group flex items-center gap-1.5 rounded-md px-2 py-1.5 cursor-pointer text-sm transition-colors ${isActive ? "bg-primary/10 text-primary font-medium" : "hover:bg-muted text-foreground"}`}
+              >
+                <span className="flex-1 truncate">{tab.name}</span>
+                <span className="text-[11px] text-muted-foreground shrink-0">({tab.fields.length})</span>
+                <span className="hidden group-hover:flex items-center gap-0.5 shrink-0">
+                  <Button type="button" size="icon" variant="ghost" className="h-5 w-5" onClick={(e) => { e.stopPropagation(); editTab(idx); }}>
+                    <Pencil className="h-3 w-3" />
+                  </Button>
+                  <Button type="button" size="icon" variant="ghost" className="h-5 w-5 text-destructive hover:text-destructive" onClick={(e) => { e.stopPropagation(); removeTab(idx); }}>
+                    <Trash2 className="h-3 w-3" />
+                  </Button>
+                </span>
+              </div>
+            );
+          })}
+          {isTabEditorOpen && editingTabIndex === null && (
+            <div className="flex items-center gap-1 rounded-md border bg-background px-2 py-1">
+              <Input
+                value={tabDraft}
+                onChange={(e) => setTabDraft(e.target.value)}
+                placeholder="Section name"
+                className="h-6 flex-1 text-sm"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") { e.preventDefault(); upsertTab(); }
+                  if (e.key === "Escape") { e.preventDefault(); cancelTabEditor(); }
+                }}
+              />
+              <Button type="button" size="icon" variant="ghost" className="h-6 w-6 shrink-0" onClick={upsertTab}><Check className="h-3 w-3" /></Button>
+              <Button type="button" size="icon" variant="ghost" className="h-6 w-6 shrink-0" onClick={cancelTabEditor}><X className="h-3 w-3" /></Button>
+            </div>
+          )}
+        </div>
+        <div className="border-t p-2 shrink-0">
+          <Button type="button" variant="outline" size="sm" className="w-full" onClick={startAddTab} disabled={isTabEditorOpen}>
+            <Plus className="h-3.5 w-3.5 mr-1" />Add Section
+          </Button>
+        </div>
+      </div>
+
+      {/* Fields panel */}
+      <ScrollArea className="flex-1">
+        <div className="p-4 space-y-3">
+          {activeTab ? (
+            <>
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="font-semibold text-sm">{activeTab.name}</h3>
+                  <p className="text-xs text-muted-foreground">{activeTab.fields.length} field{activeTab.fields.length !== 1 ? "s" : ""}</p>
+                </div>
+                {!isAddingField && editingFieldIndex === null && (
+                  <Button type="button" size="sm" onClick={startAddField}>
+                    <Plus className="h-3.5 w-3.5 mr-1" />Add Field
+                  </Button>
+                )}
+              </div>
+
+              {isAddingField && (
+                <div className="rounded-md border bg-background p-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium">New Field</span>
+                    <div className="flex gap-2">
+                      <Button type="button" size="sm" onClick={upsertField}>Save Field</Button>
+                      <Button type="button" size="sm" variant="outline" onClick={cancelFieldEditor}>Cancel</Button>
+                    </div>
+                  </div>
+                  {renderFieldEditor()}
+                </div>
+              )}
+
+              {activeTab.fields.length === 0 && !isAddingField ? (
+                <div className="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">
+                  No fields yet. Click "Add Field" to get started.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {activeTab.fields.map((field, idx) => (
+                    <div key={`${field.fieldKey}-${idx}`} className="rounded-md border bg-background">
+                      <div className="flex items-center gap-3 p-2.5">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium text-sm truncate">{field.fieldKey}</span>
+                            <Badge variant={(DATA_TYPE_COLORS[field.dataType || "string"] as any) || "secondary"} className="text-[10px] py-0">
+                              {DATA_TYPE_LABELS[field.dataType || "string"] || field.dataType}
+                            </Badge>
+                            {field.mandatory && (
+                              <Badge variant="outline" className="text-[10px] py-0 border-destructive/50 text-destructive">Required</Badge>
+                            )}
+                          </div>
+                          <p className="text-xs text-muted-foreground truncate mt-0.5">
+                            Label: {field.label}{field.sectionHint ? ` · ${field.sectionHint}` : ""}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          {editingFieldIndex === idx ? (
+                            <>
+                              <Button type="button" size="sm" onClick={upsertField}>Save</Button>
+                              <Button type="button" size="sm" variant="outline" onClick={cancelFieldEditor}>Cancel</Button>
+                            </>
+                          ) : (
+                            <Button type="button" size="sm" variant="outline" onClick={() => editField(idx)}>Edit</Button>
+                          )}
+                          <Button type="button" size="icon" variant="ghost" className="h-8 w-8 text-destructive hover:text-destructive" onClick={() => removeField(idx)}>
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      </div>
+                      {editingFieldIndex === idx && (
+                        <div className="px-3 pb-3">{renderFieldEditor()}</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="flex flex-col items-center justify-center h-48 text-center gap-3">
+              <Layers className="h-8 w-8 text-muted-foreground/40" />
+              <div>
+                <p className="text-sm font-medium">No sections yet</p>
+                <p className="text-xs text-muted-foreground mt-1">Add a section in the sidebar to start defining fields.</p>
+              </div>
+            </div>
+          )}
+        </div>
+      </ScrollArea>
+    </div>
+  );
+
+  const renderConditionsSection = () => (
+    <div className="space-y-4 py-2">
+      <div>
+        <h3 className="font-semibold">Conditions &amp; Rules</h3>
+        <p className="text-sm text-muted-foreground mt-1">
+          Define rules that post-process extracted values. Example:{" "}
+          <span className="italic">IF <strong>BaseRate 20</strong> is greater than 500 THEN <strong>BaseRate 40</strong> multiply by 1.2</span>.
+        </p>
+      </div>
+
+      {allFieldKeys.length === 0 && (
+        <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground text-center">
+          Add fields in the <strong>Fields</strong> section first.
+        </div>
+      )}
+
+      {conditions.length === 0 ? (
+        <div className="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">
+          No conditions defined. Click "Add Condition" to create one.
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {conditions.map((cond, idx) => (
+            <div key={cond.id} className="rounded-md border bg-background p-3 space-y-3">
+              <div className="flex items-start justify-between gap-2">
+                <span className="text-xs font-semibold text-muted-foreground mt-0.5">Rule #{idx + 1}</span>
+                <Button type="button" size="icon" variant="ghost" className="h-7 w-7 text-destructive hover:text-destructive shrink-0" onClick={() => removeCondition(cond.id)}>
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="w-10 text-sm font-semibold text-muted-foreground shrink-0">IF</span>
+                <select
+                  value={cond.ifField}
+                  onChange={(e) => updateCondition(cond.id, { ifField: e.target.value })}
+                  className="rounded-md border border-input bg-background px-2 py-1.5 text-sm min-w-[140px]"
+                >
+                  <option value="">— select field —</option>
+                  {allFieldKeys.map((k) => <option key={k} value={k}>{k}</option>)}
+                </select>
+                <select
+                  value={cond.ifOperator}
+                  onChange={(e) => updateCondition(cond.id, { ifOperator: e.target.value as ConditionOperator })}
+                  className="rounded-md border border-input bg-background px-2 py-1.5 text-sm min-w-[160px]"
+                >
+                  {(Object.keys(OPERATOR_LABELS) as ConditionOperator[]).map((op) => (
+                    <option key={op} value={op}>{OPERATOR_LABELS[op]}</option>
+                  ))}
+                </select>
+                <Input value={cond.ifValue} onChange={(e) => updateCondition(cond.id, { ifValue: e.target.value })} placeholder="value..." className="w-32" />
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="w-10 text-sm font-semibold text-primary shrink-0">THEN</span>
+                <select
+                  value={cond.thenField}
+                  onChange={(e) => updateCondition(cond.id, { thenField: e.target.value })}
+                  className="rounded-md border border-input bg-background px-2 py-1.5 text-sm min-w-[140px]"
+                >
+                  <option value="">— target field —</option>
+                  {allFieldKeys.map((k) => <option key={k} value={k}>{k}</option>)}
+                </select>
+                <select
+                  value={cond.thenAction}
+                  onChange={(e) => updateCondition(cond.id, { thenAction: e.target.value as ConditionAction })}
+                  className="rounded-md border border-input bg-background px-2 py-1.5 text-sm min-w-[130px]"
+                >
+                  {(Object.keys(ACTION_LABELS) as ConditionAction[]).map((a) => (
+                    <option key={a} value={a}>{ACTION_LABELS[a]}</option>
+                  ))}
+                </select>
+                {cond.thenAction !== "clear" && (
+                  <Input value={cond.thenValue} onChange={(e) => updateCondition(cond.id, { thenValue: e.target.value })} placeholder={cond.thenAction === "multiply_by" ? "e.g. 1.2" : "value..."} className="w-32" />
+                )}
+              </div>
+              {cond.ifField && cond.thenField && (
+                <p className="text-xs text-muted-foreground border-t pt-2">
+                  When <strong>{cond.ifField}</strong>{" "}{OPERATOR_LABELS[cond.ifOperator]}{cond.ifValue ? <> <em>"{cond.ifValue}"</em></> : ""}{" "}
+                  {"-> "}{ACTION_LABELS[cond.thenAction]} <strong>{cond.thenField}</strong>{cond.thenAction !== "clear" && cond.thenValue ? <> by <em>{cond.thenValue}</em></> : null}.
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      <Button type="button" variant="outline" onClick={addCondition}>
+        <Plus className="h-4 w-4 mr-2" />Add Condition
+      </Button>
+    </div>
+  );
+
+  const renderJsonSection = () => (
+    <div className="space-y-3 py-2">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="font-semibold text-sm">Raw JSON Editor</h3>
+          <p className="text-xs text-muted-foreground mt-0.5">Edit the schema payload directly. Click "Apply" to sync back to the form.</p>
+        </div>
+        <div className="flex gap-2">
+          <Button type="button" size="sm" variant="outline" onClick={() => { setPayloadEditor(payloadPreview); setPayloadDirty(false); setErrors([]); }}>
+            Reset from Form
+          </Button>
+          <Button type="button" size="sm" onClick={applyPayloadEditor}>Apply JSON</Button>
+        </div>
+      </div>
+      <textarea
+        value={payloadEditor}
+        onChange={(e) => { setPayloadEditor(e.target.value); setPayloadDirty(true); }}
+        className="w-full rounded-md border border-input bg-muted/30 p-3 text-xs font-mono min-h-[420px] resize-y focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        spellCheck={false}
+      />
+    </div>
+  );
+
+  const SECTIONS: { id: Section; label: string; icon: React.ReactNode; badge?: number }[] = [
+    { id: "info", label: "Info", icon: <Info className="h-4 w-4" /> },
+    { id: "fields", label: "Fields", icon: <Layers className="h-4 w-4" />, badge: tabs.reduce((sum, t) => sum + t.fields.length, 0) },
+    { id: "conditions", label: "Conditions", icon: <Zap className="h-4 w-4" />, badge: conditions.length || undefined },
+    { id: "json", label: "JSON", icon: <Code2 className="h-4 w-4" /> },
+  ];
 
   return (
     <Dialog open={open} onOpenChange={(isOpen) => !isOpen && onClose()}>
-      <DialogContent className="sm:max-w-[1100px] h-[90vh] overflow-hidden flex flex-col">
-        <DialogHeader>
+      <DialogContent className="sm:max-w-[1100px] h-[90vh] overflow-hidden flex flex-col p-0">
+        <DialogHeader className="px-6 pt-5 pb-0 shrink-0">
           <DialogTitle>Schema Builder</DialogTitle>
-          <DialogDescription>
-            Label is the document label from the PDF. Field Key is the column name shown in Contract Review.
-          </DialogDescription>
         </DialogHeader>
 
-        <ScrollArea className="flex-1 overflow-hidden">
-              <div className="space-y-4 py-4 px-6">
-                <div>
-                  <Label>Schema Name</Label>
-                  <Input
-                    value={schemaName}
-                    onChange={(e) => setSchemaName(e.target.value)}
-                    placeholder="Contracts"
-                  />
-                </div>
+        {/* Section tab nav */}
+        <div className="flex items-center gap-0 px-6 border-b shrink-0 mt-3">
+          {SECTIONS.map((sec) => (
+            <button
+              key={sec.id}
+              type="button"
+              onClick={() => setActiveSection(sec.id)}
+              className={`flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+                activeSection === sec.id
+                  ? "border-primary text-primary"
+                  : "border-transparent text-muted-foreground hover:text-foreground hover:border-muted-foreground/40"
+              }`}
+            >
+              {sec.icon}
+              {sec.label}
+              {sec.badge !== undefined && sec.badge > 0 && (
+                <span className={`rounded-full text-[10px] px-1.5 py-0 leading-4 font-normal ${activeSection === sec.id ? "bg-primary/15 text-primary" : "bg-muted text-muted-foreground"}`}>
+                  {sec.badge}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
 
-                <div className="space-y-3">
-                  <div className="flex items-center gap-2">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={loadContractTemplate}
-                    >
-                      Load Contract Fields Template
-                    </Button>
-                    <span className="text-xs text-muted-foreground">
-                      Uses PDF-contract field names, section hints, and table/header
-                      strategies.
-                    </span>
-                  </div>
-
-                  <div>
-                    <div className="flex flex-wrap items-end gap-1 border-b pb-0">
-                      {tabs.map((tab, idx) => {
-                        const isActive = idx === activeTabIndex;
-                        const isEditingThisTab =
-                          isTabEditorOpen && editingTabIndex === idx;
-
-                        if (isEditingThisTab) {
-                          return (
-                            <div
-                              key={`${tab.name}-${idx}`}
-                              className="-mb-px flex h-9 items-center gap-1 rounded-t-md border border-border border-b-background bg-background px-2"
-                            >
-                              <Input
-                                value={tabDraft}
-                                onChange={(e) => setTabDraft(e.target.value)}
-                                placeholder="Tab Name"
-                                className="h-6 w-36"
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter") {
-                                    e.preventDefault();
-                                    upsertTab();
-                                  }
-                                  if (e.key === "Escape") {
-                                    e.preventDefault();
-                                    cancelTabEditor();
-                                  }
-                                }}
-                                autoFocus
-                              />
-                              <Button
-                                type="button"
-                                size="icon"
-                                variant="ghost"
-                                className="h-7 w-7"
-                                onClick={upsertTab}
-                                aria-label={`Confirm ${tab.name} tab edit`}
-                              >
-                                <Check className="h-4 w-4" />
-                              </Button>
-                              <Button
-                                type="button"
-                                size="icon"
-                                variant="ghost"
-                                className="h-7 w-7"
-                                onClick={cancelTabEditor}
-                                aria-label={`Cancel ${tab.name} tab edit`}
-                              >
-                                <X className="h-4 w-4" />
-                              </Button>
-                            </div>
-                          );
-                        }
-
-                        return (
-                          <button
-                            key={`${tab.name}-${idx}`}
-                            type="button"
-                            onClick={() => setActiveTabIndex(idx)}
-                            className={`group relative -mb-px rounded-t-md border px-3 py-1.5 pr-16 text-sm transition-colors ${
-                              isActive
-                                ? "border-border border-b-background bg-background font-medium text-foreground"
-                                : "border-transparent bg-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-                            }`}
-                          >
-                            {tab.name}
-                            <span className="ml-1 text-xs text-muted-foreground">
-                              ({tab.fields.length})
-                            </span>
-                            <span className="absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-                              <Button
-                                type="button"
-                                size="icon"
-                                variant="ghost"
-                                className="h-6 w-6"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  editTab(idx);
-                                }}
-                                aria-label={`Edit ${tab.name} tab`}
-                              >
-                                <Pencil className="h-3.5 w-3.5" />
-                              </Button>
-                              <Button
-                                type="button"
-                                size="icon"
-                                variant="ghost"
-                                className="h-6 w-6 text-destructive hover:text-destructive"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  removeTab(idx);
-                                }}
-                                aria-label={`Delete ${tab.name} tab`}
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </Button>
-                            </span>
-                          </button>
-                        );
-                      })}
-
-                      {isTabEditorOpen && editingTabIndex === null && (
-                        <div className="-mb-px flex h-9 items-center gap-1 rounded-t-md border border-border border-b-background bg-background px-2">
-                          <Input
-                            value={tabDraft}
-                            onChange={(e) => setTabDraft(e.target.value)}
-                            placeholder="Tab Name"
-                            className="h-6 w-36"
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") {
-                                e.preventDefault();
-                                upsertTab();
-                              }
-                              if (e.key === "Escape") {
-                                e.preventDefault();
-                                cancelTabEditor();
-                              }
-                            }}
-                            autoFocus
-                          />
-                          <Button
-                            type="button"
-                            size="icon"
-                            variant="ghost"
-                            className="h-7 w-7"
-                            onClick={upsertTab}
-                            aria-label="Confirm new tab"
-                          >
-                            <Check className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            type="button"
-                            size="icon"
-                            variant="ghost"
-                            className="h-7 w-7"
-                            onClick={cancelTabEditor}
-                            aria-label="Cancel new tab"
-                          >
-                            <X className="h-4 w-4" />
-                          </Button>
-                        </div>
-                      )}
-
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="-mb-px h-9 w-9 rounded-t-md border border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-                        onClick={startAddTab}
-                        disabled={isTabEditorOpen}
-                        aria-label="Add tab"
-                      >
-                        <Plus className="h-4 w-4" />
-                      </Button>
-                    </div>
-
-                    {activeTab ? (
-                      <div className="space-y-3 border p-3 border-border rounded-md border-t-0 rounded-t-none">
-                        <div className="rounded-md border bg-background p-2">
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="min-w-0 text-sm">
-                              <div className="font-medium">New field</div>
-                              <div className="text-muted-foreground truncate text-xs">
-                                Add a field to this tab.
-                              </div>
-                            </div>
-                            <div className="flex items-center gap-1 shrink-0">
-                              <Button
-                                type="button"
-                                size="sm"
-                                onClick={
-                                  isAddingField ? upsertField : startAddField
-                                }
-                              >
-                                {isAddingField ? "Save" : "Add Field"}
-                              </Button>
-                              {isAddingField && (
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={cancelFieldEditor}
-                                >
-                                  Cancel
-                                </Button>
-                              )}
-                            </div>
-                          </div>
-                          {isAddingField && (
-                            <div className="mt-3">{renderFieldEditor()}</div>
-                          )}
-                        </div>
-
-                        <div className="space-y-2">
-                          {activeTab.fields.length === 0 ? (
-                            <div className="rounded-md border bg-background p-3 text-sm text-muted-foreground">
-                              No fields in this tab.
-                            </div>
-                          ) : (
-                            activeTab.fields.map((field, idx) => (
-                              <div
-                                key={`${field.fieldKey}-${idx}`}
-                                className="rounded-md border bg-background p-2"
-                              >
-                                <div className="flex items-center justify-between gap-2">
-                                  <div className="min-w-0 text-sm">
-                                    <div className="font-medium truncate">
-                                      {field.fieldKey}
-                                    </div>
-                                    <div className="text-muted-foreground truncate text-xs">
-                                      Document Label: {field.label} |{" "}
-                                      {field.dataType || "string"} |{" "}
-                                      {field.regexRule || "(no regex)"}
-                                    </div>
-                                  </div>
-                                  <div className="flex items-center gap-1 shrink-0">
-                                    <Button
-                                      type="button"
-                                      size="sm"
-                                      variant="outline"
-                                      onClick={() =>
-                                        editingFieldIndex === idx
-                                          ? upsertField()
-                                          : editField(idx)
-                                      }
-                                    >
-                                      {editingFieldIndex === idx ? "Save" : "Edit"}
-                                    </Button>
-                                    {editingFieldIndex === idx && (
-                                      <Button
-                                        type="button"
-                                        size="sm"
-                                        variant="outline"
-                                        onClick={cancelFieldEditor}
-                                      >
-                                        Cancel
-                                      </Button>
-                                    )}
-                                    <Button
-                                      type="button"
-                                      size="sm"
-                                      variant="destructive"
-                                      onClick={() => removeField(idx)}
-                                    >
-                                      Delete
-                                    </Button>
-                                  </div>
-                                </div>
-
-                                {editingFieldIndex === idx && (
-                                  <div className="mt-3">{renderFieldEditor()}</div>
-                                )}
-                              </div>
-                            ))
-                          )}
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="rounded-md border bg-background p-3 text-sm text-muted-foreground">
-                        No tabs added yet. Click the plus icon to create one.
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <Label>Payload Preview (Editable JSON)</Label>
-                    <div className="flex items-center gap-2">
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        onClick={() => {
-                          setPayloadEditor(payloadPreview);
-                          setPayloadDirty(false);
-                          setErrors([]);
-                        }}
-                      >
-                        Reset from Form
-                      </Button>
-                      <Button type="button" size="sm" onClick={applyPayloadEditor}>
-                        Apply JSON
-                      </Button>
-                    </div>
-                  </div>
-                  <textarea
-                    value={payloadEditor}
-                    onChange={(e) => {
-                      setPayloadEditor(e.target.value);
-                      setPayloadDirty(true);
-                    }}
-                    className="max-h-[720px] min-h-[500px] w-full overflow-auto rounded-md border bg-muted/40 p-3 text-xs font-mono"
-                  />
-                </div>
+        {/* Content area */}
+        <div className="flex-1 overflow-hidden">
+          {activeSection === "fields" ? (
+            renderFieldsSection()
+          ) : (
+            <ScrollArea className="h-full">
+              <div className="px-6 py-4">
+                {activeSection === "info" && renderInfoSection()}
+                {activeSection === "conditions" && renderConditionsSection()}
+                {activeSection === "json" && renderJsonSection()}
               </div>
-        </ScrollArea>
+            </ScrollArea>
+          )}
+        </div>
 
         {errors.length > 0 && (
-          <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive mx-6 flex-shrink-0">
+          <div className="mx-6 shrink-0 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
             {errors.join(" ")}
           </div>
         )}
 
-        <DialogFooter className="px-6 flex-shrink-0 border-t pt-4">
+        <DialogFooter className="px-6 py-4 shrink-0 border-t">
           <Button variant="outline" onClick={onClose} disabled={submitting}>
             Cancel
           </Button>
