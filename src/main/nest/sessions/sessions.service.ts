@@ -44,8 +44,16 @@ const STANDARD_CONTRACT_SCHEMA_TABS: SchemaPresetTabDto[] = [
       { label: "commodity", fieldKey: "commodity", regexRule: "" },
       { label: "origin_city", fieldKey: "origin_city", regexRule: "" },
       { label: "origin_via_city", fieldKey: "origin_via_city", regexRule: "" },
-      { label: "destination_city", fieldKey: "destination_city", regexRule: "" },
-      { label: "destination_via_city", fieldKey: "destination_via_city", regexRule: "" },
+      {
+        label: "destination_city",
+        fieldKey: "destination_city",
+        regexRule: "",
+      },
+      {
+        label: "destination_via_city",
+        fieldKey: "destination_via_city",
+        regexRule: "",
+      },
       { label: "service", fieldKey: "service", regexRule: "" },
       { label: "Remarks", fieldKey: "Remarks", regexRule: "" },
       { label: "SCOPE", fieldKey: "SCOPE", regexRule: "" },
@@ -53,10 +61,22 @@ const STANDARD_CONTRACT_SCHEMA_TABS: SchemaPresetTabDto[] = [
       { label: "BaseRate 40", fieldKey: "BaseRate 40", regexRule: "" },
       { label: "BaseRate 40H", fieldKey: "BaseRate 40H", regexRule: "" },
       { label: "BaseRate 45", fieldKey: "BaseRate 45", regexRule: "" },
-      { label: "AMS(CHINA & JAPAN)", fieldKey: "AMS(CHINA & JAPAN)", regexRule: "" },
-      { label: "(HEA) Heavy Surcharge", fieldKey: "(HEA) Heavy Surcharge", regexRule: "" },
+      {
+        label: "AMS(CHINA & JAPAN)",
+        fieldKey: "AMS(CHINA & JAPAN)",
+        regexRule: "",
+      },
+      {
+        label: "(HEA) Heavy Surcharge",
+        fieldKey: "(HEA) Heavy Surcharge",
+        regexRule: "",
+      },
       { label: "AGW", fieldKey: "AGW", regexRule: "" },
-      { label: "RED SEA DIVERSION CHARGE(RDS).", fieldKey: "RED SEA DIVERSION CHARGE(RDS).", regexRule: "" },
+      {
+        label: "RED SEA DIVERSION CHARGE(RDS).",
+        fieldKey: "RED SEA DIVERSION CHARGE(RDS).",
+        regexRule: "",
+      },
     ],
   },
   {
@@ -89,8 +109,16 @@ const STANDARD_CONTRACT_SCHEMA_TABS: SchemaPresetTabDto[] = [
       { label: "effective_date", fieldKey: "effective_date", regexRule: "" },
       { label: "expiration_date", fieldKey: "expiration_date", regexRule: "" },
       { label: "commodity", fieldKey: "commodity", regexRule: "" },
-      { label: "destination_city", fieldKey: "destination_city", regexRule: "" },
-      { label: "destination_via_city", fieldKey: "destination_via_city", regexRule: "" },
+      {
+        label: "destination_city",
+        fieldKey: "destination_city",
+        regexRule: "",
+      },
+      {
+        label: "destination_via_city",
+        fieldKey: "destination_via_city",
+        regexRule: "",
+      },
       { label: "service", fieldKey: "service", regexRule: "" },
       { label: "Remarks", fieldKey: "Remarks", regexRule: "" },
       { label: "Scope", fieldKey: "Scope", regexRule: "" },
@@ -105,6 +133,7 @@ const STANDARD_CONTRACT_SCHEMA_TABS: SchemaPresetTabDto[] = [
 @Injectable()
 export class SessionsService {
   private readonly logger = new Logger(SessionsService.name);
+  private schemaPresetsHasConditionsColumn: boolean | null = null;
   private readonly allowedExtractionModels = new Set([
     "docling",
     "pdfplumber",
@@ -351,7 +380,9 @@ export class SessionsService {
       data: { columns: JSON.stringify(dto.columns) },
     });
 
-    this.logger.log(`Updated columns for session ${id}; preserved extractedRow`);
+    this.logger.log(
+      `Updated columns for session ${id}; preserved extractedRow`,
+    );
     return this.findOne(id);
   }
 
@@ -395,7 +426,9 @@ export class SessionsService {
 
     await this.upsertSchemaRows(id, normalized);
 
-    this.logger.log(`Updated ${normalized.length} schema fields for session ${id}`);
+    this.logger.log(
+      `Updated ${normalized.length} schema fields for session ${id}`,
+    );
     return this.getSchemaFields(id);
   }
 
@@ -474,14 +507,38 @@ export class SessionsService {
         );
       }
 
-      await this.writeSchemaPresetTabs(tx, presetId, STANDARD_CONTRACT_SCHEMA_TABS);
+      await this.writeSchemaPresetTabs(
+        tx,
+        presetId,
+        STANDARD_CONTRACT_SCHEMA_TABS,
+      );
     });
 
     if (existing.length === 0) {
-      this.logger.log(`Seeded global schema preset: ${STANDARD_CONTRACT_SCHEMA_NAME}`);
+      this.logger.log(
+        `Seeded global schema preset: ${STANDARD_CONTRACT_SCHEMA_NAME}`,
+      );
     } else {
-      this.logger.log(`Synchronized global schema preset: ${STANDARD_CONTRACT_SCHEMA_NAME}`);
+      this.logger.log(
+        `Synchronized global schema preset: ${STANDARD_CONTRACT_SCHEMA_NAME}`,
+      );
     }
+  }
+
+  private async hasSchemaPresetConditionsColumn(): Promise<boolean> {
+    if (this.schemaPresetsHasConditionsColumn !== null) {
+      return this.schemaPresetsHasConditionsColumn;
+    }
+
+    const columns = await this.prisma.$queryRawUnsafe<Array<{ name: string }>>(
+      `PRAGMA table_info('schema_presets')`,
+    );
+
+    this.schemaPresetsHasConditionsColumn = columns.some(
+      (column) => column.name === "conditions",
+    );
+
+    return this.schemaPresetsHasConditionsColumn;
   }
 
   async getSchemaPreset(presetId: string): Promise<{
@@ -496,6 +553,8 @@ export class SessionsService {
       fields: SchemaPresetFieldDto[];
     }>;
   }> {
+    const hasConditionsColumn = await this.hasSchemaPresetConditionsColumn();
+
     const preset = await this.prisma.$queryRawUnsafe<
       Array<{
         id: string;
@@ -507,6 +566,9 @@ export class SessionsService {
       }>
     >(
       `
+      ${
+        hasConditionsColumn
+          ? `
       SELECT
         id,
         name,
@@ -516,6 +578,19 @@ export class SessionsService {
         record_start_regex AS recordStartRegex
       FROM schema_presets
       WHERE id = ?
+      `
+          : `
+      SELECT
+        id,
+        name,
+        description,
+        NULL AS conditions,
+        COALESCE(extraction_mode, 'AUTO') AS extractionMode,
+        record_start_regex AS recordStartRegex
+      FROM schema_presets
+      WHERE id = ?
+      `
+      }
       `,
       presetId,
     );
@@ -526,7 +601,9 @@ export class SessionsService {
     const tabs = await this.getSchemaPresetTabs(presetId);
     let conditions: unknown[] | undefined;
     try {
-      conditions = preset[0].conditions ? JSON.parse(preset[0].conditions) : undefined;
+      conditions = preset[0].conditions
+        ? JSON.parse(preset[0].conditions)
+        : undefined;
     } catch {
       conditions = undefined;
     }
@@ -547,19 +624,34 @@ export class SessionsService {
     }
 
     const presetId = uuid();
+    const hasConditionsColumn = await this.hasSchemaPresetConditionsColumn();
     await this.prisma.$transaction(async (tx) => {
-      await tx.$executeRawUnsafe(
-        `
-        INSERT INTO schema_presets (id, name, description, conditions, extraction_mode, record_start_regex, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        `,
-        presetId,
-        dto.name.trim(),
-        dto.description?.trim() || null,
-        dto.conditions?.length ? JSON.stringify(dto.conditions) : null,
-        dto.extractionMode ?? "AUTO",
-        dto.recordStartRegex?.trim() || null,
-      );
+      if (hasConditionsColumn) {
+        await tx.$executeRawUnsafe(
+          `
+          INSERT INTO schema_presets (id, name, description, conditions, extraction_mode, record_start_regex, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+          `,
+          presetId,
+          dto.name.trim(),
+          dto.description?.trim() || null,
+          dto.conditions?.length ? JSON.stringify(dto.conditions) : null,
+          dto.extractionMode ?? "AUTO",
+          dto.recordStartRegex?.trim() || null,
+        );
+      } else {
+        await tx.$executeRawUnsafe(
+          `
+          INSERT INTO schema_presets (id, name, description, extraction_mode, record_start_regex, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+          `,
+          presetId,
+          dto.name.trim(),
+          dto.description?.trim() || null,
+          dto.extractionMode ?? "AUTO",
+          dto.recordStartRegex?.trim() || null,
+        );
+      }
 
       await this.writeSchemaPresetTabs(tx, presetId, dto.tabs);
     });
@@ -573,27 +665,48 @@ export class SessionsService {
     }
 
     await this.getSchemaPreset(presetId);
+    const hasConditionsColumn = await this.hasSchemaPresetConditionsColumn();
 
     await this.prisma.$transaction(async (tx) => {
-      await tx.$executeRawUnsafe(
-        `
-        UPDATE schema_presets
-        SET
-          name = ?,
-          description = ?,
-          conditions = ?,
-          extraction_mode = ?,
-          record_start_regex = ?,
-          updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-        `,
-        dto.name.trim(),
-        dto.description?.trim() || null,
-        dto.conditions?.length ? JSON.stringify(dto.conditions) : null,
-        dto.extractionMode ?? "AUTO",
-        dto.recordStartRegex?.trim() || null,
-        presetId,
-      );
+      if (hasConditionsColumn) {
+        await tx.$executeRawUnsafe(
+          `
+          UPDATE schema_presets
+          SET
+            name = ?,
+            description = ?,
+            conditions = ?,
+            extraction_mode = ?,
+            record_start_regex = ?,
+            updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+          `,
+          dto.name.trim(),
+          dto.description?.trim() || null,
+          dto.conditions?.length ? JSON.stringify(dto.conditions) : null,
+          dto.extractionMode ?? "AUTO",
+          dto.recordStartRegex?.trim() || null,
+          presetId,
+        );
+      } else {
+        await tx.$executeRawUnsafe(
+          `
+          UPDATE schema_presets
+          SET
+            name = ?,
+            description = ?,
+            extraction_mode = ?,
+            record_start_regex = ?,
+            updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+          `,
+          dto.name.trim(),
+          dto.description?.trim() || null,
+          dto.extractionMode ?? "AUTO",
+          dto.recordStartRegex?.trim() || null,
+          presetId,
+        );
+      }
 
       await tx.$executeRawUnsafe(
         `DELETE FROM schema_preset_tabs WHERE preset_id = ?`,
@@ -627,7 +740,10 @@ export class SessionsService {
     };
   }
 
-  async assignSessionSchemaPreset(id: string, dto: AssignSessionSchemaPresetDto) {
+  async assignSessionSchemaPreset(
+    id: string,
+    dto: AssignSessionSchemaPresetDto,
+  ) {
     await this.ensureExists(id);
 
     const nextId = dto.schemaPresetId?.trim() || null;
@@ -657,7 +773,10 @@ export class SessionsService {
       data: { status: "PROCESSING" },
     });
 
-    const docs = await this.documentsService.loadFiles(dto.filePaths, sessionId);
+    const docs = await this.documentsService.loadFiles(
+      dto.filePaths,
+      sessionId,
+    );
     this.logger.log(`Ingested ${docs.length} files into session ${sessionId}`);
     return docs;
   }
@@ -672,7 +791,10 @@ export class SessionsService {
       data: { status: "PROCESSING", sourcePath: dto.folderPath },
     });
 
-    const docs = await this.documentsService.loadFolder(dto.folderPath, sessionId);
+    const docs = await this.documentsService.loadFolder(
+      dto.folderPath,
+      sessionId,
+    );
     this.logger.log(
       `Ingested ${docs.length} files from folder into session ${sessionId}`,
     );
@@ -976,7 +1098,9 @@ export class SessionsService {
     tabs: SchemaPresetTabDto[],
   ): Promise<void> {
     const stringifyArray = (input?: string[] | null) =>
-      JSON.stringify((input ?? []).map((s) => String(s).trim()).filter(Boolean));
+      JSON.stringify(
+        (input ?? []).map((s) => String(s).trim()).filter(Boolean),
+      );
 
     for (let tabIndex = 0; tabIndex < tabs.length; tabIndex += 1) {
       const tab = tabs[tabIndex];
@@ -995,7 +1119,11 @@ export class SessionsService {
       );
 
       const seen = new Set<string>();
-      for (let fieldIndex = 0; fieldIndex < tab.fields.length; fieldIndex += 1) {
+      for (
+        let fieldIndex = 0;
+        fieldIndex < tab.fields.length;
+        fieldIndex += 1
+      ) {
         const field = tab.fields[fieldIndex];
         const key = field.fieldKey.trim();
         const keyLower = key.toLowerCase();
@@ -1028,7 +1156,9 @@ export class SessionsService {
           stringifyArray(field.altRegexRules),
           field.sectionHint ?? null,
           field.contextHint ?? null,
-          field.sectionIndicatorKey?.trim() || field.contextLabel?.trim() || null,
+          field.sectionIndicatorKey?.trim() ||
+            field.contextLabel?.trim() ||
+            null,
           field.mandatory ? 1 : 0,
           field.expectedFormat?.trim() || null,
           field.minLength ?? null,
@@ -1039,7 +1169,9 @@ export class SessionsService {
     }
   }
 
-  private async getSessionSchemaPresetId(sessionId: string): Promise<string | null> {
+  private async getSessionSchemaPresetId(
+    sessionId: string,
+  ): Promise<string | null> {
     const rows = await this.prisma.$queryRawUnsafe<
       Array<{ schema_preset_id: string | null }>
     >(`SELECT schema_preset_id FROM sessions WHERE id = ?`, sessionId);

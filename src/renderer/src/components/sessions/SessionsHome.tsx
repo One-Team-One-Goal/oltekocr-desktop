@@ -184,14 +184,23 @@ export function SessionsHome({ mode }: SessionsHomeProps) {
   const [manualSchemaBuilderOpen, setManualSchemaBuilderOpen] = useState(false);
   const [autoSchemaBuilderOpen, setAutoSchemaBuilderOpen] = useState(false);
   const [schemaBuilderSubmitting, setSchemaBuilderSubmitting] = useState(false);
-  const [schemaPresets, setSchemaPresets] = useState<Array<{ id: string; name: string; description?: string; extractionMode?: string }>>([]);
+  const [schemaPresets, setSchemaPresets] = useState<
+    Array<{
+      id: string;
+      name: string;
+      description?: string;
+      extractionMode?: string;
+    }>
+  >([]);
 
   const STANDARD_CONTRACT_SCHEMA_NAME = "STANDARD_CONTRACT_SCHEMA";
 
   const fetchSchemaPresets = async () => {
     try {
       const presets = await sessionsApi.listSchemaPresets();
-      setSchemaPresets(presets.filter((p) => p.name !== STANDARD_CONTRACT_SCHEMA_NAME));
+      setSchemaPresets(
+        presets.filter((p) => p.name !== STANDARD_CONTRACT_SCHEMA_NAME),
+      );
     } catch (err) {
       console.error("Failed to fetch schema presets:", err);
     }
